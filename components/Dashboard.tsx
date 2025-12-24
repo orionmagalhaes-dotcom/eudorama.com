@@ -1,10 +1,11 @@
+
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { User, AppCredential } from '../types';
 import { getAssignedCredential } from '../services/credentialService';
 import { getAllClients, updateClientName, updateClientPreferences } from '../services/clientService';
 import { 
   Copy, Check, CreditCard, Star, Crown, Sparkles, Loader2, 
-  RotateCw, Key, Smartphone, Mail, Lock, AlertTriangle, PlusCircle, ArrowRight, Edit3, Fingerprint, ShieldAlert, Palette, Camera, X, CheckCircle2, Upload, Trash2, Clock, Zap, ShoppingBag
+  RotateCw, Key, Smartphone, Mail, Lock, AlertTriangle, PlusCircle, ArrowRight, Edit3, Fingerprint, ShieldAlert, Palette, Camera, X, CheckCircle2, Upload, Trash2, Clock, Zap, ShoppingBag, ArrowUpRight
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -51,6 +52,11 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
           !validServices.some(vs => vs.toLowerCase().includes(s.name.toLowerCase()))
       );
   }, [validServices]);
+
+  // Cálculo de serviços que precisam de renovação (Inteligente)
+  const expiringServices = useMemo(() => {
+    return mergedData.filter(item => item.daysLeft <= 5);
+  }, [mergedData]);
 
   const getBgClass = () => {
       switch(user.themeColor) {
@@ -158,6 +164,13 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
       reader.readAsDataURL(file);
   };
 
+  const handleSmartRenewal = () => {
+    if (expiringServices.length === 0) return;
+    const targets = expiringServices.map(s => s.name).join(',');
+    const hasExpired = expiringServices.some(s => s.daysLeft < 0);
+    onOpenCheckout(hasExpired ? 'renewal' : 'early_renewal', targets);
+  };
+
   return (
     <div className={`${getBgClass()} min-h-screen pb-32 transition-all duration-500`}>
       <input 
@@ -194,7 +207,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
 
       <div className="flex justify-between items-center px-6 pt-8 pb-4">
           <div className="flex items-center gap-5">
-              {/* Foto de Perfil Maior (de w-16 para w-24) */}
               <div className="relative group cursor-pointer" onClick={handleProfileImageClick}>
                   <div className={`w-24 h-24 rounded-full overflow-hidden border-4 border-white shadow-xl ring-4 ring-pink-200 shrink-0 bg-white flex items-center justify-center ${uploading ? 'opacity-50' : ''}`}>
                       {uploading ? (
@@ -216,7 +228,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                     )}
                     <button onClick={handleEditName} className="p-1 text-gray-400 hover:text-pink-600 transition-colors"><Edit3 size={16} /></button>
                   </div>
-                  {/* Badge de Membro VIP Maior e mais legível */}
                   <div className="flex items-center gap-2 bg-white px-3.5 py-1.5 rounded-full border border-pink-100 shadow-sm w-fit mt-2.5">
                       <Crown size={14} className="text-yellow-500 fill-current" />
                       <span className="text-[11px] font-black text-pink-600 uppercase tracking-[0.15em]">Membro VIP</span>
@@ -225,7 +236,38 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
           </div>
       </div>
 
-      <div className="px-5 pt-4 space-y-8">
+      <div className="px-5 pt-4 space-y-6">
+          {/* BOTÃO INTELIGENTE DE RENOVAÇÃO */}
+          {!loading && expiringServices.length > 0 && (
+              <div className="animate-fade-in-up">
+                  <button 
+                      onClick={handleSmartRenewal}
+                      className="w-full bg-gradient-to-r from-orange-500 to-red-600 p-6 rounded-[2.5rem] text-white shadow-xl shadow-orange-200 flex items-center justify-between group overflow-hidden relative active:scale-[0.98] transition-all"
+                  >
+                      <div className="absolute top-0 right-0 p-6 opacity-10 group-hover:scale-125 transition-transform">
+                          <RotateCw size={80} />
+                      </div>
+                      <div className="flex items-center gap-4 relative z-10 text-left">
+                          <div className="bg-white/20 p-4 rounded-2xl backdrop-blur-md">
+                              <AlertTriangle className="text-white animate-pulse" size={28} />
+                          </div>
+                          <div>
+                              <p className="text-xs font-black uppercase tracking-widest text-white/80">Atenção {user.name.split(' ')[0]}!</p>
+                              <h3 className="text-xl font-black">
+                                  {expiringServices.length === 1 
+                                    ? `1 assinatura ${expiringServices[0].daysLeft < 0 ? 'vencida' : 'pendente'}`
+                                    : `${expiringServices.length} assinaturas pendentes`
+                                  }
+                              </h3>
+                          </div>
+                      </div>
+                      <div className="bg-white text-orange-600 p-3 rounded-2xl shadow-lg relative z-10 group-hover:translate-x-1 transition-transform">
+                          <ArrowRight size={24} />
+                      </div>
+                  </button>
+              </div>
+          )}
+
           {loading && mergedData.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-20 text-gray-400 gap-4">
                   <Loader2 className="w-10 h-10 animate-spin text-pink-500" />
@@ -305,7 +347,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                     </div>
                   ))}
 
-                  {/* SEÇÃO DE UPSELL - NOVOS APPS */}
                   {missingServices.length > 0 && (
                       <div className="pt-10 pb-4 space-y-6">
                           <div className="flex items-center gap-3 px-1">

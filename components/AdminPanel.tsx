@@ -8,7 +8,7 @@ import {
     Clock, CheckCircle2, RefreshCw, Phone, Mail, Lock, Loader2, Eye, EyeOff, 
     Calendar, Download, Upload, Shield, LayoutGrid, SortAsc, SortDesc, RotateCw, 
     ShieldCheck, UsersRound, ArrowUpRight, ArrowDownRight, DollarSign, MessageCircle,
-    Sun, Moon, Fingerprint, Copy, Check
+    Sun, Moon, Fingerprint, Copy, Check, Zap
 } from 'lucide-react';
 
 // --- PROPS INTERFACE ---
@@ -132,7 +132,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const [newSubPlan, setNewSubPlan] = useState('1'); 
 
   const [clientForm, setClientForm] = useState<Partial<ClientDBRow>>({
-      phone_number: '', client_name: '', subscriptions: [], duration_months: 1, is_debtor: false, purchase_date: toLocalInput(new Date().toISOString())
+      phone_number: '', client_name: '', subscriptions: [], duration_months: 1, is_debtor: false, purchase_date: toLocalInput(new Date().toISOString()), client_password: ''
   });
 
   useEffect(() => { loadData(); }, []);
@@ -322,6 +322,31 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     loadData();
   };
 
+  // Lógica de Renovação Inteligente para uso DENTRO do modal (atualiza o estado clientForm)
+  const handleModalSmartRenew = (subIndex: number) => {
+    const currentSubs = [...((clientForm.subscriptions as string[] | undefined) || [])];
+    if (!currentSubs[subIndex]) return;
+
+    const parts = currentSubs[subIndex].split('|');
+    const serviceName = parts[0];
+    const oldStartDate = parts[1];
+    const months = parseInt(parts[3] || '1');
+    
+    const currentExpiry = calculateExpiry(oldStartDate, months);
+    const today = new Date();
+    
+    // Se já venceu, começa de hoje. Se ainda é válido, começa do dia que ia vencer.
+    const newStartDate = currentExpiry.getTime() < today.getTime() ? today : currentExpiry;
+    
+    // Atualiza o sub: Nome | NovaDataInício | Cobrado(1) | MesesMantidos
+    currentSubs[subIndex] = `${serviceName}|${newStartDate.toISOString()}|1|${months}`;
+    
+    setClientForm({
+        ...clientForm,
+        subscriptions: currentSubs
+    });
+  };
+
   const sendWhatsAppMessage = (phone: string, name: string, service: string, expiryDate: Date) => {
     const cleanPhone = phone.replace(/\D/g, '');
     const daysLeft = getDaysRemaining(expiryDate);
@@ -384,7 +409,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                               <button key={f.id} onClick={() => setClientFilterStatus(f.id as any)} className={`px-5 py-2.5 rounded-xl text-[10px] font-black uppercase border transition-all ${clientFilterStatus === f.id ? f.color : 'bg-white dark:bg-slate-900 text-indigo-300 border-indigo-100'}`}>{f.label}</button>
                           ))}
                       </div>
-                      <button onClick={() => { setClientForm({ phone_number: '', client_name: '', subscriptions: [] }); setClientModalOpen(true); }} className="w-full bg-indigo-600 text-white font-black py-4 rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-indigo-100">
+                      <button onClick={() => { setClientForm({ phone_number: '', client_name: '', subscriptions: [], client_password: '' }); setClientModalOpen(true); }} className="w-full bg-indigo-600 text-white font-black py-4 rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-indigo-100">
                           <Plus size={24}/> Novo Cliente
                       </button>
                   </div>
@@ -609,6 +634,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                           <label className="text-xs font-black uppercase text-indigo-400 ml-1">Nome Completo</label>
                           <input className="w-full bg-indigo-50 dark:bg-slate-800 p-4 rounded-2xl font-bold text-lg outline-none border-2 border-transparent focus:border-indigo-300" value={clientForm.client_name} onChange={e => setClientForm({...clientForm, client_name: e.target.value})} placeholder="Ex: Maria Silva" />
                       </div>
+
+                      {/* NOVO CAMPO: SENHA DO CLIENTE */}
+                      <div className="space-y-2">
+                          <label className="text-xs font-black uppercase text-indigo-400 ml-1">Senha do Dashboard</label>
+                          <div className="relative group">
+                              <input 
+                                className="w-full bg-indigo-50 dark:bg-slate-800 p-4 pl-12 rounded-2xl font-bold text-lg outline-none border-2 border-transparent focus:border-indigo-300 transition-all" 
+                                value={clientForm.client_password || ''} 
+                                onChange={e => setClientForm({...clientForm, client_password: e.target.value})} 
+                                placeholder="Definir senha do cliente" 
+                              />
+                              <Lock className="absolute left-4 top-4 text-indigo-300 group-focus-within:text-indigo-600" size={20} />
+                          </div>
+                          <p className="text-[10px] font-bold text-gray-400 ml-1">Esta é a senha que o cliente usa para entrar no app.</p>
+                      </div>
                       
                       <div className="pt-4 space-y-5">
                           <p className="text-xs font-black uppercase text-indigo-400 tracking-widest border-b-2 border-indigo-50 pb-2">Gerenciar Assinaturas</p>
@@ -658,20 +698,30 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                   </div>
                                                   <div className="space-y-1">
                                                       <label className="text-[9px] font-black uppercase text-indigo-400 ml-1">Plano</label>
-                                                      <select 
-                                                          className="w-full bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-black outline-none border border-indigo-50 h-[34px]" 
-                                                          value={durationStr} 
-                                                          onChange={(e) => {
-                                                              const n = [...((clientForm.subscriptions as string[] | undefined) || [])];
-                                                              if (n[i]) {
-                                                                  const p = n[i].split('|');
-                                                                  n[i] = `${p[0]}|${p[1]}|${p[2]}|${e.target.value}`;
-                                                                  setClientForm({...clientForm, subscriptions: n});
-                                                              }
-                                                          }}
-                                                      >
-                                                          {PLAN_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-                                                      </select>
+                                                      <div className="flex gap-1.5">
+                                                          <select 
+                                                              className="flex-1 bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-black outline-none border border-indigo-50 h-[34px]" 
+                                                              value={durationStr} 
+                                                              onChange={(e) => {
+                                                                  const n = [...((clientForm.subscriptions as string[] | undefined) || [])];
+                                                                  if (n[i]) {
+                                                                      const p = n[i].split('|');
+                                                                      n[i] = `${p[0]}|${p[1]}|${p[2]}|${e.target.value}`;
+                                                                      setClientForm({...clientForm, subscriptions: n});
+                                                                  }
+                                                              }}
+                                                          >
+                                                              {PLAN_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                                                          </select>
+                                                          {/* BOTÃO INTELIGENTE DE RENOVAÇÃO (DENTRO DO MODAL) */}
+                                                          <button 
+                                                            onClick={() => handleModalSmartRenew(i)}
+                                                            className="p-1.5 bg-indigo-600 text-white rounded-xl shadow-sm hover:bg-indigo-700 transition-all active:scale-90"
+                                                            title="Renovação Inteligente (Adicionar +1 Mês com lógica de continuidade)"
+                                                          >
+                                                            <Zap size={16} />
+                                                          </button>
+                                                      </div>
                                                   </div>
                                               </div>
                                               
