@@ -11,7 +11,6 @@ import NameModal from './components/NameModal';
 import GamesHub from './components/GamesHub';
 import Toast from './components/Toast';
 import { User, Dorama } from './types';
-// Fixed: Removed non-existent export 'syncDoramaBackup' from clientService
 import { addDoramaToDB, updateDoramaInDB, removeDoramaFromDB, getUserDoramasFromDB, saveGameProgress, addLocalDorama, refreshUserProfile, updateLastActive, supabase } from './services/clientService';
 import { Heart, X, CheckCircle2, MessageCircle, Gift, Gamepad2, Sparkles, Home, Tv2, Palette, RefreshCw, LogOut, AlertTriangle } from 'lucide-react';
 
@@ -21,9 +20,8 @@ const App: React.FC = () => {
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [activeTab, setActiveTab] = useState<'home' | 'watching' | 'favorites' | 'games' | 'completed'>('home');
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [syncTrigger, setSyncTrigger] = useState(0); // Trigger para forçar refresh nos filhos
+  const [syncTrigger, setSyncTrigger] = useState(0); 
   
-  // Feature States
   const [showPalette, setShowPalette] = useState(false);
   const [isSupportOpen, setIsSupportOpen] = useState(false);
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
@@ -31,7 +29,6 @@ const App: React.FC = () => {
   const [checkoutTargetService, setCheckoutTargetService] = useState<string | null>(null);
   const [toast, setToast] = useState<{message: string, type: 'success' | 'error'} | null>(null);
 
-  // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalType, setModalType] = useState<'watching' | 'favorites' | 'completed'>('watching');
   const [editingDorama, setEditingDorama] = useState<Dorama | null>(null);
@@ -47,30 +44,60 @@ const App: React.FC = () => {
 
   const [showNameModal, setShowNameModal] = useState(false);
 
-  // --- INITIALIZATION ---
+  // --- REFRESH SILENCIOSO (PULSO DE ATUALIZAÇÃO) ---
+  const handleRefreshSession = useCallback(async (silent: boolean = false) => {
+      if (!currentUser) return;
+      if (!silent) setIsRefreshing(true);
+      
+      const { user, error } = await refreshUserProfile(currentUser.phoneNumber);
+      if (user) {
+          setCurrentUser(prev => {
+              if (!prev) return user;
+              // Mantém as listas locais de doramas para evitar flicker, mas atualiza status de assinaturas e cores
+              const updatedUser = {
+                  ...user,
+                  watching: prev.watching,
+                  favorites: prev.favorites,
+                  completed: prev.completed
+              };
+              
+              // Atualiza o cache do navegador imediatamente
+              const userData = JSON.stringify(updatedUser);
+              if (localStorage.getItem('eudorama_session')) {
+                  localStorage.setItem('eudorama_session', userData);
+              } else {
+                  sessionStorage.setItem('eudorama_session', userData);
+              }
+              
+              return updatedUser;
+          });
+          if (!silent) setToast({ message: 'Sincronizado!', type: 'success' });
+          setSyncTrigger(prev => prev + 1); // Força componentes filhos a re-calcularem dados
+      } else if (!silent) {
+          setToast({ message: error || 'Erro de sincronização.', type: 'error' });
+      }
+      if (!silent) setIsRefreshing(false);
+  }, [currentUser?.phoneNumber]);
 
+  // --- INITIALIZATION ---
   useEffect(() => {
     let savedSession = localStorage.getItem('eudorama_session');
-    if (!savedSession) {
-        savedSession = sessionStorage.getItem('eudorama_session');
-    }
+    if (!savedSession) savedSession = sessionStorage.getItem('eudorama_session');
 
     if (savedSession) {
       try {
         const user = JSON.parse(savedSession);
         if (user && user.phoneNumber) {
           setCurrentUser(user);
+          // Busca doramas do banco logo após carregar a sessão básica
           getUserDoramasFromDB(user.phoneNumber).then(doramas => {
              setCurrentUser(prev => {
                  if (!prev) return null;
-                 return {
-                   ...prev,
-                   watching: doramas.watching,
-                   favorites: doramas.favorites,
-                   completed: doramas.completed
-                 };
+                 return { ...prev, ...doramas };
              });
           });
+          // Faz um refresh inicial silencioso para garantir que dados administrativos (ex: renovação) estejam em dia
+          setTimeout(() => handleRefreshSession(true), 1000);
         }
       } catch (e) {
         localStorage.removeItem('eudorama_session');
@@ -80,46 +107,46 @@ const App: React.FC = () => {
 
     const adminSessionLocal = localStorage.getItem('eudorama_admin_session');
     const adminSessionSession = sessionStorage.getItem('eudorama_admin_session');
-    
     if (adminSessionLocal === 'true' || adminSessionSession === 'true') {
         setIsAdminMode(true);
         setIsAdminLoggedIn(true);
     }
   }, []);
 
-  // --- REAL-TIME UPDATES (GLOBAL SYNC) ---
-
+  // --- REAL-TIME UPDATES (Ouvinte do Supabase) ---
   useEffect(() => {
       if (!currentUser || isAdminMode) return;
 
-      // Escuta mudanças em QUALQUER cliente para garantir realocação correta por rank/modulo
+      // Escuta mudanças específicas para este usuário
       const clientChannel = supabase
-          .channel('realtime-global-updates')
+          .channel(`user-sync-${currentUser.phoneNumber}`)
           .on(
               'postgres_changes',
-              { event: '*', schema: 'public', table: 'clients' },
+              { event: 'UPDATE', schema: 'public', table: 'clients', filter: `phone_number=eq.${currentUser.phoneNumber}` },
               (payload) => {
-                  console.log('Realtime change detected in clients:', payload);
-                  setSyncTrigger(prev => prev + 1); // Notifica o Dashboard para recarregar
-                  if ((payload.new as any)?.phone_number === currentUser.phoneNumber) {
-                      handleRefreshSession(true); // Se for este usuário, atualiza o perfil completo
-                  }
+                  console.log('Mudança administrativa detectada para este usuário!', payload);
+                  handleRefreshSession(true); // Atualiza dados silenciosamente
               }
           )
           .on(
               'postgres_changes',
               { event: '*', schema: 'public', table: 'credentials' },
-              (payload) => {
-                  console.log('Realtime change detected in credentials:', payload);
-                  setSyncTrigger(prev => prev + 1); // Notifica o Dashboard para recalcular senhas
+              () => {
+                  // Se mudar qualquer senha de aplicativo no admin, avisa o dashboard para recalcular
+                  setSyncTrigger(prev => prev + 1);
               }
           )
           .subscribe();
 
+      // Refresh automático quando o usuário volta para a aba (tab)
+      const onFocus = () => handleRefreshSession(true);
+      window.addEventListener('focus', onFocus);
+
       return () => {
           supabase.removeChannel(clientChannel);
+          window.removeEventListener('focus', onFocus);
       };
-  }, [currentUser?.phoneNumber, isAdminMode]);
+  }, [currentUser?.phoneNumber, isAdminMode, handleRefreshSession]);
 
   useEffect(() => {
       if (!currentUser || isAdminMode) return;
@@ -130,24 +157,16 @@ const App: React.FC = () => {
       };
       performHeartbeat();
       const heartbeatInterval = setInterval(performHeartbeat, 5 * 60 * 1000);
-      const onVisibilityChange = () => { if (document.visibilityState === 'visible') performHeartbeat(); };
-      window.addEventListener('visibilitychange', onVisibilityChange);
-      return () => {
-          clearInterval(heartbeatInterval);
-          window.removeEventListener('visibilitychange', onVisibilityChange);
-      };
+      return () => clearInterval(heartbeatInterval);
   }, [currentUser?.phoneNumber, isAdminMode]);
 
   useEffect(() => {
-      if (currentUser) {
-          if (currentUser.name === 'Dorameira' || !currentUser.name) {
-              setShowNameModal(true);
-          }
+      if (currentUser && (currentUser.name === 'Dorameira' || !currentUser.name)) {
+          setShowNameModal(true);
       }
   }, [currentUser?.name]);
 
   // --- HANDLERS ---
-
   const handleLogin = (user: User, remember: boolean = false) => {
     setCurrentUser(user);
     const userData = JSON.stringify(user);
@@ -162,9 +181,10 @@ const App: React.FC = () => {
 
   const handleUpdateUser = (updatedUser: User) => {
       setCurrentUser(updatedUser);
+      const userData = JSON.stringify(updatedUser);
       const isLocal = !!localStorage.getItem('eudorama_session');
-      if (isLocal) localStorage.setItem('eudorama_session', JSON.stringify(updatedUser));
-      else sessionStorage.setItem('eudorama_session', JSON.stringify(updatedUser));
+      if (isLocal) localStorage.setItem('eudorama_session', userData);
+      else sessionStorage.setItem('eudorama_session', userData);
   };
 
   const handleLogout = () => {
@@ -174,41 +194,10 @@ const App: React.FC = () => {
     sessionStorage.removeItem('eudorama_session');
   };
 
-  const handleRefreshSession = useCallback(async (silent: boolean = false) => {
-      if (!currentUser) return;
-      if (!silent) setIsRefreshing(true);
-      const { user, error } = await refreshUserProfile(currentUser.phoneNumber);
-      if (user) {
-          setCurrentUser(prev => {
-              if (!prev) return user;
-              const updatedUser = {
-                  ...user,
-                  watching: prev.watching,
-                  favorites: prev.favorites,
-                  completed: prev.completed,
-                  themeColor: user.themeColor || prev.themeColor,
-                  backgroundImage: user.backgroundImage || prev.backgroundImage,
-                  profileImage: user.profileImage || prev.profileImage
-              };
-              const isLocal = !!localStorage.getItem('eudorama_session');
-              if (isLocal) localStorage.setItem('eudorama_session', JSON.stringify(updatedUser));
-              else sessionStorage.setItem('eudorama_session', JSON.stringify(updatedUser));
-              return updatedUser;
-          });
-          if (!silent) setToast({ message: 'Sincronizado!', type: 'success' });
-      } else {
-          if (!silent) setToast({ message: error || 'Erro de sincronização.', type: 'error' });
-      }
-      if (!silent) setIsRefreshing(false);
-  }, [currentUser]);
-
   const handleNameSaved = (newName: string) => {
       if (currentUser) {
           const updatedUser = { ...currentUser, name: newName };
-          setCurrentUser(updatedUser);
-          const isLocal = !!localStorage.getItem('eudorama_session');
-          if (isLocal) localStorage.setItem('eudorama_session', JSON.stringify(updatedUser));
-          else sessionStorage.setItem('eudorama_session', JSON.stringify(updatedUser));
+          handleUpdateUser(updatedUser);
       }
       setShowNameModal(false);
   };
@@ -249,10 +238,7 @@ const App: React.FC = () => {
     if (activeTab === 'games' || activeTab === 'home') return; 
     const newList = currentUser[listKey as 'watching' | 'favorites' | 'completed'].map(d => d.id === updatedDorama.id ? updatedDorama : d);
     const newUserState = { ...currentUser, [listKey]: newList };
-    setCurrentUser(newUserState);
-    const isLocal = !!localStorage.getItem('eudorama_session');
-    if (isLocal) localStorage.setItem('eudorama_session', JSON.stringify(newUserState));
-    else sessionStorage.setItem('eudorama_session', JSON.stringify(newUserState));
+    handleUpdateUser(newUserState);
     addLocalDorama(currentUser.phoneNumber, listKey as any, updatedDorama);
     const success = await updateDoramaInDB(updatedDorama);
     if (success) setToast({ message: 'Salvo com sucesso!', type: 'success' });
@@ -265,12 +251,8 @@ const App: React.FC = () => {
     const listKey = activeTab === 'favorites' ? 'favorites' : (activeTab === 'completed' ? 'completed' : 'watching');
     const newList = currentUser[listKey as 'watching' | 'favorites' | 'completed'].filter(d => d.id !== doramaToDelete);
     const newUserState = { ...currentUser, [listKey]: newList };
-    setCurrentUser(newUserState);
-    const isLocal = !!localStorage.getItem('eudorama_session');
-    if (isLocal) localStorage.setItem('eudorama_session', JSON.stringify(newUserState));
-    else sessionStorage.setItem('eudorama_session', JSON.stringify(newUserState));
-    let success = true;
-    success = await removeDoramaFromDB(doramaToDelete);
+    handleUpdateUser(newUserState);
+    const success = await removeDoramaFromDB(doramaToDelete);
     setIsDeleting(false);
     setIsDeleteModalOpen(false);
     setDoramaToDelete(null);
@@ -282,10 +264,7 @@ const App: React.FC = () => {
       if (!currentUser) return;
       const newProgress = { ...currentUser.gameProgress, [gameId]: data };
       const updatedUser = { ...currentUser, gameProgress: newProgress };
-      setCurrentUser(updatedUser);
-      const isLocal = !!localStorage.getItem('eudorama_session');
-      if (isLocal) localStorage.setItem('eudorama_session', JSON.stringify(updatedUser));
-      else sessionStorage.setItem('eudorama_session', JSON.stringify(updatedUser));
+      handleUpdateUser(updatedUser);
       await saveGameProgress(currentUser.phoneNumber, gameId, data);
   };
 
@@ -295,8 +274,6 @@ const App: React.FC = () => {
       if (modalType === 'completed') return 'Dorama Finalizado';
       return 'O que está vendo?';
   };
-
-  // --- RENDER ---
 
   if (isAdminMode) {
     if (isAdminLoggedIn) return <AdminPanel onLogout={handleAdminLogout} />;
@@ -356,9 +333,7 @@ const App: React.FC = () => {
         setCurrentUser(prev => {
             if (!prev) return null;
             const newState = { ...prev, [modalType]: [...prev[modalType], tempDorama] };
-            const isLocal = !!localStorage.getItem('eudorama_session');
-            if (isLocal) localStorage.setItem('eudorama_session', JSON.stringify(newState));
-            else sessionStorage.setItem('eudorama_session', JSON.stringify(newState));
+            handleUpdateUser(newState);
             return newState;
         });
         const createdDorama = await addDoramaToDB(currentUser.phoneNumber, modalType, tempDorama);
@@ -368,9 +343,7 @@ const App: React.FC = () => {
             if (!prev) return null;
             const updatedList = prev[modalType].map(d => d.id === tempDorama.id ? createdDorama : d);
             const newState = { ...prev, [modalType]: updatedList };
-            const isLocal = !!localStorage.getItem('eudorama_session');
-            if (isLocal) localStorage.setItem('eudorama_session', JSON.stringify(updatedList));
-            else sessionStorage.setItem('eudorama_session', JSON.stringify(newState));
+            handleUpdateUser(newState);
             return newState;
           });
         } else {

@@ -5,7 +5,7 @@ import { getAssignedCredential } from '../services/credentialService';
 import { getAllClients, updateClientName, updateClientPreferences } from '../services/clientService';
 import { 
   Copy, Check, CreditCard, Star, Crown, Sparkles, Loader2, 
-  RotateCw, Key, Smartphone, Mail, Lock, AlertTriangle, PlusCircle, ArrowRight, Edit3, Fingerprint, ShieldAlert, Palette, Camera, X, CheckCircle2, Upload, Trash2, Clock, Zap, ShoppingBag, ArrowUpRight
+  RotateCw, Key, Smartphone, Mail, Lock, AlertTriangle, PlusCircle, ArrowRight, Edit3, Fingerprint, ShieldAlert, Palette, Camera, X, CheckCircle2, Upload, Trash2, Clock, Zap, ShoppingBag, ArrowUpRight, Wifi
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -43,6 +43,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [isEditingName, setIsEditingName] = useState(false);
   const [tempName, setTempName] = useState(user.name);
+  const [isSyncing, setIsSyncing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const validServices = useMemo(() => (user.services || []).filter(s => s && s.trim().length > 0), [user.services]);
@@ -53,7 +54,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
       );
   }, [validServices]);
 
-  // Cálculo de serviços que precisam de renovação (Inteligente)
   const expiringServices = useMemo(() => {
     return mergedData.filter(item => item.daysLeft <= 5);
   }, [mergedData]);
@@ -73,6 +73,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
 
   useEffect(() => {
       const loadUnifiedData = async () => {
+          setIsSyncing(true);
           if (mergedData.length === 0) setLoading(true);
           
           const allClients = await getAllClients();
@@ -111,6 +112,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
           }));
           setMergedData(results);
           setLoading(false);
+          setTimeout(() => setIsSyncing(false), 800);
       };
 
       if (validServices.length > 0) loadUnifiedData();
@@ -118,7 +120,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
   }, [validServices, user.phoneNumber, user.subscriptionDetails, user.isDebtor, user.name, user.purchaseDate, user.durationMonths, user.overrideExpiration, syncTrigger]);
 
   const copyToClipboard = (text: string, id: string) => {
-    // CORREÇÃO: Remove espaços do texto antes de copiar
     navigator.clipboard.writeText(text.trim());
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
@@ -229,16 +230,22 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                     )}
                     <button onClick={handleEditName} className="p-1 text-gray-400 hover:text-pink-600 transition-colors"><Edit3 size={16} /></button>
                   </div>
-                  <div className="flex items-center gap-2 bg-white px-3.5 py-1.5 rounded-full border border-pink-100 shadow-sm w-fit mt-2.5">
-                      <Crown size={14} className="text-yellow-500 fill-current" />
-                      <span className="text-[11px] font-black text-pink-600 uppercase tracking-[0.15em]">Membro VIP</span>
+                  <div className="flex items-center gap-2 mt-2.5">
+                    <div className="flex items-center gap-2 bg-white px-3.5 py-1.5 rounded-full border border-pink-100 shadow-sm w-fit">
+                        <Crown size={14} className="text-yellow-500 fill-current" />
+                        <span className="text-[11px] font-black text-pink-600 uppercase tracking-[0.15em]">Membro VIP</span>
+                    </div>
+                    {/* INDICADOR REALTIME */}
+                    <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border bg-white shadow-sm transition-all duration-500 ${isSyncing ? 'border-blue-200 text-blue-500' : 'border-emerald-100 text-emerald-500'}`}>
+                        <div className={`w-1.5 h-1.5 rounded-full ${isSyncing ? 'bg-blue-500 animate-spin' : 'bg-emerald-500 animate-pulse'}`}></div>
+                        <span className="text-[9px] font-black uppercase tracking-widest">{isSyncing ? 'Sincronizando' : 'Ao Vivo'}</span>
+                    </div>
                   </div>
               </div>
           </div>
       </div>
 
       <div className="px-5 pt-4 space-y-6">
-          {/* BOTÃO INTELIGENTE DE RENOVAÇÃO */}
           {!loading && expiringServices.length > 0 && (
               <div className="animate-fade-in-up">
                   <button 
@@ -272,7 +279,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
           {loading && mergedData.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-20 text-gray-400 gap-4">
                   <Loader2 className="w-10 h-10 animate-spin text-pink-500" />
-                  <p className="font-bold text-sm uppercase tracking-widest">Sincronizando...</p>
+                  <p className="font-bold text-sm uppercase tracking-widest">Iniciando Conexão...</p>
               </div>
           ) : (
               <div className="grid grid-cols-1 gap-5">

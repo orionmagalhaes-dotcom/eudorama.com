@@ -9,7 +9,7 @@ import {
     Calendar, Download, Upload, Shield, LayoutGrid, SortAsc, SortDesc, RotateCw, 
     ShieldCheck, UsersRound, ArrowUpRight, ArrowDownRight, DollarSign, MessageCircle,
     Sun, Moon, Fingerprint, Copy, Check, Zap, BarChart3, TrendingUp, Wallet, PieChart, Undo2, TrendingDown, Settings2,
-    Activity, Banknote, CreditCard, Eraser, ListFilter, ArrowUpDown
+    Activity, Banknote, CreditCard, Eraser, ListFilter, ArrowUpDown, Wifi
 } from 'lucide-react';
 
 // --- PROPS INTERFACE ---
@@ -133,7 +133,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   
-  // States para Finanças
   const [projectionMonths, setProjectionMonths] = useState<number>(1);
   const [statsReferenceDate, setStatsReferenceDate] = useState<number>(() => {
       const d = new Date();
@@ -187,7 +186,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             const parts = sub.split('|');
             const duration = parseInt(parts[3] || '1');
             
-            // CONTABILIZAR APENAS MENSAL (Duração = 1 mês)
             if (duration !== 1) return;
 
             const sName = parts[0];
@@ -211,7 +209,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     });
 
     const totalClientsCounted = Object.values(serviceBreakdown).reduce((acc, curr) => acc + curr.count, 0);
-
     const newClientsSinceReset = activeClients.filter(c => new Date(c.created_at).getTime() > statsReferenceDate).length;
     const churnSinceReset = deletedClients.filter(c => new Date(c.created_at).getTime() > statsReferenceDate).length;
     
@@ -375,7 +372,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
       if (success) {
           loadData();
       } else {
-          alert("Erro ao mover para lixeira: " + msg + "\nCertifique-se de que aplicou o SQL de permissão de UPDATE no Supabase.");
+          alert("Erro ao mover para lixeira: " + msg);
       }
       setLoading(false);
   };
@@ -417,7 +414,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const currentExpiry = calculateExpiry(oldStartDate, months);
     const today = new Date();
     const newStartDate = currentExpiry.getTime() < today.getTime() ? today : currentExpiry;
-    // CORREÇÃO: Status de cobrança volta para '0' ao renovar
     subs[subIndex] = `${serviceName}|${newStartDate.toISOString()}|0|${months}`;
     await saveClientToDB({ ...client, subscriptions: subs });
     loadData();
@@ -433,7 +429,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const currentExpiry = calculateExpiry(oldStartDate, months);
     const today = new Date();
     const newStartDate = currentExpiry.getTime() < today.getTime() ? today : currentExpiry;
-    // CORREÇÃO: Status de cobrança volta para '0' ao renovar no modal
     currentSubs[subIndex] = `${serviceName}|${newStartDate.toISOString()}|0|${months}`;
     setClientForm({ ...clientForm, subscriptions: currentSubs });
   };
@@ -466,30 +461,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const handleImportBackup = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     if (!confirm("Isso atualizará os dados existentes. Deseja continuar?")) return;
-
     setLoading(true);
     const reader = new FileReader();
     reader.onload = async (event) => {
         try {
             const importedData = JSON.parse(event.target?.result as string);
             if (Array.isArray(importedData)) {
-                // Upsert em massa via Supabase
                 const { error } = await supabase.from('clients').upsert(importedData);
                 if (error) throw error;
                 alert(`Sucesso! ${importedData.length} registros importados.`);
                 loadData();
-            } else {
-                alert("Formato de arquivo inválido.");
-            }
-        } catch (err: any) {
-            alert("Erro ao importar: " + err.message);
-        }
+            } else { alert("Formato de arquivo inválido."); }
+        } catch (err: any) { alert("Erro ao importar: " + err.message); }
         setLoading(false);
     };
     reader.readAsText(file);
-    // Limpa o input para permitir importar o mesmo arquivo novamente se necessário
     e.target.value = '';
   };
 
@@ -508,6 +495,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
           <div className="flex items-center gap-3">
               <div className="bg-indigo-600 p-2.5 rounded-2xl text-white shadow-lg"><ShieldAlert size={24} /></div>
               <h1 className="font-black text-xl">EuDorama Admin</h1>
+              <div className="hidden sm:flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-600 rounded-full border border-emerald-100">
+                  <Wifi size={12} className="animate-pulse" />
+                  <span className="text-[10px] font-black uppercase tracking-widest">Realtime Ativo</span>
+              </div>
           </div>
           <div className="flex items-center gap-2">
               <button onClick={() => setDarkMode(!darkMode)} className="p-2.5 rounded-xl bg-indigo-50 dark:bg-slate-800 text-indigo-600">
@@ -538,6 +529,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
           {activeTab === 'clients' && (
               <div className="space-y-6 animate-fade-in pb-32">
                   <div className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] shadow-sm border border-indigo-100 dark:border-slate-800 space-y-4">
+                      <div className="flex justify-between items-center px-1">
+                          <p className="text-xs font-black text-indigo-400 uppercase tracking-widest">Base de Dados</p>
+                          <div className="bg-indigo-50 text-indigo-600 px-3 py-1 rounded-lg text-[10px] font-black uppercase">Total: {clients.filter(c=>!c.deleted).length} Clientes</div>
+                      </div>
                       <div className="flex items-center gap-3 bg-indigo-50 dark:bg-slate-800 px-5 py-4 rounded-2xl border border-indigo-100 dark:border-slate-700">
                           <Search className="text-indigo-400" size={24} />
                           <input className="bg-transparent outline-none text-base font-bold w-full" placeholder="Buscar por nome ou WhatsApp..." value={clientSearch} onChange={e => setClientSearch(e.target.value)} />
@@ -555,29 +550,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                           </div>
                           
                           <div className="flex gap-2">
-                            <button 
-                                onClick={handleDownloadBackup}
-                                className="p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all bg-white dark:bg-slate-900 text-indigo-600 border-indigo-100 hover:bg-indigo-50"
-                                title="Baixar Backup JSON"
-                            >
-                                <Download size={14} /> <span className="hidden sm:inline">Backup</span>
-                            </button>
-                            <label className="p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all bg-white dark:bg-slate-900 text-purple-600 border-indigo-100 hover:bg-purple-50 cursor-pointer" title="Importar Backup JSON">
-                                <Upload size={14} /> <span className="hidden sm:inline">Importar</span>
-                                <input type="file" accept=".json" className="hidden" onChange={handleImportBackup} />
-                            </label>
-                            <button 
-                                onClick={() => setClientSortByExpiry(!clientSortByExpiry)}
-                                className={`p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all ${clientSortByExpiry ? 'bg-amber-100 text-amber-700 border-amber-200' : 'bg-white dark:bg-slate-900 text-indigo-400 border-indigo-100'}`}
-                                title="Ordenar por Vencimento Próximo"
-                            >
-                                <ArrowUpDown size={14} /> <span className="hidden sm:inline">Vencimento</span>
-                            </button>
+                            <button onClick={handleDownloadBackup} className="p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all bg-white dark:bg-slate-900 text-indigo-600 border-indigo-100 hover:bg-indigo-50" title="Baixar Backup JSON"><Download size={14} /> <span className="hidden sm:inline">Backup</span></button>
+                            <label className="p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all bg-white dark:bg-slate-900 text-purple-600 border-indigo-100 hover:bg-purple-50 cursor-pointer" title="Importar Backup JSON"><Upload size={14} /> <span className="hidden sm:inline">Importar</span><input type="file" accept=".json" className="hidden" onChange={handleImportBackup} /></label>
+                            <button onClick={() => setClientSortByExpiry(!clientSortByExpiry)} className={`p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all ${clientSortByExpiry ? 'bg-amber-100 text-amber-700 border-amber-200' : 'bg-white dark:bg-slate-900 text-indigo-400 border-indigo-100'}`} title="Ordenar por Vencimento Próximo"><ArrowUpDown size={14} /> <span className="hidden sm:inline">Vencimento</span></button>
                           </div>
                       </div>
-                      <button onClick={() => { setClientForm({ phone_number: '', client_name: '', subscriptions: [], client_password: '' }); setClientModalOpen(true); }} className="w-full bg-indigo-600 text-white font-black py-4 rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-indigo-100">
-                          <Plus size={24}/> Novo Cliente
-                      </button>
+                      <button onClick={() => { setClientForm({ phone_number: '', client_name: '', subscriptions: [], client_password: '' }); setClientModalOpen(true); }} className="w-full bg-indigo-600 text-white font-black py-4 rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-indigo-100"><Plus size={24}/> Novo Cliente</button>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -688,13 +666,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                               <h3 className="text-xl font-black text-gray-900 dark:text-white">Projeção Mensal e Escala</h3>
                               <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Análise baseada em assinaturas de 1 mês</p>
                           </div>
-                          <button 
-                            onClick={handleResetProjection}
-                            className={`flex items-center gap-2 px-6 py-4 rounded-full text-[10px] font-black uppercase transition-all shadow-md border-2 ${isConfirmingReset ? 'bg-red-600 text-white border-red-700 animate-pulse' : 'bg-red-50 text-red-600 border-red-100 hover:bg-red-100 active:scale-95'}`}
-                          >
-                              {isConfirmingReset ? <AlertTriangle size={16} /> : <Eraser size={16} />}
-                              {isConfirmingReset ? "CONFIRMAR?" : "RESETAR PROJEÇÃO"}
-                          </button>
+                          <button onClick={handleResetProjection} className={`flex items-center gap-2 px-6 py-4 rounded-full text-[10px] font-black uppercase transition-all shadow-md border-2 ${isConfirmingReset ? 'bg-red-600 text-white border-red-700 animate-pulse' : 'bg-red-50 text-red-600 border-red-100 hover:bg-red-100 active:scale-95'}`}>{isConfirmingReset ? <AlertTriangle size={16} /> : <Eraser size={16} />}{isConfirmingReset ? "CONFIRMAR?" : "RESETAR PROJEÇÃO"}</button>
                       </div>
 
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
