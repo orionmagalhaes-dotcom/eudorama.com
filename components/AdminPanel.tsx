@@ -131,6 +131,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const [clientSearch, setClientSearch] = useState('');
   const [loginSearchQuery, setLoginSearchQuery] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   
   // States para Finanças
   const [projectionMonths, setProjectionMonths] = useState<number>(1);
@@ -448,6 +449,50 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
       }
   };
 
+  const handleDownloadBackup = () => {
+    if (clients.length === 0) return alert("Nenhum dado para baixar.");
+    const dataStr = JSON.stringify(clients, null, 2);
+    const blob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `backup_eudorama_clientes_${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportBackup = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!confirm("Isso atualizará os dados existentes. Deseja continuar?")) return;
+
+    setLoading(true);
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+        try {
+            const importedData = JSON.parse(event.target?.result as string);
+            if (Array.isArray(importedData)) {
+                // Upsert em massa via Supabase
+                const { error } = await supabase.from('clients').upsert(importedData);
+                if (error) throw error;
+                alert(`Sucesso! ${importedData.length} registros importados.`);
+                loadData();
+            } else {
+                alert("Formato de arquivo inválido.");
+            }
+        } catch (err: any) {
+            alert("Erro ao importar: " + err.message);
+        }
+        setLoading(false);
+    };
+    reader.readAsText(file);
+    // Limpa o input para permitir importar o mesmo arquivo novamente se necessário
+    e.target.value = '';
+  };
+
   const sendWhatsAppMessage = (phone: string, name: string, service: string, expiryDate: Date) => {
     const cleanPhone = phone.replace(/\D/g, '');
     const daysLeft = getDaysRemaining(expiryDate);
@@ -509,13 +554,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                               ))}
                           </div>
                           
-                          <button 
-                            onClick={() => setClientSortByExpiry(!clientSortByExpiry)}
-                            className={`p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all ${clientSortByExpiry ? 'bg-amber-100 text-amber-700 border-amber-200' : 'bg-white dark:bg-slate-900 text-indigo-400 border-indigo-100'}`}
-                            title="Ordenar por Vencimento Próximo"
-                          >
-                            <ArrowUpDown size={14} /> <span className="hidden sm:inline">Vencimento</span>
-                          </button>
+                          <div className="flex gap-2">
+                            <button 
+                                onClick={handleDownloadBackup}
+                                className="p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all bg-white dark:bg-slate-900 text-indigo-600 border-indigo-100 hover:bg-indigo-50"
+                                title="Baixar Backup JSON"
+                            >
+                                <Download size={14} /> <span className="hidden sm:inline">Backup</span>
+                            </button>
+                            <label className="p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all bg-white dark:bg-slate-900 text-purple-600 border-indigo-100 hover:bg-purple-50 cursor-pointer" title="Importar Backup JSON">
+                                <Upload size={14} /> <span className="hidden sm:inline">Importar</span>
+                                <input type="file" accept=".json" className="hidden" onChange={handleImportBackup} />
+                            </label>
+                            <button 
+                                onClick={() => setClientSortByExpiry(!clientSortByExpiry)}
+                                className={`p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all ${clientSortByExpiry ? 'bg-amber-100 text-amber-700 border-amber-200' : 'bg-white dark:bg-slate-900 text-indigo-400 border-indigo-100'}`}
+                                title="Ordenar por Vencimento Próximo"
+                            >
+                                <ArrowUpDown size={14} /> <span className="hidden sm:inline">Vencimento</span>
+                            </button>
+                          </div>
                       </div>
                       <button onClick={() => { setClientForm({ phone_number: '', client_name: '', subscriptions: [], client_password: '' }); setClientModalOpen(true); }} className="w-full bg-indigo-600 text-white font-black py-4 rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-indigo-100">
                           <Plus size={24}/> Novo Cliente
