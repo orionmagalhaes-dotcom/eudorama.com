@@ -15,7 +15,8 @@ const MOCK_FLOWS: Record<string, SupportFlowStep> = {
             { label: 'Kocowa+', next_step_id: 'kocowa_start' },
             { label: 'IQIYI', next_step_id: 'iqiyi_start' },
             { label: 'WeTV', next_step_id: 'wetv_start' },
-            { label: 'DramaBox', next_step_id: 'dramabox_start' }
+            { label: 'DramaBox', next_step_id: 'dramabox_start' },
+            { label: 'Youku', next_step_id: 'youku_start' }
         ]
     },
     'viki_device_select': { id: 'viki_device_select', message: 'Ótima escolha! Onde quer assistir?', options: [{ label: 'Na TV', next_step_id: 'viki_tv_model_select' }, { label: 'No Celular', next_step_id: 'viki_mobile_install_check' }] },
@@ -40,7 +41,9 @@ const MOCK_FLOWS: Record<string, SupportFlowStep> = {
     'wetv_start': { id: 'wetv_start', message: 'WeTV: Onde?', options: [{ label: 'Celular', next_step_id: 'wetv_mobile_nav' }] },
     'wetv_mobile_nav': { id: 'wetv_mobile_nav', message: 'Vá em Conta > Entrar > Email.', options: [{ label: 'Achei', next_step_id: 'wetv_mobile_email_input' }] },
     'wetv_mobile_email_input': { id: 'wetv_mobile_email_input', message: 'Copie os dados:', options: [{ label: 'Copiar', action: 'copy_credential', action_value: 'wetv', next_step_id: 'root' }] },
-    'dramabox_start': { id: 'dramabox_start', message: 'DramaBox é só Android.', options: [{ label: 'Tenho Android', next_step_id: 'root' }] }
+    'dramabox_start': { id: 'dramabox_start', message: 'DramaBox é só Android.', options: [{ label: 'Tenho Android', next_step_id: 'root' }] },
+    'youku_start': { id: 'youku_start', message: 'Youku Premium! Vamos entrar?', options: [{ label: 'Sim, no Celular', next_step_id: 'youku_mobile_login' }] },
+    'youku_mobile_login': { id: 'youku_mobile_login', message: 'No app Youku, vá em Me > Login e use os dados abaixo:', options: [{ label: 'Copiar Dados Youku', action: 'copy_credential', action_value: 'youku', next_step_id: 'root' }] }
 };
 
 export const fetchStep = async (stepId: string): Promise<SupportFlowStep | null> => {
@@ -50,10 +53,7 @@ export const fetchStep = async (stepId: string): Promise<SupportFlowStep | null>
 export const resolveCredentialAction = async (user: User, actionValue?: string): Promise<{ text: string, email?: string, password?: string }> => {
     if (!actionValue) return { text: "Erro: Serviço não especificado." };
 
-    // Tenta encontrar o serviço na lista do usuário ou usa o valor passado como fallback para buscar no banco (útil para demo)
     const serviceName = user.services.find(s => s.toLowerCase().includes(actionValue.toLowerCase())) || actionValue;
-    
-    // Se não for usuário de teste e não tiver o serviço, avisa
     const isTest = user.phoneNumber === '00000000000' || user.phoneNumber.startsWith('99999');
     
     if (!isTest && !user.services.some(s => s.toLowerCase().includes(actionValue.toLowerCase()))) {
@@ -63,7 +63,7 @@ export const resolveCredentialAction = async (user: User, actionValue?: string):
     const { credential } = await getAssignedCredential(user, serviceName);
 
     if (!credential) {
-        return { text: "Ainda estamos preparando seu acesso. Aguarde um pouquinho ou chame o suporte no WhatsApp. ⏳" };
+        return { text: "Ainda estamos preparando seu acesso ao Youku. Aguarde um pouquinho ou chame o suporte no WhatsApp. ⏳" };
     }
 
     return {

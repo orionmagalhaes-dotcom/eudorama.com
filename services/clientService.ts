@@ -113,6 +113,8 @@ export const processUserLogin = (userRows: ClientDBRow[]): { user: User | null, 
           if (s) {
               const parts = s.split('|');
               const cleanService = parts[0].trim();
+              if (!cleanService) return;
+              
               const specificDate = parts[1] ? parts[1].trim() : null;
               const individualPaid = (parts[2] || '0') === '1'; 
               const durationStr = parts[3] ? parts[3].trim() : '';
@@ -164,32 +166,15 @@ export const processUserLogin = (userRows: ClientDBRow[]): { user: User | null, 
     };
 };
 
-export const deleteClientPermanently = async (id: string, phone: string): Promise<{ success: boolean; msg: string }> => {
-  try {
-      // 1. Primeiro remove registros na tabela de doramas (chave estrangeira lógica)
-      const { error: doramaError } = await supabase
-          .from('doramas')
-          .delete()
-          .eq('phone_number', phone);
-
-      if (doramaError) console.warn("Aviso ao deletar doramas:", doramaError.message);
-
-      // 2. Agora deleta o cliente pelo ID
-      const { error: clientError } = await supabase
-          .from('clients')
-          .delete()
-          .eq('id', id);
-      
-      if (clientError) {
-          console.error("Erro Supabase ao deletar cliente:", clientError);
-          throw new Error(clientError.message);
-      }
-
-      return { success: true, msg: "Cliente removido com sucesso." };
-  } catch (e: any) {
-      console.error("Exceção na exclusão:", e);
-      return { success: false, msg: e.message || "Erro desconhecido ao excluir." };
-  }
+export const saveClientToDB = async (client: Partial<ClientDBRow>): Promise<{ success: boolean; msg: string }> => {
+    try {
+        const payload = { ...client };
+        if (!payload.id || payload.id === '') delete payload.id;
+        if (!Array.isArray(payload.subscriptions)) payload.subscriptions = [];
+        const { error } = await supabase.from('clients').upsert(payload);
+        if (error) throw error;
+        return { success: true, msg: "Salvo com sucesso!" };
+    } catch (e: any) { return { success: false, msg: `Erro: ${e.message}` }; }
 };
 
 export const updateDoramaInDB = async (dorama: Dorama): Promise<boolean> => {
@@ -203,17 +188,6 @@ export const updateDoramaInDB = async (dorama: Dorama): Promise<boolean> => {
         }).eq('id', dorama.id);
         return !error;
     } catch (e) { return false; }
-};
-
-export const saveClientToDB = async (client: Partial<ClientDBRow>): Promise<{ success: boolean; msg: string }> => {
-    try {
-        const payload = { ...client };
-        if (!payload.id || payload.id === '') delete payload.id;
-        if (!Array.isArray(payload.subscriptions)) payload.subscriptions = [];
-        const { error } = await supabase.from('clients').upsert(payload);
-        if (error) throw error;
-        return { success: true, msg: "Salvo com sucesso!" };
-    } catch (e: any) { return { success: false, msg: `Erro: ${e.message}` }; }
 };
 
 export const resetAllClientPasswords = async (): Promise<{success: boolean, msg: string}> => {

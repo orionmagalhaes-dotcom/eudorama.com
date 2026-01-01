@@ -9,7 +9,7 @@ import {
     Calendar, Download, Upload, Shield, LayoutGrid, SortAsc, SortDesc, RotateCw, 
     ShieldCheck, UsersRound, ArrowUpRight, ArrowDownRight, DollarSign, MessageCircle,
     Sun, Moon, Fingerprint, Copy, Check, Zap, BarChart3, TrendingUp, Wallet, PieChart, Undo2, TrendingDown, Settings2,
-    Activity, Banknote, CreditCard, Eraser, ListFilter, ArrowUpDown, Wifi
+    Activity, Banknote, CreditCard, Eraser, ListFilter, ArrowUpDown, Wifi, Filter, ChevronRight
 } from 'lucide-react';
 
 // --- PROPS INTERFACE ---
@@ -35,7 +35,8 @@ const CAPACITY_LIMITS: Record<string, number> = {
 };
 
 const getServicePrice = (serviceName: string, duration: number): number => {
-    if (duration > 1) return 50.00; 
+    // Regra solicitada: Se não for mensal (duração > 1), valor é 0
+    if (duration > 1) return 0.00; 
     const s = serviceName.toLowerCase();
     if (s.includes('viki')) return 20.00;
     return 15.00;
@@ -133,6 +134,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   
+  // States para o novo filtro de vencimentos
+  const [dateStart, setDateStart] = useState('');
+  const [dateEnd, setDateEnd] = useState('');
+  const [groupedVencimentos, setGroupedVencimentos] = useState<any[]>([]);
+  const [totalPeriod, setTotalPeriod] = useState(0);
+
   const [projectionMonths, setProjectionMonths] = useState<number>(1);
   const [statsReferenceDate, setStatsReferenceDate] = useState<number>(() => {
       const d = new Date();
@@ -162,6 +169,56 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         setClients(allClients);
     } catch (e) { console.error(e); }
     setLoading(false);
+  };
+
+  const handleConsultVencimentos = () => {
+    if (!dateStart || !dateEnd) return;
+    const start = new Date(dateStart);
+    start.setHours(0,0,0,0);
+    const end = new Date(dateEnd);
+    end.setHours(23,59,59,999);
+
+    const activeClients = clients.filter(c => !c.deleted);
+    const clientMap: Record<string, any> = {};
+    let globalSum = 0;
+
+    activeClients.forEach(client => {
+        const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
+        subs.forEach(sub => {
+            const parts = sub.split('|');
+            const sName = parts[0];
+            const startDate = parts[1];
+            const duration = parseInt(parts[3] || '1');
+            const expiry = calculateExpiry(startDate, duration);
+            
+            if (expiry >= start && expiry <= end) {
+                const price = getServicePrice(sName, duration);
+                
+                if (!clientMap[client.phone_number]) {
+                    clientMap[client.phone_number] = {
+                        name: client.client_name || 'Sem Nome',
+                        phone: client.phone_number,
+                        vencimentos: [],
+                        totalUser: 0
+                    };
+                }
+                
+                clientMap[client.phone_number].vencimentos.push({
+                    service: sName,
+                    expiry: expiry,
+                    price: price,
+                    isMonthly: duration === 1
+                });
+                
+                clientMap[client.phone_number].totalUser += price;
+                globalSum += price;
+            }
+        });
+    });
+
+    const finalResults = Object.values(clientMap).sort((a, b) => a.name.localeCompare(b.name));
+    setGroupedVencimentos(finalResults);
+    setTotalPeriod(globalSum);
   };
 
   const copyToClipboard = (text: string, id: string) => {
@@ -605,10 +662,119 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
           {activeTab === 'finances' && (
               <div className="space-y-8 animate-fade-in pb-32">
+                  {/* --- CONSULTA DE VENCIMENTOS AGRUPADA --- */}
+                  <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border-4 border-indigo-600/10 shadow-sm space-y-6">
+                      <div className="flex items-center gap-3 mb-2">
+                          <div className="p-3 bg-indigo-600 text-white rounded-2xl shadow-lg shadow-indigo-200"><Filter size={24} /></div>
+                          <div>
+                              <h3 className="text-xl font-black text-gray-900 dark:text-white">Consulta de Vencimentos</h3>
+                              <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Recebimentos agrupados por cliente e período</p>
+                          </div>
+                      </div>
+                      
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-end">
+                          <div className="space-y-1">
+                              <label className="text-[10px] font-black uppercase text-gray-400 ml-1">Data de Início</label>
+                              <input 
+                                  type="date" 
+                                  className="w-full bg-gray-50 dark:bg-slate-800 p-4 rounded-2xl border-2 border-transparent focus:border-indigo-600 outline-none font-bold"
+                                  value={dateStart}
+                                  onChange={e => setDateStart(e.target.value)}
+                              />
+                          </div>
+                          <div className="space-y-1">
+                              <label className="text-[10px] font-black uppercase text-gray-400 ml-1">Data de Fim</label>
+                              <input 
+                                  type="date" 
+                                  className="w-full bg-gray-50 dark:bg-slate-800 p-4 rounded-2xl border-2 border-transparent focus:border-indigo-600 outline-none font-bold"
+                                  value={dateEnd}
+                                  onChange={e => setDateEnd(e.target.value)}
+                              />
+                          </div>
+                          <button 
+                            onClick={handleConsultVencimentos}
+                            className="bg-indigo-600 text-white font-black py-4 rounded-2xl shadow-lg hover:bg-indigo-700 transition-all flex items-center justify-center gap-2 active:scale-95"
+                          >
+                              Consultar Vencimentos
+                          </button>
+                      </div>
+
+                      {groupedVencimentos.length > 0 && (
+                          <div className="mt-8 space-y-8 animate-slide-up">
+                              <div className="bg-indigo-600 p-6 rounded-[2rem] text-white flex justify-between items-center shadow-xl">
+                                  <div>
+                                      <p className="text-[10px] font-black uppercase text-indigo-200">Previsão Total do Período</p>
+                                      <h4 className="text-4xl font-black">R$ {totalPeriod.toFixed(2).replace('.', ',')}</h4>
+                                  </div>
+                                  <div className="text-right">
+                                      <p className="text-[10px] font-black uppercase text-indigo-200">Clientes Ativos</p>
+                                      <h4 className="text-2xl font-black">{groupedVencimentos.length}</h4>
+                                  </div>
+                              </div>
+
+                              <div className="space-y-4">
+                                  {groupedVencimentos.map((clientData, idx) => (
+                                      <div key={idx} className="bg-gray-50 dark:bg-slate-800/50 rounded-[2rem] overflow-hidden border border-gray-100 dark:border-slate-800 shadow-sm">
+                                          <div className="bg-white dark:bg-slate-900 px-6 py-4 flex justify-between items-center border-b border-gray-100 dark:border-slate-800">
+                                              <div>
+                                                  <h4 className="font-black text-gray-900 dark:text-white flex items-center gap-2">
+                                                      <ChevronRight size={18} className="text-indigo-600" />
+                                                      {clientData.name}
+                                                  </h4>
+                                                  <p className="text-[10px] font-bold text-gray-400 ml-6">{clientData.phone}</p>
+                                              </div>
+                                              <div className="text-right">
+                                                  <span className="text-[10px] font-black text-indigo-400 uppercase block">Total Cliente</span>
+                                                  <span className="font-black text-indigo-600">R$ {clientData.totalUser.toFixed(2).replace('.', ',')}</span>
+                                              </div>
+                                          </div>
+                                          
+                                          <div className="p-4 overflow-x-auto">
+                                              <table className="w-full text-left">
+                                                  <thead>
+                                                      <tr className="text-[9px] font-black uppercase text-gray-400 tracking-[0.1em]">
+                                                          <th className="px-4 py-2">Aplicativo</th>
+                                                          <th className="px-4 py-2">Vencimento</th>
+                                                          <th className="px-4 py-2 text-right">Preço</th>
+                                                      </tr>
+                                                  </thead>
+                                                  <tbody className="divide-y divide-gray-100 dark:divide-slate-800">
+                                                      {clientData.vencimentos.map((v, vIdx) => (
+                                                          <tr key={vIdx} className="text-sm">
+                                                              <td className="px-4 py-3 font-bold text-gray-700 dark:text-gray-300">
+                                                                  <div className="flex items-center gap-2">
+                                                                      <div className={`w-2 h-2 rounded-full ${v.isMonthly ? 'bg-green-500' : 'bg-gray-300'}`}></div>
+                                                                      {v.service}
+                                                                      {!v.isMonthly && <span className="text-[8px] bg-gray-200 text-gray-600 px-1 rounded">NÃO MENSAL</span>}
+                                                                  </div>
+                                                              </td>
+                                                              <td className="px-4 py-3 text-gray-500 font-medium">
+                                                                  {v.expiry.toLocaleDateString()}
+                                                              </td>
+                                                              <td className={`px-4 py-3 text-right font-black ${v.isMonthly ? 'text-indigo-600' : 'text-gray-400'}`}>
+                                                                  R$ {v.price.toFixed(2).replace('.', ',')}
+                                                              </td>
+                                                          </tr>
+                                                      ))}
+                                                  </tbody>
+                                              </table>
+                                          </div>
+                                      </div>
+                                  ))}
+                              </div>
+                          </div>
+                      )}
+                      {groupedVencimentos.length === 0 && dateStart && dateEnd && (
+                          <div className="text-center py-10 bg-gray-50 rounded-3xl border-2 border-dashed border-gray-200">
+                              <p className="text-gray-400 font-bold uppercase tracking-widest text-sm">Nenhum vencimento encontrado neste período.</p>
+                          </div>
+                      )}
+                  </div>
+
                   <div className="space-y-4">
                       <div className="flex flex-col gap-1 px-4">
-                          <h3 className="text-xl font-black text-gray-900 dark:text-white">Relatório Financeiro (Apenas Mensais)</h3>
-                          <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Resumo exclusivo de assinaturas recorrentes de 1 mês</p>
+                          <h3 className="text-xl font-black text-gray-900 dark:text-white">Resumo Geral Mensal</h3>
+                          <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Baseado em assinaturas recorrentes de 1 mês</p>
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           <div className="bg-gradient-to-br from-indigo-600 to-purple-700 p-8 rounded-[2.5rem] shadow-xl relative overflow-hidden group">

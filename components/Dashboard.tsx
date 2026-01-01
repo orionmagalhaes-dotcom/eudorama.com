@@ -263,8 +263,8 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                               <p className="text-xs font-black uppercase tracking-widest text-white/80">Atenção {user.name.split(' ')[0]}!</p>
                               <h3 className="text-xl font-black">
                                   {expiringServices.length === 1 
-                                    ? `1 assinatura ${expiringServices[0].daysLeft < 0 ? 'vencida' : 'pendente'}`
-                                    : `${expiringServices.length} assinaturas pendentes`
+                                    ? `1 assinatura ${expiringServices[0].daysLeft < 0 ? 'vencida' : 'próxima do vencimento'}`
+                                    : `${expiringServices.length} ${expiringServices.some(s => s.daysLeft < 0) ? 'assinaturas pendentes' : 'renovações próximas'}`
                                   }
                               </h3>
                           </div>
