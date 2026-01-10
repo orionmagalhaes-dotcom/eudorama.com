@@ -18,7 +18,7 @@ export const fetchCredentials = async (retries = 3): Promise<AppCredential[]> =>
         const { data, error } = await supabase
             .from('credentials')
             .select('*');
-        
+
         if (error) {
             console.error("Erro ao buscar credenciais do Supabase:", error.message || error);
             if (retries > 0) {
@@ -41,8 +41,8 @@ export const fetchCredentials = async (retries = 3): Promise<AppCredential[]> =>
     } catch (e: any) {
         console.error("Exceção ao buscar credenciais (TypeError provável):", e.message || e);
         if (retries > 0 && e.message?.includes('fetch')) {
-             await new Promise(r => setTimeout(r, 1000));
-             return fetchCredentials(retries - 1);
+            await new Promise(r => setTimeout(r, 1000));
+            return fetchCredentials(retries - 1);
         }
         return [];
     }
@@ -84,70 +84,58 @@ export const deleteCredential = async (id: string): Promise<boolean> => {
     return !error;
 };
 
-// --- ESTRATÉGIA DE DISTRIBUIÇÃO DINÂMICA (LOAD BALANCING) ---
+// --- ESTRATÉGIA DE DISTRIBUIÇÃO DINÂMICA (HASH-BASED - SEM FETCH DE TODOS CLIENTES) ---
 export const getAssignedCredential = async (user: User, serviceName: string, preloadedClients?: ClientDBRow[]): Promise<{ credential: AppCredential | null, alert: string | null, daysActive: number }> => {
-  
-  const credentialsList = await fetchCredentials();
-  const cleanServiceName = serviceName.split('|')[0].trim().toLowerCase();
 
-  const serviceCreds = credentialsList
-    .filter(c => {
-        if (!c.isVisible) return false;
-        if (c.email.toLowerCase().includes('demo')) return false;
-        const dbService = c.service.toLowerCase();
-        return dbService.includes(cleanServiceName) || cleanServiceName.includes(dbService);
-    })
-    .sort((a, b) => new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime());
+    const credentialsList = await fetchCredentials();
+    const cleanServiceName = serviceName.split('|')[0].trim().toLowerCase();
 
-  if (serviceCreds.length === 0) return { credential: null, alert: "Nenhuma conta disponível.", daysActive: 0 };
+    const serviceCreds = credentialsList
+        .filter(c => {
+            if (!c.isVisible) return false;
+            if (c.email.toLowerCase().includes('demo')) return false;
+            const dbService = c.service.toLowerCase();
+            return dbService.includes(cleanServiceName) || cleanServiceName.includes(dbService);
+        })
+        .sort((a, b) => new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime());
 
-  const allClients = preloadedClients || await getAllClients();
-  
-  const activeClientsWithService = allClients
-      .filter(c => !c.deleted && c.subscriptions.some(s => s.toLowerCase().includes(cleanServiceName)))
-      .sort((a, b) => a.phone_number.localeCompare(b.phone_number));
+    if (serviceCreds.length === 0) return { credential: null, alert: "Nenhuma conta disponível.", daysActive: 0 };
 
-  const userIndex = activeClientsWithService.findIndex(c => c.phone_number === user.phoneNumber);
-  
-  let assignedCred: AppCredential;
+    // OTIMIZAÇÃO: Usar hash do telefone ao invés de buscar todos os clientes
+    // Isso elimina a maior fonte de egress - getAllClients() não é mais chamado aqui
+    const phoneHash = user.phoneNumber.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+    const credIndex = phoneHash % serviceCreds.length;
+    const assignedCred = serviceCreds[credIndex];
 
-  if (userIndex === -1) {
-      assignedCred = serviceCreds[0];
-  } else {
-      const credIndex = userIndex % serviceCreds.length;
-      assignedCred = serviceCreds[credIndex];
-  }
+    const health = calculateHealth(assignedCred, serviceName);
 
-  const alertMsg = null;
-  const health = calculateHealth(assignedCred, serviceName);
-  
-  return { 
-      credential: assignedCred, 
-      alert: alertMsg || health.alert, 
-      daysActive: health.daysActive 
-  };
+    return {
+        credential: assignedCred,
+        alert: health.alert,
+        daysActive: health.daysActive
+    };
 };
 
 const calculateHealth = (cred: AppCredential, serviceName: string) => {
-  const dateCreated = new Date(cred.publishedAt);
-  const today = new Date();
-  dateCreated.setHours(0,0,0,0);
-  today.setHours(0,0,0,0);
-  
-  const diffTime = today.getTime() - dateCreated.getTime();
-  const daysPassed = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+    const dateCreated = new Date(cred.publishedAt);
+    const today = new Date();
+    dateCreated.setHours(0, 0, 0, 0);
+    today.setHours(0, 0, 0, 0);
 
-  let alertMsg = null;
-  const sName = serviceName.toLowerCase();
+    const diffTime = today.getTime() - dateCreated.getTime();
+    const daysPassed = Math.floor(diffTime / (1000 * 60 * 60 * 24));
 
-  if (sName.includes('viki')) {
-      if (daysPassed >= 14) alertMsg = "⚠️ Conta Expirada (14 Dias).";
-  } 
-  else if (sName.includes('kocowa')) {
-      if (daysPassed >= 25) alertMsg = "⚠️ Próximo do vencimento.";
-  }
+    let alertMsg = null;
+    const sName = serviceName.toLowerCase();
 
-  return { alert: alertMsg, daysActive: daysPassed };
+    if (sName.includes('viki')) {
+        if (daysPassed >= 14) alertMsg = "⚠️ Conta Expirada (14 Dias).";
+    }
+    else if (sName.includes('kocowa')) {
+        if (daysPassed >= 25) alertMsg = "⚠️ Próximo do vencimento.";
+    }
+
+    return { alert: alertMsg, daysActive: daysPassed };
 };
 
 export const getClientsUsingCredential = async (credential: AppCredential, clients: ClientDBRow[]): Promise<ClientDBRow[]> => {
@@ -156,13 +144,13 @@ export const getClientsUsingCredential = async (credential: AppCredential, clien
     const serviceCreds = allCreds
         .filter(c => c.isVisible && !c.email.includes('demo') && c.service.toLowerCase().includes(credServiceLower))
         .sort((a, b) => new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime());
-    
+
     const myIndex = serviceCreds.findIndex(c => c.id === credential.id);
     if (myIndex === -1) return [];
 
     const activeClientsWithService = clients
-      .filter(c => !c.deleted && c.subscriptions.some(s => s.toLowerCase().includes(credServiceLower)))
-      .sort((a, b) => a.phone_number.localeCompare(b.phone_number));
+        .filter(c => !c.deleted && c.subscriptions.some(s => s.toLowerCase().includes(credServiceLower)))
+        .sort((a, b) => a.phone_number.localeCompare(b.phone_number));
 
     return activeClientsWithService.filter((_, idx) => idx % serviceCreds.length === myIndex);
 };

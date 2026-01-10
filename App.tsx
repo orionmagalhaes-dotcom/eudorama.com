@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Login from './components/Login';
 import Dashboard from './components/Dashboard';
 import DoramaList from './components/DoramaList';
@@ -20,63 +20,66 @@ const App: React.FC = () => {
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [activeTab, setActiveTab] = useState<'home' | 'watching' | 'favorites' | 'games' | 'completed'>('home');
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [syncTrigger, setSyncTrigger] = useState(0); 
-  
+  const [syncTrigger, setSyncTrigger] = useState(0);
+
   const [showPalette, setShowPalette] = useState(false);
   const [isSupportOpen, setIsSupportOpen] = useState(false);
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
   const [checkoutType, setCheckoutType] = useState<'renewal' | 'gift' | 'new_sub' | 'early_renewal'>('renewal');
   const [checkoutTargetService, setCheckoutTargetService] = useState<string | null>(null);
-  const [toast, setToast] = useState<{message: string, type: 'success' | 'error'} | null>(null);
+  const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalType, setModalType] = useState<'watching' | 'favorites' | 'completed'>('watching');
   const [editingDorama, setEditingDorama] = useState<Dorama | null>(null);
-  
+
   const [newDoramaName, setNewDoramaName] = useState('');
   const [newDoramaSeason, setNewDoramaSeason] = useState('1');
   const [newDoramaTotalEp, setNewDoramaTotalEp] = useState('16');
   const [newDoramaRating, setNewDoramaRating] = useState(5);
-  
+
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [doramaToDelete, setDoramaToDelete] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
   const [showNameModal, setShowNameModal] = useState(false);
 
+  // OTIMIZAÇÃO EGRESS: Ref para throttle de refresh
+  const lastRefreshRef = useRef<number>(0);
+
   // --- REFRESH SILENCIOSO (PULSO DE ATUALIZAÇÃO) ---
   const handleRefreshSession = useCallback(async (silent: boolean = false) => {
-      if (!currentUser) return;
-      if (!silent) setIsRefreshing(true);
-      
-      const { user, error } = await refreshUserProfile(currentUser.phoneNumber);
-      if (user) {
-          setCurrentUser(prev => {
-              if (!prev) return user;
-              // Mantém as listas locais de doramas para evitar flicker, mas atualiza status de assinaturas e cores
-              const updatedUser = {
-                  ...user,
-                  watching: prev.watching,
-                  favorites: prev.favorites,
-                  completed: prev.completed
-              };
-              
-              // Atualiza o cache do navegador imediatamente
-              const userData = JSON.stringify(updatedUser);
-              if (localStorage.getItem('eudorama_session')) {
-                  localStorage.setItem('eudorama_session', userData);
-              } else {
-                  sessionStorage.setItem('eudorama_session', userData);
-              }
-              
-              return updatedUser;
-          });
-          if (!silent) setToast({ message: 'Sincronizado!', type: 'success' });
-          setSyncTrigger(prev => prev + 1); // Força componentes filhos a re-calcularem dados
-      } else if (!silent) {
-          setToast({ message: error || 'Erro de sincronização.', type: 'error' });
-      }
-      if (!silent) setIsRefreshing(false);
+    if (!currentUser) return;
+    if (!silent) setIsRefreshing(true);
+
+    const { user, error } = await refreshUserProfile(currentUser.phoneNumber);
+    if (user) {
+      setCurrentUser(prev => {
+        if (!prev) return user;
+        // Mantém as listas locais de doramas para evitar flicker, mas atualiza status de assinaturas e cores
+        const updatedUser = {
+          ...user,
+          watching: prev.watching,
+          favorites: prev.favorites,
+          completed: prev.completed
+        };
+
+        // Atualiza o cache do navegador imediatamente
+        const userData = JSON.stringify(updatedUser);
+        if (localStorage.getItem('eudorama_session')) {
+          localStorage.setItem('eudorama_session', userData);
+        } else {
+          sessionStorage.setItem('eudorama_session', userData);
+        }
+
+        return updatedUser;
+      });
+      if (!silent) setToast({ message: 'Sincronizado!', type: 'success' });
+      setSyncTrigger(prev => prev + 1); // Força componentes filhos a re-calcularem dados
+    } else if (!silent) {
+      setToast({ message: error || 'Erro de sincronização.', type: 'error' });
+    }
+    if (!silent) setIsRefreshing(false);
   }, [currentUser?.phoneNumber]);
 
   // --- INITIALIZATION ---
@@ -91,10 +94,10 @@ const App: React.FC = () => {
           setCurrentUser(user);
           // Busca doramas do banco logo após carregar a sessão básica
           getUserDoramasFromDB(user.phoneNumber).then(doramas => {
-             setCurrentUser(prev => {
-                 if (!prev) return null;
-                 return { ...prev, ...doramas };
-             });
+            setCurrentUser(prev => {
+              if (!prev) return null;
+              return { ...prev, ...doramas };
+            });
           });
           // Faz um refresh inicial silencioso para garantir que dados administrativos (ex: renovação) estejam em dia
           setTimeout(() => handleRefreshSession(true), 1000);
@@ -108,62 +111,61 @@ const App: React.FC = () => {
     const adminSessionLocal = localStorage.getItem('eudorama_admin_session');
     const adminSessionSession = sessionStorage.getItem('eudorama_admin_session');
     if (adminSessionLocal === 'true' || adminSessionSession === 'true') {
-        setIsAdminMode(true);
-        setIsAdminLoggedIn(true);
+      setIsAdminMode(true);
+      setIsAdminLoggedIn(true);
     }
   }, []);
 
   // --- REAL-TIME UPDATES (Ouvinte do Supabase) ---
   useEffect(() => {
-      if (!currentUser || isAdminMode) return;
+    if (!currentUser || isAdminMode) return;
 
-      // Escuta mudanças específicas para este usuário
-      const clientChannel = supabase
-          .channel(`user-sync-${currentUser.phoneNumber}`)
-          .on(
-              'postgres_changes',
-              { event: 'UPDATE', schema: 'public', table: 'clients', filter: `phone_number=eq.${currentUser.phoneNumber}` },
-              (payload) => {
-                  console.log('Mudança administrativa detectada para este usuário!', payload);
-                  handleRefreshSession(true); // Atualiza dados silenciosamente
-              }
-          )
-          .on(
-              'postgres_changes',
-              { event: '*', schema: 'public', table: 'credentials' },
-              () => {
-                  // Se mudar qualquer senha de aplicativo no admin, avisa o dashboard para recalcular
-                  setSyncTrigger(prev => prev + 1);
-              }
-          )
-          .subscribe();
+    // Escuta mudanças específicas para este usuário (OTIMIZADO: apenas tabela clients com filtro)
+    const clientChannel = supabase
+      .channel(`user-sync-${currentUser.phoneNumber}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'clients', filter: `phone_number=eq.${currentUser.phoneNumber}` },
+        (payload) => {
+          console.log('Mudança administrativa detectada para este usuário!', payload);
+          handleRefreshSession(true); // Atualiza dados silenciosamente
+        }
+      )
+      .subscribe();
 
-      // Refresh automático quando o usuário volta para a aba (tab)
-      const onFocus = () => handleRefreshSession(true);
-      window.addEventListener('focus', onFocus);
+    // OTIMIZAÇÃO EGRESS: Refresh com throttle de 30 segundos
+    const onFocus = () => {
+      const now = Date.now();
+      if (now - lastRefreshRef.current > 30000) {
+        lastRefreshRef.current = now;
+        handleRefreshSession(true);
+      }
+    };
+    window.addEventListener('focus', onFocus);
 
-      return () => {
-          supabase.removeChannel(clientChannel);
-          window.removeEventListener('focus', onFocus);
-      };
+    return () => {
+      supabase.removeChannel(clientChannel);
+      window.removeEventListener('focus', onFocus);
+    };
   }, [currentUser?.phoneNumber, isAdminMode, handleRefreshSession]);
 
   useEffect(() => {
-      if (!currentUser || isAdminMode) return;
-      const performHeartbeat = () => {
-          if (document.visibilityState === 'visible') {
-              updateLastActive(currentUser.phoneNumber);
-          }
-      };
-      performHeartbeat();
-      const heartbeatInterval = setInterval(performHeartbeat, 5 * 60 * 1000);
-      return () => clearInterval(heartbeatInterval);
+    if (!currentUser || isAdminMode) return;
+    const performHeartbeat = () => {
+      if (document.visibilityState === 'visible') {
+        updateLastActive(currentUser.phoneNumber);
+      }
+    };
+    performHeartbeat();
+    // OTIMIZAÇÃO EGRESS: Heartbeat a cada 15 minutos ao invés de 5
+    const heartbeatInterval = setInterval(performHeartbeat, 15 * 60 * 1000);
+    return () => clearInterval(heartbeatInterval);
   }, [currentUser?.phoneNumber, isAdminMode]);
 
   useEffect(() => {
-      if (currentUser && (currentUser.name === 'Dorameira' || !currentUser.name)) {
-          setShowNameModal(true);
-      }
+    if (currentUser && (currentUser.name === 'Dorameira' || !currentUser.name)) {
+      setShowNameModal(true);
+    }
   }, [currentUser?.name]);
 
   // --- HANDLERS ---
@@ -171,20 +173,20 @@ const App: React.FC = () => {
     setCurrentUser(user);
     const userData = JSON.stringify(user);
     if (remember) {
-        localStorage.setItem('eudorama_session', userData);
-        sessionStorage.removeItem('eudorama_session');
+      localStorage.setItem('eudorama_session', userData);
+      sessionStorage.removeItem('eudorama_session');
     } else {
-        sessionStorage.setItem('eudorama_session', userData);
-        localStorage.removeItem('eudorama_session');
+      sessionStorage.setItem('eudorama_session', userData);
+      localStorage.removeItem('eudorama_session');
     }
   };
 
   const handleUpdateUser = (updatedUser: User) => {
-      setCurrentUser(updatedUser);
-      const userData = JSON.stringify(updatedUser);
-      const isLocal = !!localStorage.getItem('eudorama_session');
-      if (isLocal) localStorage.setItem('eudorama_session', userData);
-      else sessionStorage.setItem('eudorama_session', userData);
+    setCurrentUser(updatedUser);
+    const userData = JSON.stringify(updatedUser);
+    const isLocal = !!localStorage.getItem('eudorama_session');
+    if (isLocal) localStorage.setItem('eudorama_session', userData);
+    else sessionStorage.setItem('eudorama_session', userData);
   };
 
   const handleLogout = () => {
@@ -195,11 +197,11 @@ const App: React.FC = () => {
   };
 
   const handleNameSaved = (newName: string) => {
-      if (currentUser) {
-          const updatedUser = { ...currentUser, name: newName };
-          handleUpdateUser(updatedUser);
-      }
-      setShowNameModal(false);
+    if (currentUser) {
+      const updatedUser = { ...currentUser, name: newName };
+      handleUpdateUser(updatedUser);
+    }
+    setShowNameModal(false);
   };
 
   const handleAdminClick = () => {
@@ -211,11 +213,11 @@ const App: React.FC = () => {
   const handleAdminSuccess = (remember: boolean) => {
     setIsAdminLoggedIn(true);
     if (remember) {
-        localStorage.setItem('eudorama_admin_session', 'true');
-        sessionStorage.removeItem('eudorama_admin_session');
+      localStorage.setItem('eudorama_admin_session', 'true');
+      sessionStorage.removeItem('eudorama_admin_session');
     } else {
-        sessionStorage.setItem('eudorama_admin_session', 'true');
-        localStorage.removeItem('eudorama_admin_session');
+      sessionStorage.setItem('eudorama_admin_session', 'true');
+      localStorage.removeItem('eudorama_admin_session');
     }
   };
 
@@ -235,7 +237,7 @@ const App: React.FC = () => {
   const handleUpdateDorama = async (updatedDorama: Dorama) => {
     if (!currentUser) return;
     const listKey = activeTab === 'favorites' ? 'favorites' : (activeTab === 'completed' ? 'completed' : 'watching');
-    if (activeTab === 'games' || activeTab === 'home') return; 
+    if (activeTab === 'games' || activeTab === 'home') return;
     const newList = currentUser[listKey as 'watching' | 'favorites' | 'completed'].map(d => d.id === updatedDorama.id ? updatedDorama : d);
     const newUserState = { ...currentUser, [listKey]: newList };
     handleUpdateUser(newUserState);
@@ -261,18 +263,18 @@ const App: React.FC = () => {
   };
 
   const handleSaveGame = async (gameId: string, data: any) => {
-      if (!currentUser) return;
-      const newProgress = { ...currentUser.gameProgress, [gameId]: data };
-      const updatedUser = { ...currentUser, gameProgress: newProgress };
-      handleUpdateUser(updatedUser);
-      await saveGameProgress(currentUser.phoneNumber, gameId, data);
+    if (!currentUser) return;
+    const newProgress = { ...currentUser.gameProgress, [gameId]: data };
+    const updatedUser = { ...currentUser, gameProgress: newProgress };
+    handleUpdateUser(updatedUser);
+    await saveGameProgress(currentUser.phoneNumber, gameId, data);
   };
 
   const getModalTitle = () => {
-      if (editingDorama) return 'Editar Dorama';
-      if (modalType === 'favorites') return 'Novo Favorito';
-      if (modalType === 'completed') return 'Dorama Finalizado';
-      return 'O que está vendo?';
+    if (editingDorama) return 'Editar Dorama';
+    if (modalType === 'favorites') return 'Novo Favorito';
+    if (modalType === 'completed') return 'Dorama Finalizado';
+    return 'O que está vendo?';
   };
 
   if (isAdminMode) {
@@ -296,7 +298,7 @@ const App: React.FC = () => {
 
   const openEditModal = (dorama: Dorama) => {
     if (activeTab === 'games' || activeTab === 'home') return;
-    setModalType(activeTab); 
+    setModalType(activeTab);
     setEditingDorama(dorama);
     setNewDoramaName(dorama.title);
     setNewDoramaSeason(dorama.season ? dorama.season.toString() : '1');
@@ -314,62 +316,62 @@ const App: React.FC = () => {
     const total = parseInt(newDoramaTotalEp) || 16;
     const rating = newDoramaRating;
     if (editingDorama) {
-        const updated: Dorama = { ...editingDorama, title: newDoramaName, season, totalEpisodes: total, rating };
-        setIsModalOpen(false);
-        await handleUpdateDorama(updated);
+      const updated: Dorama = { ...editingDorama, title: newDoramaName, season, totalEpisodes: total, rating };
+      setIsModalOpen(false);
+      await handleUpdateDorama(updated);
     } else {
-        const tempDorama: Dorama = {
-          id: 'temp-' + Date.now(), 
-          title: newDoramaName,
-          genre: 'Drama',
-          thumbnail: `https://ui-avatars.com/api/?name=${newDoramaName}&background=random&size=128`,
-          status,
-          episodesWatched: modalType === 'completed' ? total : 1,
-          totalEpisodes: total,
-          season,
-          rating
-        };
-        setIsModalOpen(false);
+      const tempDorama: Dorama = {
+        id: 'temp-' + Date.now(),
+        title: newDoramaName,
+        genre: 'Drama',
+        thumbnail: `https://ui-avatars.com/api/?name=${newDoramaName}&background=random&size=128`,
+        status,
+        episodesWatched: modalType === 'completed' ? total : 1,
+        totalEpisodes: total,
+        season,
+        rating
+      };
+      setIsModalOpen(false);
+      setCurrentUser(prev => {
+        if (!prev) return null;
+        const newState = { ...prev, [modalType]: [...prev[modalType], tempDorama] };
+        handleUpdateUser(newState);
+        return newState;
+      });
+      const createdDorama = await addDoramaToDB(currentUser.phoneNumber, modalType, tempDorama);
+      if (createdDorama) {
+        setToast({ message: 'Adicionado com sucesso!', type: 'success' });
         setCurrentUser(prev => {
-            if (!prev) return null;
-            const newState = { ...prev, [modalType]: [...prev[modalType], tempDorama] };
-            handleUpdateUser(newState);
-            return newState;
+          if (!prev) return null;
+          const updatedList = prev[modalType].map(d => d.id === tempDorama.id ? createdDorama : d);
+          const newState = { ...prev, [modalType]: updatedList };
+          handleUpdateUser(newState);
+          return newState;
         });
-        const createdDorama = await addDoramaToDB(currentUser.phoneNumber, modalType, tempDorama);
-        if (createdDorama) {
-          setToast({ message: 'Adicionado com sucesso!', type: 'success' });
-          setCurrentUser(prev => {
-            if (!prev) return null;
-            const updatedList = prev[modalType].map(d => d.id === tempDorama.id ? createdDorama : d);
-            const newState = { ...prev, [modalType]: updatedList };
-            handleUpdateUser(newState);
-            return newState;
-          });
-        } else {
-          setToast({ message: 'Erro ao salvar no banco.', type: 'error' });
-        }
+      } else {
+        setToast({ message: 'Erro ao salvar no banco.', type: 'error' });
+      }
     }
   };
 
   const renderContent = () => {
     switch (activeTab) {
       case 'home':
-        return <Dashboard 
-                  user={currentUser} 
-                  onOpenSupport={() => setIsSupportOpen(true)} 
-                  onOpenCheckout={handleOpenCheckout}
-                  showPalette={showPalette}
-                  setShowPalette={setShowPalette}
-                  onUpdateUser={handleUpdateUser}
-                  syncTrigger={syncTrigger}
-               />;
+        return <Dashboard
+          user={currentUser}
+          onOpenSupport={() => setIsSupportOpen(true)}
+          onOpenCheckout={handleOpenCheckout}
+          showPalette={showPalette}
+          setShowPalette={setShowPalette}
+          onUpdateUser={handleUpdateUser}
+          syncTrigger={syncTrigger}
+        />;
       case 'watching':
         return (
-          <DoramaList 
-            title="Assistindo Agora" 
-            doramas={currentUser.watching} 
-            type="watching" 
+          <DoramaList
+            title="Assistindo Agora"
+            doramas={currentUser.watching}
+            type="watching"
             onAdd={() => openAddModal('watching')}
             onUpdate={handleUpdateDorama}
             onDelete={(id) => { setDoramaToDelete(id); setIsDeleteModalOpen(true); }}
@@ -378,10 +380,10 @@ const App: React.FC = () => {
         );
       case 'favorites':
         return (
-          <DoramaList 
-            title="Meus Favoritos" 
-            doramas={currentUser.favorites} 
-            type="favorites" 
+          <DoramaList
+            title="Meus Favoritos"
+            doramas={currentUser.favorites}
+            type="favorites"
             onAdd={() => openAddModal('favorites')}
             onUpdate={handleUpdateDorama}
             onDelete={(id) => { setDoramaToDelete(id); setIsDeleteModalOpen(true); }}
@@ -389,17 +391,17 @@ const App: React.FC = () => {
           />
         );
       case 'completed':
-          return (
-            <DoramaList 
-              title="Doramas Finalizados" 
-              doramas={currentUser.completed} 
-              type="completed" 
-              onAdd={() => openAddModal('completed')}
-              onUpdate={handleUpdateDorama}
-              onDelete={(id) => { setDoramaToDelete(id); setIsDeleteModalOpen(true); }}
-              onEdit={openEditModal}
-            />
-          );
+        return (
+          <DoramaList
+            title="Doramas Finalizados"
+            doramas={currentUser.completed}
+            type="completed"
+            onAdd={() => openAddModal('completed')}
+            onUpdate={handleUpdateDorama}
+            onDelete={(id) => { setDoramaToDelete(id); setIsDeleteModalOpen(true); }}
+            onEdit={openEditModal}
+          />
+        );
       case 'games':
         return <GamesHub user={currentUser} onSaveGame={handleSaveGame} />;
       default:
@@ -408,80 +410,80 @@ const App: React.FC = () => {
   };
 
   const NavItem = ({ id, icon: Icon, label }: any) => {
-      const isActive = activeTab === id;
-      return (
-          <button 
-            onClick={() => setActiveTab(id)}
-            className={`flex flex-col items-center justify-center w-full h-full relative transition-all duration-300 ${isActive ? '-translate-y-2' : ''}`}
-          >
-              <div className={`p-3 rounded-full transition-all duration-300 shadow-sm ${isActive ? 'bg-gradient-to-br from-pink-500 to-purple-600 text-white shadow-pink-200 shadow-lg scale-110' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-50'}`}>
-                  <Icon className={`w-6 h-6 ${isActive ? 'fill-current' : ''}`} />
-              </div>
-              {isActive && (
-                  <span className="absolute -bottom-4 text-xs font-bold text-pink-600 animate-fade-in tracking-tight">
-                      {label}
-                  </span>
-              )}
-          </button>
-      );
+    const isActive = activeTab === id;
+    return (
+      <button
+        onClick={() => setActiveTab(id)}
+        className={`flex flex-col items-center justify-center w-full h-full relative transition-all duration-300 ${isActive ? '-translate-y-2' : ''}`}
+      >
+        <div className={`p-3 rounded-full transition-all duration-300 shadow-sm ${isActive ? 'bg-gradient-to-br from-pink-500 to-purple-600 text-white shadow-pink-200 shadow-lg scale-110' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-50'}`}>
+          <Icon className={`w-6 h-6 ${isActive ? 'fill-current' : ''}`} />
+        </div>
+        {isActive && (
+          <span className="absolute -bottom-4 text-xs font-bold text-pink-600 animate-fade-in tracking-tight">
+            {label}
+          </span>
+        )}
+      </button>
+    );
   };
 
   return (
     <div className="min-h-screen bg-gray-50 max-w-lg mx-auto shadow-2xl relative overflow-hidden flex flex-col font-sans">
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
       <div className="bg-white/95 backdrop-blur-md p-4 shadow-sm flex justify-between items-center z-30 sticky top-0 border-b border-gray-100 shrink-0">
-          <div className="flex flex-col">
-              <h1 className="text-2xl font-black text-gray-900 tracking-tight flex items-center gap-1 font-sans">
-                  EuDorama <Sparkles className="w-4 h-4 text-pink-500 fill-pink-500" />
-              </h1>
-              <span className="text-xs text-gray-400 font-bold uppercase tracking-widest -mt-1 ml-0.5">Clube Exclusivo</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={() => setShowPalette(!showPalette)} className={`flex items-center gap-1 px-3 py-2 rounded-xl text-sm font-bold transition-all border active:scale-95 ${showPalette ? 'bg-pink-100 text-pink-600 border-pink-200' : 'bg-gray-50 hover:bg-gray-100 text-gray-600 border-gray-200'}`}>
-                <Palette className="w-4 h-4" /> <span className="hidden sm:inline">Personalizar</span>
-            </button>
-            <button onClick={handleLogout} className="flex items-center gap-1 px-3 py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded-xl text-sm font-bold transition-all border border-red-100 active:scale-95">
-              <LogOut className="w-4 h-4" /> <span className="hidden sm:inline">Sair</span>
-            </button>
-          </div>
+        <div className="flex flex-col">
+          <h1 className="text-2xl font-black text-gray-900 tracking-tight flex items-center gap-1 font-sans">
+            EuDorama <Sparkles className="w-4 h-4 text-pink-500 fill-pink-500" />
+          </h1>
+          <span className="text-xs text-gray-400 font-bold uppercase tracking-widest -mt-1 ml-0.5">Clube Exclusivo</span>
         </div>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setShowPalette(!showPalette)} className={`flex items-center gap-1 px-3 py-2 rounded-xl text-sm font-bold transition-all border active:scale-95 ${showPalette ? 'bg-pink-100 text-pink-600 border-pink-200' : 'bg-gray-50 hover:bg-gray-100 text-gray-600 border-gray-200'}`}>
+            <Palette className="w-4 h-4" /> <span className="hidden sm:inline">Personalizar</span>
+          </button>
+          <button onClick={handleLogout} className="flex items-center gap-1 px-3 py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded-xl text-sm font-bold transition-all border border-red-100 active:scale-95">
+            <LogOut className="w-4 h-4" /> <span className="hidden sm:inline">Sair</span>
+          </button>
+        </div>
+      </div>
       <main className={`flex-1 relative overflow-hidden pb-28`}>
-           <div className="h-full overflow-y-auto scrollbar-hide">{renderContent()}</div>
+        <div className="h-full overflow-y-auto scrollbar-hide">{renderContent()}</div>
       </main>
       {isSupportOpen && (
-          <div className="fixed inset-0 z-[60] bg-white animate-slide-up">
-              <SupportChat user={currentUser} onClose={() => setIsSupportOpen(false)} />
-          </div>
+        <div className="fixed inset-0 z-[60] bg-white animate-slide-up">
+          <SupportChat user={currentUser} onClose={() => setIsSupportOpen(false)} />
+        </div>
       )}
       {showNameModal && <NameModal user={currentUser} onNameSaved={handleNameSaved} />}
       {isCheckoutOpen && (
-        <CheckoutModal 
-            onClose={() => setIsCheckoutOpen(false)} 
-            user={currentUser}
-            type={checkoutType}
-            targetService={checkoutTargetService || undefined}
+        <CheckoutModal
+          onClose={() => setIsCheckoutOpen(false)}
+          user={currentUser}
+          type={checkoutType}
+          targetService={checkoutTargetService || undefined}
         />
       )}
       {!isSupportOpen && !isCheckoutOpen && activeTab !== 'games' && !showNameModal && (
         <div className="fixed bottom-28 right-4 z-40 flex flex-col gap-4 items-center pointer-events-none">
-            <div className="pointer-events-auto flex flex-col gap-4 items-end">
-                <div className="relative group">
-                   <div className="absolute right-full mr-3 top-1/2 -translate-y-1/2 bg-white px-3 py-1.5 rounded-xl text-xs font-bold shadow-md text-gray-700 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
-                       Caixinha de Natal
-                   </div>
-                   <button onClick={() => handleOpenCheckout('gift')} className="w-14 h-14 bg-gradient-to-br from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white rounded-full shadow-xl flex items-center justify-center transition-transform hover:scale-110 border-4 border-white animate-bounce">
-                        <Gift className="w-7 h-7" />
-                    </button>
-                </div>
-                <div className="relative group">
-                    <div className="absolute right-full mr-3 top-1/2 -translate-y-1/2 bg-white px-3 py-1.5 rounded-xl text-xs font-bold shadow-md text-gray-700 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
-                       Suporte Técnico
-                    </div>
-                    <a href="https://wa.me/558894875029?text=Ol%C3%A1!%20Preciso%20de%20ajuda%20com%20o%20Cliente%20EuDorama." target="_blank" rel="noopener noreferrer" className="w-14 h-14 bg-gradient-to-br from-green-400 to-green-600 hover:from-green-500 hover:to-green-700 text-white rounded-full shadow-xl flex items-center justify-center transition-transform hover:scale-110 border-4 border-white">
-                        <MessageCircle className="w-7 h-7" />
-                    </a>
-                </div>
+          <div className="pointer-events-auto flex flex-col gap-4 items-end">
+            <div className="relative group">
+              <div className="absolute right-full mr-3 top-1/2 -translate-y-1/2 bg-white px-3 py-1.5 rounded-xl text-xs font-bold shadow-md text-gray-700 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
+                Caixinha de Natal
+              </div>
+              <button onClick={() => handleOpenCheckout('gift')} className="w-14 h-14 bg-gradient-to-br from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white rounded-full shadow-xl flex items-center justify-center transition-transform hover:scale-110 border-4 border-white animate-bounce">
+                <Gift className="w-7 h-7" />
+              </button>
             </div>
+            <div className="relative group">
+              <div className="absolute right-full mr-3 top-1/2 -translate-y-1/2 bg-white px-3 py-1.5 rounded-xl text-xs font-bold shadow-md text-gray-700 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
+                Suporte Técnico
+              </div>
+              <a href="https://wa.me/558894875029?text=Ol%C3%A1!%20Preciso%20de%20ajuda%20com%20o%20Cliente%20EuDorama." target="_blank" rel="noopener noreferrer" className="w-14 h-14 bg-gradient-to-br from-green-400 to-green-600 hover:from-green-500 hover:to-green-700 text-white rounded-full shadow-xl flex items-center justify-center transition-transform hover:scale-110 border-4 border-white">
+                <MessageCircle className="w-7 h-7" />
+              </a>
+            </div>
+          </div>
         </div>
       )}
       {isModalOpen && (
@@ -492,37 +494,37 @@ const App: React.FC = () => {
               <button onClick={() => setIsModalOpen(false)} className="p-2 bg-gray-100 rounded-full"><X className="w-5 h-5 text-gray-500" /></button>
             </div>
             <div className="space-y-4">
-                <div>
-                    <label className="block text-sm font-bold text-gray-700 mb-1">Nome do Dorama</label>
-                    <input autoFocus className="w-full bg-white text-gray-900 border-2 border-gray-300 rounded-xl p-3 text-base focus:border-primary-500 outline-none" placeholder="Nome..." value={newDoramaName} onChange={(e) => setNewDoramaName(e.target.value)} />
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">Nome do Dorama</label>
+                <input autoFocus className="w-full bg-white text-gray-900 border-2 border-gray-300 rounded-xl p-3 text-base focus:border-primary-500 outline-none" placeholder="Nome..." value={newDoramaName} onChange={(e) => setNewDoramaName(e.target.value)} />
+              </div>
+              {(modalType === 'watching' || modalType === 'completed') && editingDorama && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-1">Temporada</label>
+                    <input type="number" className="w-full bg-white text-gray-900 border-2 border-gray-300 rounded-xl p-3 text-base text-center outline-none" value={newDoramaSeason} onChange={(e) => setNewDoramaSeason(e.target.value)} min="1" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-1">Total Ep.</label>
+                    <input type="number" className="w-full bg-white text-gray-900 border-2 border-gray-300 rounded-xl p-3 text-base text-center outline-none" value={newDoramaTotalEp} onChange={(e) => setNewDoramaTotalEp(e.target.value)} min="1" max="999" />
+                  </div>
                 </div>
-                {(modalType === 'watching' || modalType === 'completed') && editingDorama && (
-                    <div className="grid grid-cols-2 gap-4">
-                        <div>
-                            <label className="block text-sm font-bold text-gray-700 mb-1">Temporada</label>
-                            <input type="number" className="w-full bg-white text-gray-900 border-2 border-gray-300 rounded-xl p-3 text-base text-center outline-none" value={newDoramaSeason} onChange={(e) => setNewDoramaSeason(e.target.value)} min="1" />
-                        </div>
-                        <div>
-                            <label className="block text-sm font-bold text-gray-700 mb-1">Total Ep.</label>
-                            <input type="number" className="w-full bg-white text-gray-900 border-2 border-gray-300 rounded-xl p-3 text-base text-center outline-none" value={newDoramaTotalEp} onChange={(e) => setNewDoramaTotalEp(e.target.value)} min="1" max="999" />
-                        </div>
-                    </div>
-                )}
-                {modalType === 'favorites' && (
-                    <div className="text-center">
-                        <label className="block text-sm font-bold text-gray-700 mb-2">Avaliação</label>
-                        <div className="flex justify-center gap-2">
-                            {[1, 2, 3, 4, 5].map((star) => (
-                                <button key={star} onClick={() => setNewDoramaRating(star)} className="p-1 transform hover:scale-110 transition-transform">
-                                    <Heart className={`w-8 h-8 ${star <= newDoramaRating ? 'text-red-500 fill-red-500' : 'text-gray-300'}`} />
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-                )}
-                <button onClick={saveDorama} className="w-full bg-primary-600 text-white font-bold text-base py-3.5 rounded-xl hover:bg-primary-700 transition-colors shadow-lg mt-2">
-                  {editingDorama ? 'Salvar' : 'Adicionar'}
-                </button>
+              )}
+              {modalType === 'favorites' && (
+                <div className="text-center">
+                  <label className="block text-sm font-bold text-gray-700 mb-2">Avaliação</label>
+                  <div className="flex justify-center gap-2">
+                    {[1, 2, 3, 4, 5].map((star) => (
+                      <button key={star} onClick={() => setNewDoramaRating(star)} className="p-1 transform hover:scale-110 transition-transform">
+                        <Heart className={`w-8 h-8 ${star <= newDoramaRating ? 'text-red-500 fill-red-500' : 'text-gray-300'}`} />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <button onClick={saveDorama} className="w-full bg-primary-600 text-white font-bold text-base py-3.5 rounded-xl hover:bg-primary-700 transition-colors shadow-lg mt-2">
+                {editingDorama ? 'Salvar' : 'Adicionar'}
+              </button>
             </div>
           </div>
         </div>
@@ -543,13 +545,13 @@ const App: React.FC = () => {
         </div>
       )}
       <div className="fixed bottom-6 inset-x-0 z-40 px-4 flex justify-center pointer-events-none">
-          <nav className="bg-white/90 backdrop-blur-lg border border-white/50 rounded-[2rem] shadow-2xl p-2 flex justify-between items-center w-full max-w-sm pointer-events-auto ring-1 ring-black/5">
-              <NavItem id="home" icon={Home} label="Início" />
-              <NavItem id="watching" icon={Tv2} label="Vendo" />
-              <NavItem id="games" icon={Gamepad2} label="Jogos" />
-              <NavItem id="favorites" icon={Heart} label="Amei" />
-              <NavItem id="completed" icon={CheckCircle2} label="Fim" />
-          </nav>
+        <nav className="bg-white/90 backdrop-blur-lg border border-white/50 rounded-[2rem] shadow-2xl p-2 flex justify-between items-center w-full max-w-sm pointer-events-auto ring-1 ring-black/5">
+          <NavItem id="home" icon={Home} label="Início" />
+          <NavItem id="watching" icon={Tv2} label="Vendo" />
+          <NavItem id="games" icon={Gamepad2} label="Jogos" />
+          <NavItem id="favorites" icon={Heart} label="Amei" />
+          <NavItem id="completed" icon={CheckCircle2} label="Fim" />
+        </nav>
       </div>
     </div>
   );
