@@ -10,6 +10,7 @@ import { AdminPanel } from './components/AdminPanel';
 import NameModal from './components/NameModal';
 import GamesHub from './components/GamesHub';
 import Toast from './components/Toast';
+import PWAInstallOverlay from './components/PWAInstallOverlay';
 import { User, Dorama } from './types';
 import { addDoramaToDB, updateDoramaInDB, removeDoramaFromDB, getUserDoramasFromDB, saveGameProgress, addLocalDorama, refreshUserProfile, updateLastActive, supabase } from './services/clientService';
 import { Heart, X, CheckCircle2, MessageCircle, Gift, Gamepad2, Sparkles, Home, Tv2, Palette, RefreshCw, LogOut, AlertTriangle } from 'lucide-react';
@@ -554,6 +555,7 @@ const App: React.FC = () => {
           <NavItem id="completed" icon={CheckCircle2} label="Fim" />
         </nav>
       </div>
+      <PWAInstallOverlay />
     </div>
   );
 };
