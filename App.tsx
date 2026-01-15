@@ -365,6 +365,7 @@ const App: React.FC = () => {
           setShowPalette={setShowPalette}
           onUpdateUser={handleUpdateUser}
           syncTrigger={syncTrigger}
+          onRefresh={() => handleRefreshSession(false)}
         />;
       case 'watching':
         return (

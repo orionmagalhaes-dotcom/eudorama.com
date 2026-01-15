@@ -1,7 +1,10 @@
 
 import { AppCredential, User, ClientDBRow } from '../types';
 import { supabase } from './clientService';
-import { getAllClients } from './clientService';
+
+// --- CACHE DE CREDENCIAIS (OTIMIZAÇÃO EGRESS) ---
+let credentialsCache: { data: AppCredential[], timestamp: number } | null = null;
+const CREDENTIALS_CACHE_TTL = 2 * 60 * 1000; // 2 minutos
 
 // Limites atualizados conforme solicitado
 const CREDENTIAL_LIMITS: Record<string, number> = {
@@ -14,10 +17,15 @@ const CREDENTIAL_LIMITS: Record<string, number> = {
 };
 
 export const fetchCredentials = async (retries = 3): Promise<AppCredential[]> => {
+    // OTIMIZAÇÃO: Verificar cache primeiro
+    if (credentialsCache && Date.now() - credentialsCache.timestamp < CREDENTIALS_CACHE_TTL) {
+        return credentialsCache.data;
+    }
+
     try {
         const { data, error } = await supabase
             .from('credentials')
-            .select('*');
+            .select('id,service,email,password,published_at,is_visible');
 
         if (error) {
             console.error("Erro ao buscar credenciais do Supabase:", error.message || error);
@@ -30,7 +38,7 @@ export const fetchCredentials = async (retries = 3): Promise<AppCredential[]> =>
         }
         if (!data) return [];
 
-        return data.map((row: any) => ({
+        const result = data.map((row: any) => ({
             id: row.id,
             service: row.service,
             email: row.email,
@@ -38,6 +46,10 @@ export const fetchCredentials = async (retries = 3): Promise<AppCredential[]> =>
             publishedAt: row.published_at,
             isVisible: row.is_visible
         }));
+
+        // Salvar no cache
+        credentialsCache = { data: result, timestamp: Date.now() };
+        return result;
     } catch (e: any) {
         console.error("Exceção ao buscar credenciais (TypeError provável):", e.message || e);
         if (retries > 0 && e.message?.includes('fetch')) {
@@ -85,7 +97,7 @@ export const deleteCredential = async (id: string): Promise<boolean> => {
 };
 
 // --- ESTRATÉGIA DE DISTRIBUIÇÃO DINÂMICA (HASH-BASED - SEM FETCH DE TODOS CLIENTES) ---
-export const getAssignedCredential = async (user: User, serviceName: string, preloadedClients?: ClientDBRow[]): Promise<{ credential: AppCredential | null, alert: string | null, daysActive: number }> => {
+export const getAssignedCredential = async (user: User, serviceName: string): Promise<{ credential: AppCredential | null, alert: string | null, daysActive: number }> => {
 
     const credentialsList = await fetchCredentials();
     const cleanServiceName = serviceName.split('|')[0].trim().toLowerCase();

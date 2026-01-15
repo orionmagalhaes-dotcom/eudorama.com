@@ -30,7 +30,9 @@ export const addLocalDorama = (phoneNumber: string, type: 'watching' | 'favorite
 
 export const getAllClients = async (retries = 2): Promise<ClientDBRow[]> => {
   try {
-    const { data, error } = await supabase.from('clients').select('*');
+    // OTIMIZAÇÃO EGRESS: Selecionar apenas campos necessários (exclui game_progress, profile_image, background_image)
+    const { data, error } = await supabase.from('clients')
+      .select('id,phone_number,client_name,client_password,subscriptions,duration_months,purchase_date,is_debtor,override_expiration,deleted,created_at,theme_color,last_active_at');
     if (error) {
       if (retries > 0) {
         await new Promise(r => setTimeout(r, 1000));
