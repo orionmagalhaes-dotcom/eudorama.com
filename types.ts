@@ -17,7 +17,7 @@ export interface ClientDBRow {
   game_progress?: any;
   last_active_at?: string;
   manual_credentials?: Record<string, string>; // 'Service Name' -> 'Credential ID'
-  
+
   // Personalization
   theme_color?: string;
   background_image?: string;
@@ -30,7 +30,7 @@ export interface AppCredential {
   email: string;
   password: string;
   publishedAt: string; // ISO Date
-  isVisible: boolean; 
+  isVisible: boolean;
 }
 
 export interface AppCredentialDBRow {
@@ -63,9 +63,9 @@ export interface Dorama {
 }
 
 export interface SubscriptionDetail {
-    purchaseDate: string;
-    durationMonths: number;
-    isDebtor: boolean;
+  purchaseDate: string;
+  durationMonths: number;
+  isDebtor: boolean;
 }
 
 // --- APP STATE TYPES ---
@@ -74,7 +74,7 @@ export interface User {
   id: string;
   name: string;
   phoneNumber: string;
-  
+
   // Subscription Data
   purchaseDate: string;
   durationMonths: number;
@@ -87,7 +87,7 @@ export interface User {
   watching: Dorama[];
   favorites: Dorama[];
   completed: Dorama[];
-  
+
   // Gamification
   gameProgress: Record<string, any>;
 
@@ -95,7 +95,7 @@ export interface User {
   themeColor?: string;
   backgroundImage?: string;
   profileImage?: string;
-  
+
   manualCredentials?: Record<string, string>;
 }
 
@@ -104,11 +104,11 @@ export interface User {
 export interface SupportFlowStep {
   id: string;
   message: string;
-  options: { 
-      label: string; 
-      next_step_id: string | null; 
-      action?: 'link' | 'copy_credential' | 'check_subscription' | 'open_url'; 
-      action_value?: string 
+  options: {
+    label: string;
+    next_step_id: string | null;
+    action?: 'link' | 'copy_credential' | 'check_subscription' | 'open_url';
+    action_value?: string
   }[];
 }
 
@@ -133,4 +133,18 @@ export interface SystemConfig {
   bannerType: 'info' | 'warning' | 'error' | 'success';
   bannerActive: boolean;
   serviceStatus: Record<string, 'ok' | 'down' | 'maintenance'>;
+}
+
+// --- HISTORY & LOGS ---
+
+export interface HistoryLog {
+  id: string;
+  action: string;
+  details: string; // JSON string
+  created_at: string;
+}
+
+export interface HistorySettings {
+  key: string;
+  value: string;
 }

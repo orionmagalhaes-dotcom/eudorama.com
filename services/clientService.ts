@@ -1,6 +1,6 @@
 
 import { createClient } from '@supabase/supabase-js';
-import { User, ClientDBRow, Dorama, AdminUserDBRow, SubscriptionDetail } from '../types';
+import { User, ClientDBRow, Dorama, AdminUserDBRow, SubscriptionDetail, HistoryLog, HistorySettings } from '../types';
 
 // --- CONFIGURAÇÃO DO SUPABASE ---
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://mhiormzpctfoyjbrmxfz.supabase.co';
@@ -171,10 +171,107 @@ export const processUserLogin = (userRows: ClientDBRow[]): { user: User | null, 
 export const saveClientToDB = async (client: Partial<ClientDBRow>): Promise<{ success: boolean; msg: string }> => {
   try {
     const payload = { ...client };
+
+    // FETCH OLD DATA IF UPDATING
+    let oldData: ClientDBRow | null = null;
+    if (payload.id) {
+      const { data } = await supabase.from('clients').select('*').eq('id', payload.id).single();
+      if (data) oldData = data as ClientDBRow;
+    } else if (payload.phone_number) {
+      const { data } = await supabase.from('clients').select('*').eq('phone_number', payload.phone_number).single();
+      if (data) oldData = data as ClientDBRow;
+    }
+
     if (!payload.id || payload.id === '') delete payload.id;
     if (!Array.isArray(payload.subscriptions)) payload.subscriptions = [];
     const { error } = await supabase.from('clients').upsert(payload);
+
     if (error) throw error;
+
+    // --- LOGGING LOGIC ---
+    const clientName = payload.client_name || oldData?.client_name || payload.phone_number || "Cliente";
+
+    if (!oldData) {
+      // NEW CLIENT
+      await logHistory('Novo Cliente', `Cliente ${clientName} (${payload.phone_number}) foi adicionado.`);
+    } else {
+      // UPDATE OR DELETE
+      if (payload.deleted && !oldData.deleted) {
+        await logHistory('Cliente Removido', `Cliente ${clientName} enviado para lixeira.`);
+      } else if (payload.deleted === false && oldData.deleted) {
+        await logHistory('Cliente Restaurado', `Cliente ${clientName} restaurado da lixeira.`);
+      } else {
+        const oldSubs = (oldData.subscriptions || []) as string[];
+        const newSubs = (payload.subscriptions || []) as string[];
+
+        // Helper to parse subscription string: Service|Date|Paid|Duration
+        const parseSub = (s: string) => {
+          if (!s) return null;
+          const parts = s.split('|');
+          return {
+            service: parts[0].trim(),
+            date: parts[1]?.trim(),
+            paid: (parts[2] || '0') === '1',
+            duration: parts[3] ? parseInt(parts[3].trim()) : 0
+          };
+        };
+
+        const oldMap = new Map<string, ReturnType<typeof parseSub>>();
+        oldSubs.forEach(s => { const p = parseSub(s); if (p) oldMap.set(p.service, p); });
+
+        const newMap = new Map<string, ReturnType<typeof parseSub>>();
+        newSubs.forEach(s => { const p = parseSub(s); if (p) newMap.set(p.service, p); });
+
+        let changesLogged = false;
+
+        // Check for Additions and Updates
+        for (const [service, newDetails] of newMap.entries()) {
+          if (!newDetails) continue;
+          const oldDetails = oldMap.get(service);
+
+          if (!oldDetails) {
+            // Added
+            await logHistory('Assinatura Adicionada', `Cliente ${clientName} adquiriu ${service} (${newDetails.duration * 30} dias).`);
+            changesLogged = true;
+          } else {
+            // Existing - Check for changes
+            if (newDetails.duration !== oldDetails.duration || newDetails.date !== oldDetails.date) {
+              // Renewal / Change Duration
+              await logHistory('Assinatura Renovada', `Cliente ${clientName} renovou ${service} por ${newDetails.duration * 30} dias.`);
+              changesLogged = true;
+            } else if (newDetails.paid !== oldDetails.paid) {
+              // Payment Status Change
+              const status = newDetails.paid ? 'PAGO' : 'PENDENTE';
+              await logHistory('Pagamento Atualizado', `Status de pagamento de ${service} para ${clientName} alterado para ${status}.`);
+              changesLogged = true;
+            }
+          }
+        }
+
+        // Check for Removals
+        for (const [service, oldDetails] of oldMap.entries()) {
+          if (!newMap.has(service)) {
+            await logHistory('Assinatura Removida', `Cliente ${clientName} cancelou/removeu a assinatura de ${service}.`);
+            changesLogged = true;
+          }
+        }
+
+        // Fallback for other changes (Name, Phone, etc)
+        if (!changesLogged) {
+          const ignoreKeys = ['subscriptions', 'id', 'created_at', 'updated_at', 'last_active_at'];
+          const hasOtherChanges = Object.keys(payload).some(k => {
+            if (ignoreKeys.includes(k)) return false;
+            // simple inequality check, strict for primities
+            return (payload as any)[k] != (oldData as any)[k];
+          });
+
+          if (hasOtherChanges) {
+            await logHistory('Dados Atualizados', `Dados cadastrais de ${clientName} foram modificados.`);
+          }
+        }
+      }
+    }
+
     return { success: true, msg: "Salvo com sucesso!" };
   } catch (e: any) { return { success: false, msg: `Erro: ${e.message}` }; }
 };
@@ -201,8 +298,15 @@ export const hardDeleteAllClients = async (): Promise<{ success: boolean, msg: s
   try {
     await supabase.from('doramas').delete().neq('id', '0');
     await supabase.from('credentials').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    // Note: Clients delete commented out or specific logic? The existing code had delete clients logic.
+    // The previous view showed: const { error } = await supabase.from('clients').delete().neq('id', ...);
+    // Be careful not to remove functionality. I will preserve the original logic and ADD logging.
+
+    // Original Logic preserved:
     const { error } = await supabase.from('clients').delete().neq('id', '00000000-0000-0000-0000-000000000000');
     if (error) return { success: false, msg: `Erro: ${error.message}` };
+
+    await logHistory('Limpeza Geral', 'Todas as credenciais, doramas e CLIENTES foram apagados (Hard Reset).');
     return { success: true, msg: "Banco limpo." };
   } catch (e: any) { return { success: false, msg: `Exceção: ${e.message}` }; }
 };
@@ -304,4 +408,58 @@ export const verifyAdminLogin = async (login: string, pass: string): Promise<boo
 export const updateAdminPassword = async (newPassword: string) => {
   const { error } = await supabase.from('admin_users').upsert({ username: 'admin', password: newPassword }, { onConflict: 'username' });
   return !error;
+};
+
+// --- HISTORY & LOGGING SERVICE ---
+
+export const logHistory = async (action: string, details: any) => {
+  try {
+    const detailsStr = typeof details === 'string' ? details : JSON.stringify(details);
+    await supabase.from('history_logs').insert({ action, details: detailsStr });
+  } catch (e) { console.error("Falha ao registrar log:", e); }
+};
+
+export const getHistoryLogs = async (): Promise<HistoryLog[]> => {
+  try {
+    const { data, error } = await supabase.from('history_logs').select('*').order('created_at', { ascending: false });
+    if (error) return [];
+    return data as unknown as HistoryLog[];
+  } catch (e) { return []; }
+};
+
+export const clearHistoryLogs = async (): Promise<boolean> => {
+  try {
+    const { error } = await supabase.from('history_logs').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    return !error;
+  } catch (e) { return false; }
+};
+
+export const getHistorySettings = async (): Promise<Record<string, string>> => {
+  try {
+    const { data } = await supabase.from('history_settings').select('*');
+    if (!data) return {};
+    const settings: Record<string, string> = {};
+    data.forEach((row: any) => settings[row.key] = row.value);
+    return settings;
+  } catch (e) { return {}; }
+};
+
+export const updateHistorySetting = async (key: string, value: string): Promise<boolean> => {
+  try {
+    const { error } = await supabase.from('history_settings').upsert({ key, value });
+    return !error;
+  } catch (e) { return false; }
+};
+
+export const enforceHistoryRetention = async (): Promise<void> => {
+  try {
+    const settings = await getHistorySettings();
+    const daysStr = settings['retention_days'] || '7';
+    const days = parseInt(daysStr) || 7;
+
+    const limitDate = new Date();
+    limitDate.setDate(limitDate.getDate() - days);
+
+    await supabase.from('history_logs').delete().lt('created_at', limitDate.toISOString());
+  } catch (e) { console.error("Erro ao limpar histórico antigo:", e); }
 };

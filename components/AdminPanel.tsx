@@ -2,19 +2,19 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { AppCredential, ClientDBRow, User } from '../types';
 import { fetchCredentials, saveCredential, deleteCredential } from '../services/credentialService';
-import { getAllClients, saveClientToDB, resetAllClientPasswords, hardDeleteAllClients, supabase } from '../services/clientService';
-import { 
-    Plus, Trash2, Edit2, LogOut, Users, Search, AlertTriangle, X, ShieldAlert, Key, 
-    Clock, CheckCircle2, RefreshCw, Phone, Mail, Lock, Loader2, Eye, EyeOff, 
-    Calendar, Download, Upload, Shield, LayoutGrid, SortAsc, SortDesc, RotateCw, 
+import { getAllClients, saveClientToDB, resetAllClientPasswords, hardDeleteAllClients, getHistoryLogs, clearHistoryLogs, updateHistorySetting, getHistorySettings, enforceHistoryRetention, supabase } from '../services/clientService';
+import {
+    Plus, Trash2, Edit2, LogOut, Users, Search, AlertTriangle, X, ShieldAlert, Key,
+    Clock, CheckCircle2, RefreshCw, Phone, Mail, Lock, Loader2, Eye, EyeOff,
+    Calendar, Download, Upload, Shield, LayoutGrid, SortAsc, SortDesc, RotateCw,
     ShieldCheck, UsersRound, ArrowUpRight, ArrowDownRight, DollarSign, MessageCircle,
     Sun, Moon, Fingerprint, Copy, Check, Zap, BarChart3, TrendingUp, Wallet, PieChart, Undo2, TrendingDown, Settings2,
-    Activity, Banknote, CreditCard, Eraser, ListFilter, ArrowUpDown, Wifi, Filter, ChevronRight
+    Activity, Banknote, CreditCard, Eraser, ListFilter, ArrowUpDown, Wifi, Filter, ChevronRight, History
 } from 'lucide-react';
 
 // --- PROPS INTERFACE ---
 interface AdminPanelProps {
-  onLogout: () => void;
+    onLogout: () => void;
 }
 
 const SERVICES: string[] = ['Viki Pass', 'Kocowa+', 'IQIYI', 'WeTV', 'DramaBox', 'Youku'];
@@ -36,7 +36,7 @@ const CAPACITY_LIMITS: Record<string, number> = {
 
 const getServicePrice = (serviceName: string, duration: number): number => {
     // Regra solicitada: Se não for mensal (duração > 1), valor é 0
-    if (duration > 1) return 0.00; 
+    if (duration > 1) return 0.00;
     const s = serviceName.toLowerCase();
     if (s.includes('viki')) return 20.00;
     return 15.00;
@@ -50,7 +50,7 @@ const toLocalInput = (isoString: string) => {
         const offset = date.getTimezoneOffset() * 60000;
         const localDate = new Date(date.getTime() - offset);
         return localDate.toISOString().slice(0, 16);
-    } catch(e) { return ''; }
+    } catch (e) { return ''; }
 };
 
 const toDateInput = (isoString: string) => {
@@ -59,7 +59,7 @@ const toDateInput = (isoString: string) => {
         const date = new Date(isoString);
         if (isNaN(date.getTime())) return '';
         return date.toISOString().split('T')[0];
-    } catch(e) { return ''; }
+    } catch (e) { return ''; }
 };
 
 function normalizeSubscriptions(subs: any, defaultDuration: number = 1): string[] {
@@ -69,12 +69,12 @@ function normalizeSubscriptions(subs: any, defaultDuration: number = 1): string[
     } else if (typeof subs === 'string') {
         let cleaned = (subs as string).replace(/^\{|\}$/g, '');
         if (!cleaned) list = [];
-        else if (cleaned.includes(';')) list = cleaned.split(';'); 
+        else if (cleaned.includes(';')) list = cleaned.split(';');
         else if (cleaned.includes(',')) list = cleaned.split(',');
         else if (cleaned.includes('+')) list = cleaned.split('+');
         else list = [cleaned];
     }
-    
+
     const result: string[] = (list || [])
         .map((s: any): string => {
             let str = String(s).trim().replace(/^"|"$/g, '');
@@ -82,7 +82,7 @@ function normalizeSubscriptions(subs: any, defaultDuration: number = 1): string[
             const parts = str.split('|');
             const name = parts[0] || 'Desconhecido';
             const date = parts[1] || new Date().toISOString();
-            const status = parts[2] || '0'; 
+            const status = parts[2] || '0';
             const duration = (parts[3] && parts[3].trim() !== '') ? parts[3] : String(defaultDuration || 1);
             return `${name}|${date}|${status}|${duration}`;
         });
@@ -92,15 +92,15 @@ function normalizeSubscriptions(subs: any, defaultDuration: number = 1): string[
 
 const calculateExpiry = (dateStr: string, months: number) => {
     const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return new Date(); 
+    if (isNaN(d.getTime())) return new Date();
     d.setMonth(d.getMonth() + (months || 1));
     return d;
 };
 
 const getDaysRemaining = (expiryDate: Date) => {
     const now = new Date();
-    expiryDate.setHours(0,0,0,0);
-    now.setHours(0,0,0,0);
+    expiryDate.setHours(0, 0, 0, 0);
+    now.setHours(0, 0, 0, 0);
     return Math.ceil((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 };
 
@@ -115,889 +115,1004 @@ const getCredentialHealth = (service: string, publishedAt: string, currentUsers:
     if (serviceLower.includes('viki')) expiryLimit = 14;
     else if (serviceLower.includes('kocowa')) expiryLimit = 25;
     const daysRemaining = expiryLimit - daysActive;
-    if (daysRemaining < 0) return { label: 'Vencida', color: 'text-red-600 bg-red-50 border-red-200', icon: <AlertTriangle size={14}/> };
-    if (currentUsers >= limit && limit < 9000) return { label: 'Lotada', color: 'text-purple-600 bg-purple-50 border-purple-200', icon: <UsersRound size={14}/> };
-    return { label: 'Saudável', color: 'text-green-600 bg-green-50 border-green-200', icon: <CheckCircle2 size={14}/> };
+    if (daysRemaining < 0) return { label: 'Vencida', color: 'text-red-600 bg-red-50 border-red-200', icon: <AlertTriangle size={14} /> };
+    if (currentUsers >= limit && limit < 9000) return { label: 'Lotada', color: 'text-purple-600 bg-purple-50 border-purple-200', icon: <UsersRound size={14} /> };
+    return { label: 'Saudável', color: 'text-green-600 bg-green-50 border-green-200', icon: <CheckCircle2 size={14} /> };
 };
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
-  const [activeTab, setActiveTab] = useState<'clients' | 'credentials' | 'buscar_login' | 'danger' | 'finances' | 'trash'>('clients'); 
-  const [clientFilterStatus, setClientFilterStatus] = useState<'all' | 'charged' | 'expiring' | 'debtor'>('all');
-  const [clientSortByExpiry, setClientSortByExpiry] = useState(false);
-  const [darkMode, setDarkMode] = useState(false);
-  const [credentials, setCredentials] = useState<AppCredential[]>([]);
-  const [clients, setClients] = useState<ClientDBRow[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [savingClient, setSavingClient] = useState(false);
-  const [clientSearch, setClientSearch] = useState('');
-  const [loginSearchQuery, setLoginSearchQuery] = useState('');
-  const [copiedId, setCopiedId] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  
-  // States para o novo filtro de vencimentos
-  const [dateStart, setDateStart] = useState('');
-  const [dateEnd, setDateEnd] = useState('');
-  const [groupedVencimentos, setGroupedVencimentos] = useState<any[]>([]);
-  const [totalPeriod, setTotalPeriod] = useState(0);
+    const [activeTab, setActiveTab] = useState<'clients' | 'credentials' | 'buscar_login' | 'danger' | 'finances' | 'trash' | 'history'>('clients');
+    const [clientFilterStatus, setClientFilterStatus] = useState<'all' | 'charged' | 'expiring' | 'debtor'>('all');
+    const [clientSortByExpiry, setClientSortByExpiry] = useState(false);
+    const [darkMode, setDarkMode] = useState(false);
+    const [credentials, setCredentials] = useState<AppCredential[]>([]);
+    const [clients, setClients] = useState<ClientDBRow[]>([]);
+    const [loading, setLoading] = useState(false);
+    const [savingClient, setSavingClient] = useState(false);
+    const [clientSearch, setClientSearch] = useState('');
+    const [loginSearchQuery, setLoginSearchQuery] = useState('');
+    const [copiedId, setCopiedId] = useState<string | null>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [projectionMonths, setProjectionMonths] = useState<number>(1);
-  const [statsReferenceDate, setStatsReferenceDate] = useState<number>(() => {
-      const d = new Date();
-      return new Date(d.getFullYear(), d.getMonth(), 1).getTime();
-  });
-  const [isConfirmingReset, setIsConfirmingReset] = useState(false);
+    // States para o novo filtro de vencimentos
+    const [dateStart, setDateStart] = useState('');
+    const [dateEnd, setDateEnd] = useState('');
+    const [groupedVencimentos, setGroupedVencimentos] = useState<any[]>([]);
+    const [totalPeriod, setTotalPeriod] = useState(0);
 
-  const [credForm, setCredForm] = useState<Partial<AppCredential>>({ service: SERVICES[0], email: '', password: '', isVisible: true, publishedAt: new Date().toISOString() });
-  const [credSortOrder, setCredSortOrder] = useState<'asc' | 'desc'>('desc');
-  const [clientModalOpen, setClientModalOpen] = useState(false);
-  const [credModalOpen, setCredModalOpen] = useState(false);
-  
-  const [newSubService, setNewSubService] = useState(SERVICES[0]);
-  const [newSubPlan, setNewSubPlan] = useState('1'); 
+    const [projectionMonths, setProjectionMonths] = useState<number>(1);
+    const [statsReferenceDate, setStatsReferenceDate] = useState<number>(() => {
+        const d = new Date();
+        return new Date(d.getFullYear(), d.getMonth(), 1).getTime();
+    });
+    const [isConfirmingReset, setIsConfirmingReset] = useState(false);
 
-  const [clientForm, setClientForm] = useState<Partial<ClientDBRow>>({
-      phone_number: '', client_name: '', subscriptions: [], duration_months: 1, is_debtor: false, purchase_date: toLocalInput(new Date().toISOString()), client_password: ''
-  });
+    const [credForm, setCredForm] = useState<Partial<AppCredential>>({ service: SERVICES[0], email: '', password: '', isVisible: true, publishedAt: new Date().toISOString() });
+    const [credSortOrder, setCredSortOrder] = useState<'asc' | 'desc'>('desc');
+    const [clientModalOpen, setClientModalOpen] = useState(false);
+    const [credModalOpen, setCredModalOpen] = useState(false);
 
-  useEffect(() => { loadData(); }, []);
+    const [newSubService, setNewSubService] = useState(SERVICES[0]);
+    const [newSubPlan, setNewSubPlan] = useState('1');
 
-  const loadData = async () => {
-    setLoading(true);
-    try {
-        const [creds, allClients] = await Promise.all([fetchCredentials(), getAllClients()]);
-        setCredentials(creds.filter(c => c.service !== 'SYSTEM_CONFIG'));
-        setClients(allClients);
-    } catch (e) { console.error(e); }
-    setLoading(false);
-  };
-
-  const handleConsultVencimentos = () => {
-    if (!dateStart || !dateEnd) return;
-    const start = new Date(dateStart);
-    start.setHours(0,0,0,0);
-    const end = new Date(dateEnd);
-    end.setHours(23,59,59,999);
-
-    const activeClients = clients.filter(c => !c.deleted);
-    const clientMap: Record<string, any> = {};
-    let globalSum = 0;
-
-    activeClients.forEach(client => {
-        const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
-        subs.forEach(sub => {
-            const parts = sub.split('|');
-            const sName = parts[0];
-            const startDate = parts[1];
-            const duration = parseInt(parts[3] || '1');
-            const expiry = calculateExpiry(startDate, duration);
-            
-            if (expiry >= start && expiry <= end) {
-                const price = getServicePrice(sName, duration);
-                
-                if (!clientMap[client.phone_number]) {
-                    clientMap[client.phone_number] = {
-                        name: client.client_name || 'Sem Nome',
-                        phone: client.phone_number,
-                        vencimentos: [],
-                        totalUser: 0
-                    };
-                }
-                
-                clientMap[client.phone_number].vencimentos.push({
-                    service: sName,
-                    expiry: expiry,
-                    price: price,
-                    isMonthly: duration === 1
-                });
-                
-                clientMap[client.phone_number].totalUser += price;
-                globalSum += price;
-            }
-        });
+    const [clientForm, setClientForm] = useState<Partial<ClientDBRow>>({
+        phone_number: '', client_name: '', subscriptions: [], duration_months: 1, is_debtor: false, purchase_date: toLocalInput(new Date().toISOString()), client_password: ''
     });
 
-    const finalResults = Object.values(clientMap).sort((a, b) => a.name.localeCompare(b.name));
-    setGroupedVencimentos(finalResults);
-    setTotalPeriod(globalSum);
-  };
+    // History State
+    const [historyLogs, setHistoryLogs] = useState<any[]>([]);
+    const [retentionDays, setRetentionDays] = useState('7');
+    const [historyLoading, setHistoryLoading] = useState(false);
 
-  const copyToClipboard = (text: string, id: string) => {
-    navigator.clipboard.writeText(text.trim());
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
-  };
+    useEffect(() => { loadData(); }, []);
 
-  const financeStats = useMemo(() => {
-    const activeClients = clients.filter(c => !c.deleted);
-    const deletedClients = clients.filter(c => c.deleted);
-    
-    let grossRevenue = 0; 
-    let pendingRevenue = 0; 
-    const serviceBreakdown: Record<string, { count: number, monthlyCount: number, revenue: number, pending: number }> = {};
-    
-    SERVICES.forEach(s => serviceBreakdown[s] = { count: 0, monthlyCount: 0, revenue: 0, pending: 0 });
-
-    activeClients.forEach(client => {
-        const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
-        subs.forEach(sub => {
-            const parts = sub.split('|');
-            const duration = parseInt(parts[3] || '1');
-            
-            if (duration !== 1) return;
-
-            const sName = parts[0];
-            const startDate = parts[1];
-            const price = getServicePrice(sName, duration);
-            
-            const expiry = calculateExpiry(startDate, duration);
-            const daysLeft = getDaysRemaining(expiry);
-
-            if (serviceBreakdown[sName]) {
-                grossRevenue += price;
-                serviceBreakdown[sName].revenue += price;
-                serviceBreakdown[sName].count++;
-                serviceBreakdown[sName].monthlyCount++;
-                if (daysLeft < 0) {
-                    pendingRevenue += price;
-                    serviceBreakdown[sName].pending += price;
-                }
-            }
-        });
-    });
-
-    const totalClientsCounted = Object.values(serviceBreakdown).reduce((acc, curr) => acc + curr.count, 0);
-    const newClientsSinceReset = activeClients.filter(c => new Date(c.created_at).getTime() > statsReferenceDate).length;
-    const churnSinceReset = deletedClients.filter(c => new Date(c.created_at).getTime() > statsReferenceDate).length;
-    
-    const churnRate = totalClientsCounted > 0 ? (churnSinceReset / (totalClientsCounted + churnSinceReset)) * 100 : 0;
-    const avgTicket = totalClientsCounted > 0 ? grossRevenue / totalClientsCounted : 0;
-    const projection = grossRevenue + (newClientsSinceReset * avgTicket * projectionMonths);
-
-    return {
-        grossRevenue,
-        pendingRevenue,
-        totalClients: totalClientsCounted,
-        newClientsThisMonth: newClientsSinceReset,
-        churnCount: churnSinceReset,
-        churnRate,
-        serviceBreakdown,
-        projection,
-        averageTicket: avgTicket
-    };
-  }, [clients, projectionMonths, statsReferenceDate]);
-
-  const credentialUsage = useMemo<Record<string, number>>(() => {
-    const usage: Record<string, number> = {};
-    if (credentials.length === 0 || clients.length === 0) return usage;
-    clients.filter(c => !c.deleted).forEach(client => {
-        const subs = normalizeSubscriptions(client.subscriptions || [], client.duration_months);
-        subs.forEach(sub => {
-            const parts = sub.split('|');
-            const sName = parts[0].trim().toLowerCase();
-            const serviceCreds = credentials
-                .filter(c => c.isVisible && c.service.toLowerCase().includes(sName))
-                .sort((a, b) => new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime());
-            if (serviceCreds.length > 0) {
-                const clientsForService = clients
-                    .filter(c => !c.deleted && normalizeSubscriptions(c.subscriptions || [], client.duration_months).some(s => s.toLowerCase().includes(sName)))
-                    .sort((a, b) => a.phone_number.localeCompare(b.phone_number));
-                const rank = clientsForService.findIndex(c => c.id === client.id);
-                if (rank !== -1) {
-                    const credIndex = rank % serviceCreds.length;
-                    const assigned = serviceCreds[credIndex];
-                    if (assigned) usage[assigned.id] = (usage[assigned.id] || 0) + 1;
-                }
-            }
-        });
-    });
-    return usage;
-  }, [clients, credentials]);
-
-  const groupedCredentials = useMemo<Record<string, AppCredential[]>>(() => {
-    const groups: Record<string, AppCredential[]> = {};
-    const sorted = [...credentials].sort((a, b) => {
-        const timeA = new Date(a.publishedAt).getTime();
-        const timeB = new Date(b.publishedAt).getTime();
-        return credSortOrder === 'asc' ? timeA - timeB : timeB - timeA;
-    });
-    sorted.forEach(c => {
-        if (!groups[c.service]) groups[c.service] = [];
-        groups[c.service].push(c);
-    });
-    return groups;
-  }, [credentials, credSortOrder]);
-
-  const filteredClients = useMemo<ClientDBRow[]>(() => {
-    let list = clients.filter(c => !c.deleted);
-    
-    if (clientFilterStatus === 'debtor') {
-        list = list.filter(c => {
-            const subs = normalizeSubscriptions(c.subscriptions || [], c.duration_months);
-            return subs.some(s => getDaysRemaining(calculateExpiry(s.split('|')[1], parseInt(s.split('|')[3] || '1'))) < 0);
-        });
-    } else if (clientFilterStatus === 'charged') {
-        list = list.filter(c => {
-            const subs = normalizeSubscriptions(c.subscriptions || [], c.duration_months);
-            return subs.some(s => s.split('|')[2] === '1');
-        });
-    } else if (clientFilterStatus === 'expiring') {
-        list = list.filter(c => normalizeSubscriptions(c.subscriptions || [], c.duration_months).some(s => {
-            const parts = s.split('|');
-            const days = getDaysRemaining(calculateExpiry(parts[1], parseInt(parts[3] || '1')));
-            return days <= 5 && days >= 0;
-        }));
-    }
-
-    if (clientSearch) {
-        const lower = clientSearch.toLowerCase();
-        list = list.filter(c => c.phone_number.includes(lower) || c.client_name?.toLowerCase().includes(lower));
-    }
-
-    if (clientSortByExpiry) {
-        list = [...list].sort((a, b) => {
-            const getMinDays = (c: ClientDBRow) => {
-                const subs = normalizeSubscriptions(c.subscriptions, c.duration_months);
-                if (subs.length === 0) return 9999;
-                const days = subs.map(s => getDaysRemaining(calculateExpiry(s.split('|')[1], parseInt(s.split('|')[3] || '1'))));
-                return Math.min(...days);
-            };
-            return getMinDays(a) - getMinDays(b);
-        });
-    }
-
-    return list;
-  }, [clients, clientSearch, clientFilterStatus, clientSortByExpiry]);
-
-  const deletedClientsList = useMemo(() => {
-      return clients.filter(c => c.deleted);
-  }, [clients]);
-
-  const loginSearchResults = useMemo(() => {
-    if (!loginSearchQuery || loginSearchQuery.length < 2) return [];
-    const query = loginSearchQuery.toLowerCase();
-    const matchedClients = clients.filter(c => 
-        !c.deleted && 
-        ((c.client_name?.toLowerCase().includes(query)) || (c.phone_number.includes(query)))
-    );
-
-    return matchedClients.map(client => {
-        const subs = normalizeSubscriptions(client.subscriptions || [], client.duration_months);
-        const subAccesses = subs.map(sub => {
-            const parts = sub.split('|');
-            const serviceName = parts[0].trim();
-            const serviceLower = serviceName.toLowerCase();
-            const expiry = calculateExpiry(parts[1], parseInt(parts[3] || '1'));
-            const daysLeft = getDaysRemaining(expiry);
-            const serviceCreds = credentials
-                .filter(c => c.isVisible && c.service.toLowerCase().includes(serviceLower))
-                .sort((a, b) => new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime());
-
-            let assignedLogin = "Não vinculada";
-            if (serviceCreds.length > 0) {
-                const clientsForThisService = clients
-                    .filter(c => !c.deleted && normalizeSubscriptions(c.subscriptions || [], client.duration_months).some(s => s.toLowerCase().includes(serviceLower)))
-                    .sort((a, b) => a.phone_number.localeCompare(b.phone_number));
-                const rank = clientsForThisService.findIndex(c => c.id === client.id);
-                if (rank !== -1) {
-                    const credIndex = rank % serviceCreds.length;
-                    assignedLogin = serviceCreds[credIndex].email;
-                }
-            }
-            return { serviceName, login: assignedLogin, daysLeft, isExpired: daysLeft < 0 };
-        });
-        return { clientName: client.client_name || "Sem Nome", phoneNumber: client.phone_number, accesses: subAccesses };
-    });
-  }, [clients, credentials, loginSearchQuery]);
-
-  const handleSaveClient = async () => {
-    if (!clientForm.phone_number) return;
-    setSavingClient(true);
-    const { success, msg } = await saveClientToDB(clientForm);
-    if (success) {
-      setClientModalOpen(false);
-      loadData();
-    } else {
-        alert("Erro ao salvar: " + msg);
-    }
-    setSavingClient(false);
-  };
-
-  const handleSoftDeleteClient = async (client: ClientDBRow) => {
-      if (!confirm(`Mover ${client.client_name || client.phone_number} para a lixeira?`)) return;
-      setLoading(true);
-      const { success, msg } = await saveClientToDB({ ...client, deleted: true });
-      if (success) {
-          loadData();
-      } else {
-          alert("Erro ao mover para lixeira: " + msg);
-      }
-      setLoading(false);
-  };
-
-  const handleRestoreClient = async (client: ClientDBRow) => {
-      setLoading(true);
-      const { success, msg } = await saveClientToDB({ ...client, deleted: false });
-      if (success) {
-          loadData();
-      } else {
-          alert("Erro ao restaurar: " + msg);
-      }
-      setLoading(false);
-  };
-
-  const handleSaveCred = async () => {
-    if (!credForm.email || !credForm.password) return;
-    setLoading(true);
-    await saveCredential(credForm as AppCredential);
-    setCredModalOpen(false);
-    loadData();
-    setLoading(false);
-  };
-
-  const handleMarkAsChargedQuick = async (client: ClientDBRow, subIndex: number) => {
-    const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
-    const parts = subs[subIndex].split('|');
-    subs[subIndex] = `${parts[0]}|${parts[1]}|1|${parts[3] || '1'}`;
-    await saveClientToDB({ ...client, subscriptions: subs });
-    loadData();
-  };
-
-  const handleRenewSmart = async (client: ClientDBRow, subIndex: number) => {
-    const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
-    const parts = subs[subIndex].split('|');
-    const serviceName = parts[0];
-    const oldStartDate = parts[1];
-    const months = parseInt(parts[3] || '1');
-    const currentExpiry = calculateExpiry(oldStartDate, months);
-    const today = new Date();
-    const newStartDate = currentExpiry.getTime() < today.getTime() ? today : currentExpiry;
-    subs[subIndex] = `${serviceName}|${newStartDate.toISOString()}|0|${months}`;
-    await saveClientToDB({ ...client, subscriptions: subs });
-    loadData();
-  };
-
-  const handleModalSmartRenew = (subIndex: number) => {
-    const currentSubs = [...((clientForm.subscriptions as string[] | undefined) || [])];
-    if (!currentSubs[subIndex]) return;
-    const parts = currentSubs[subIndex].split('|');
-    const serviceName = parts[0];
-    const oldStartDate = parts[1];
-    const months = parseInt(parts[3] || '1');
-    const currentExpiry = calculateExpiry(oldStartDate, months);
-    const today = new Date();
-    const newStartDate = currentExpiry.getTime() < today.getTime() ? today : currentExpiry;
-    currentSubs[subIndex] = `${serviceName}|${newStartDate.toISOString()}|0|${months}`;
-    setClientForm({ ...clientForm, subscriptions: currentSubs });
-  };
-
-  const handleResetProjection = () => {
-      if (!isConfirmingReset) {
-          setIsConfirmingReset(true);
-          setTimeout(() => setIsConfirmingReset(false), 4000);
-      } else {
-          setProjectionMonths(1);
-          setStatsReferenceDate(Date.now()); 
-          setIsConfirmingReset(false);
-      }
-  };
-
-  const handleDownloadBackup = () => {
-    if (clients.length === 0) return alert("Nenhum dado para baixar.");
-    const dataStr = JSON.stringify(clients, null, 2);
-    const blob = new Blob([dataStr], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `backup_eudorama_clientes_${new Date().toISOString().split('T')[0]}.json`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
-
-  const handleImportBackup = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (!confirm("Isso atualizará os dados existentes. Deseja continuar?")) return;
-    setLoading(true);
-    const reader = new FileReader();
-    reader.onload = async (event) => {
+    const loadData = async () => {
+        setLoading(true);
         try {
-            const importedData = JSON.parse(event.target?.result as string);
-            if (Array.isArray(importedData)) {
-                const { error } = await supabase.from('clients').upsert(importedData);
-                if (error) throw error;
-                alert(`Sucesso! ${importedData.length} registros importados.`);
-                loadData();
-            } else { alert("Formato de arquivo inválido."); }
-        } catch (err: any) { alert("Erro ao importar: " + err.message); }
+            const [creds, allClients] = await Promise.all([fetchCredentials(), getAllClients()]);
+            setCredentials(creds.filter(c => c.service !== 'SYSTEM_CONFIG'));
+            setClients(allClients);
+        } catch (e) { console.error(e); }
         setLoading(false);
     };
-    reader.readAsText(file);
-    e.target.value = '';
-  };
 
-  const sendWhatsAppMessage = (phone: string, name: string, service: string, expiryDate: Date) => {
-    const cleanPhone = phone.replace(/\D/g, '');
-    const daysLeft = getDaysRemaining(expiryDate);
-    let message = daysLeft < 0 
-        ? `Olá ${name}! 🍿 Notamos que sua assinatura do ${service} venceu. Gostaria de renovar para continuar assistindo seus doramas favoritos conosco? Sem pressão, quando puder nos avise! 💖`
-        : `Olá ${name}! 👋 Passando para avisar que sua assinatura do ${service} vence em ${daysLeft} dias (${expiryDate.toLocaleDateString()}). Se quiser renovar antecipadamente para não perder o acesso, estamos à disposição! ✨`;
-    window.open(`https://wa.me/55${cleanPhone}?text=${encodeURIComponent(message)}`, '_blank');
-  };
+    const handleConsultVencimentos = () => {
+        if (!dateStart || !dateEnd) return;
+        const start = new Date(dateStart);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(dateEnd);
+        end.setHours(23, 59, 59, 999);
 
-  return (
-    <div className={`min-h-screen font-sans transition-colors duration-300 ${darkMode ? "dark bg-slate-950 text-slate-100" : "bg-indigo-50/30 text-indigo-950"}`}>
-      <div className="bg-white dark:bg-slate-900 px-6 py-5 flex justify-between items-center shadow-sm sticky top-0 z-30 border-b border-indigo-100 dark:border-slate-800">
-          <div className="flex items-center gap-3">
-              <div className="bg-indigo-600 p-2.5 rounded-2xl text-white shadow-lg"><ShieldAlert size={24} /></div>
-              <h1 className="font-black text-xl">EuDorama Admin</h1>
-              <div className="hidden sm:flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-600 rounded-full border border-emerald-100">
-                  <Wifi size={12} className="animate-pulse" />
-                  <span className="text-[10px] font-black uppercase tracking-widest">Realtime Ativo</span>
-              </div>
-          </div>
-          <div className="flex items-center gap-2">
-              <button onClick={() => setDarkMode(!darkMode)} className="p-2.5 rounded-xl bg-indigo-50 dark:bg-slate-800 text-indigo-600">
-                  {darkMode ? <Sun size={20}/> : <Moon size={20}/>}
-              </button>
-              <button onClick={onLogout} className="flex items-center gap-2 text-red-500 bg-red-50 dark:bg-red-900/20 px-4 py-2.5 rounded-xl font-bold text-xs uppercase">
-                  Sair
-              </button>
-          </div>
-      </div>
+        const activeClients = clients.filter(c => !c.deleted);
+        const clientMap: Record<string, any> = {};
+        let globalSum = 0;
 
-      <main className="max-w-5xl mx-auto px-4 mt-8 space-y-6">
-          <div className="flex bg-white dark:bg-slate-900 p-1 rounded-2xl shadow-sm border border-indigo-100 dark:border-slate-800 overflow-x-auto scrollbar-hide">
-              {[
-                  {id: 'clients', icon: Users, label: 'Clientes'},
-                  {id: 'finances', icon: BarChart3, label: 'Finanças'},
-                  {id: 'buscar_login', icon: Search, label: 'Buscar Login'},
-                  {id: 'credentials', icon: Key, label: 'Contas'},
-                  {id: 'trash', icon: Trash2, label: 'Lixeira'},
-                  {id: 'danger', icon: AlertTriangle, label: 'Segurança'}
-              ].map(tab => (
-                  <button key={tab.id} onClick={() => setActiveTab(tab.id as any)} className={`flex-1 min-w-fit py-3 px-5 rounded-xl text-[10px] font-black uppercase transition-all flex flex-col sm:flex-row items-center justify-center gap-1.5 ${activeTab === tab.id ? 'bg-indigo-600 text-white shadow-md' : 'text-indigo-400 hover:bg-indigo-50'}`}>
-                      <tab.icon size={16} /> <span className="hidden sm:inline">{tab.label}</span>
-                  </button>
-              ))}
-          </div>
+        activeClients.forEach(client => {
+            const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
+            subs.forEach(sub => {
+                const parts = sub.split('|');
+                const sName = parts[0];
+                const startDate = parts[1];
+                const duration = parseInt(parts[3] || '1');
+                const expiry = calculateExpiry(startDate, duration);
 
-          {activeTab === 'clients' && (
-              <div className="space-y-6 animate-fade-in pb-32">
-                  <div className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] shadow-sm border border-indigo-100 dark:border-slate-800 space-y-4">
-                      <div className="flex justify-between items-center px-1">
-                          <p className="text-xs font-black text-indigo-400 uppercase tracking-widest">Base de Dados</p>
-                          <div className="bg-indigo-50 text-indigo-600 px-3 py-1 rounded-lg text-[10px] font-black uppercase">Total: {clients.filter(c=>!c.deleted).length} Clientes</div>
-                      </div>
-                      <div className="flex items-center gap-3 bg-indigo-50 dark:bg-slate-800 px-5 py-4 rounded-2xl border border-indigo-100 dark:border-slate-700">
-                          <Search className="text-indigo-400" size={24} />
-                          <input className="bg-transparent outline-none text-base font-bold w-full" placeholder="Buscar por nome ou WhatsApp..." value={clientSearch} onChange={e => setClientSearch(e.target.value)} />
-                      </div>
-                      <div className="flex flex-wrap gap-2 items-center">
-                          <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide flex-1">
-                              {[
-                                  {id: 'all', label: 'Todos', color: 'bg-indigo-600 text-white'},
-                                  {id: 'charged', label: 'Cobrados', color: 'bg-emerald-100 text-emerald-700'},
-                                  {id: 'expiring', label: 'Vencendo', color: 'bg-orange-100 text-orange-700'},
-                                  {id: 'debtor', label: 'Pendentes', color: 'bg-red-100 text-red-700'}
-                              ].map(f => (
-                                  <button key={f.id} onClick={() => setClientFilterStatus(f.id as any)} className={`px-5 py-2.5 rounded-xl text-[10px] font-black uppercase border transition-all whitespace-nowrap ${clientFilterStatus === f.id ? f.color : 'bg-white dark:bg-slate-900 text-indigo-300 border-indigo-100'}`}>{f.label}</button>
-                              ))}
-                          </div>
-                          
-                          <div className="flex gap-2">
-                            <button onClick={handleDownloadBackup} className="p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all bg-white dark:bg-slate-900 text-indigo-600 border-indigo-100 hover:bg-indigo-50" title="Baixar Backup JSON"><Download size={14} /> <span className="hidden sm:inline">Backup</span></button>
-                            <label className="p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all bg-white dark:bg-slate-900 text-purple-600 border-indigo-100 hover:bg-purple-50 cursor-pointer" title="Importar Backup JSON"><Upload size={14} /> <span className="hidden sm:inline">Importar</span><input type="file" accept=".json" className="hidden" onChange={handleImportBackup} /></label>
-                            <button onClick={() => setClientSortByExpiry(!clientSortByExpiry)} className={`p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all ${clientSortByExpiry ? 'bg-amber-100 text-amber-700 border-amber-200' : 'bg-white dark:bg-slate-900 text-indigo-400 border-indigo-100'}`} title="Ordenar por Vencimento Próximo"><ArrowUpDown size={14} /> <span className="hidden sm:inline">Vencimento</span></button>
-                          </div>
-                      </div>
-                      <button onClick={() => { setClientForm({ phone_number: '', client_name: '', subscriptions: [], client_password: '' }); setClientModalOpen(true); }} className="w-full bg-indigo-600 text-white font-black py-4 rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-indigo-100"><Plus size={24}/> Novo Cliente</button>
-                  </div>
+                if (expiry >= start && expiry <= end) {
+                    const price = getServicePrice(sName, duration);
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {filteredClients.map((client) => (
-                          <div key={client.id} className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-indigo-50 flex flex-col hover:border-indigo-200 transition-all">
-                              <div className="flex justify-between items-start mb-4">
-                                  <div className="min-w-0">
-                                      <h3 className="font-black text-gray-900 dark:text-white text-lg truncate leading-tight">{client.client_name || 'Sem Nome'}</h3>
-                                      <p className="text-xs font-bold text-indigo-400 mt-1 flex items-center gap-1.5"><Phone size={12}/> {client.phone_number}</p>
-                                  </div>
-                                  <div className="flex gap-2">
-                                      <button onClick={() => { setClientForm({ ...client, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months) }); setClientModalOpen(true); }} className="p-3 rounded-xl bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white transition-all"><Edit2 size={18}/></button>
-                                      <button onClick={() => handleSoftDeleteClient(client)} className="p-3 rounded-xl bg-red-50 text-red-600 hover:bg-red-600 hover:text-white transition-all"><Trash2 size={18}/></button>
-                                  </div>
-                              </div>
-                              
-                              <div className="space-y-3 mb-4">
-                                  {(normalizeSubscriptions(client.subscriptions || [], client.duration_months) as string[]).map((sub, i) => {
-                                      const parts = sub.split('|');
-                                      const serviceName = parts[0];
-                                      const expiry = calculateExpiry(parts[1], parseInt(parts[3] || '1'));
-                                      const daysLeft = getDaysRemaining(expiry);
-                                      const isCharged = parts[2] === '1';
-                                      let statusColor = daysLeft < 0 ? "bg-red-50 text-red-600 border-red-100" : (daysLeft <= 5 ? "bg-amber-50 text-amber-600 border-amber-100" : "bg-green-50 text-green-700 border-green-100");
-                                      return (
-                                          <div key={i} className={`p-4 rounded-2xl border flex flex-col gap-3 transition-all ${statusColor}`}>
-                                              <div className="flex justify-between items-center">
-                                                  <div className="flex flex-col">
-                                                      <span className="font-black text-xs uppercase tracking-wider">{serviceName}</span>
-                                                      <span className="text-[10px] font-bold opacity-80">{daysLeft < 0 ? 'Vencido há ' + Math.abs(daysLeft) + 'd' : `Vence em ${expiry.toLocaleDateString()} (${daysLeft}d)`}</span>
-                                                  </div>
-                                                  <div className="flex gap-1.5">
-                                                      <button onClick={() => sendWhatsAppMessage(client.phone_number, client.client_name || 'Dorameira', serviceName, expiry)} className="p-2.5 bg-white/50 hover:bg-emerald-500 hover:text-white rounded-xl transition-all"><MessageCircle size={16} className="text-emerald-600 hover:text-inherit" /></button>
-                                                      {!isCharged && <button onClick={() => { setClientForm({...clientForm, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months).map((s, idx) => idx === i ? `${s.split('|')[0]}|${s.split('|')[1]}|1|${s.split('|')[3] || '1'}` : s)}); handleMarkAsChargedQuick(client, i); }} className="p-2.5 bg-white/50 text-indigo-600 border border-indigo-100 rounded-xl hover:bg-indigo-600 hover:text-white transition-all"><DollarSign size={16} /></button>}
-                                                  </div>
-                                              </div>
-                                              <button onClick={() => handleRenewSmart(client, i)} className="w-full py-2.5 bg-white/80 dark:bg-slate-800/80 hover:bg-indigo-600 hover:text-white rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-2 transition-all shadow-sm border border-white"><RotateCw size={14} /> Renovar +{parts[3] || '1'} Mês</button>
-                                          </div>
-                                      );
-                                  })}
-                              </div>
-                          </div>
-                      ))}
-                  </div>
-              </div>
-          )}
+                    if (!clientMap[client.phone_number]) {
+                        clientMap[client.phone_number] = {
+                            name: client.client_name || 'Sem Nome',
+                            phone: client.phone_number,
+                            vencimentos: [],
+                            totalUser: 0
+                        };
+                    }
 
-          {activeTab === 'finances' && (
-              <div className="space-y-8 animate-fade-in pb-32">
-                  {/* --- CONSULTA DE VENCIMENTOS AGRUPADA --- */}
-                  <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border-4 border-indigo-600/10 shadow-sm space-y-6">
-                      <div className="flex items-center gap-3 mb-2">
-                          <div className="p-3 bg-indigo-600 text-white rounded-2xl shadow-lg shadow-indigo-200"><Filter size={24} /></div>
-                          <div>
-                              <h3 className="text-xl font-black text-gray-900 dark:text-white">Consulta de Vencimentos</h3>
-                              <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Recebimentos agrupados por cliente e período</p>
-                          </div>
-                      </div>
-                      
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-end">
-                          <div className="space-y-1">
-                              <label className="text-[10px] font-black uppercase text-gray-400 ml-1">Data de Início</label>
-                              <input 
-                                  type="date" 
-                                  className="w-full bg-gray-50 dark:bg-slate-800 p-4 rounded-2xl border-2 border-transparent focus:border-indigo-600 outline-none font-bold"
-                                  value={dateStart}
-                                  onChange={e => setDateStart(e.target.value)}
-                              />
-                          </div>
-                          <div className="space-y-1">
-                              <label className="text-[10px] font-black uppercase text-gray-400 ml-1">Data de Fim</label>
-                              <input 
-                                  type="date" 
-                                  className="w-full bg-gray-50 dark:bg-slate-800 p-4 rounded-2xl border-2 border-transparent focus:border-indigo-600 outline-none font-bold"
-                                  value={dateEnd}
-                                  onChange={e => setDateEnd(e.target.value)}
-                              />
-                          </div>
-                          <button 
-                            onClick={handleConsultVencimentos}
-                            className="bg-indigo-600 text-white font-black py-4 rounded-2xl shadow-lg hover:bg-indigo-700 transition-all flex items-center justify-center gap-2 active:scale-95"
-                          >
-                              Consultar Vencimentos
-                          </button>
-                      </div>
+                    clientMap[client.phone_number].vencimentos.push({
+                        service: sName,
+                        expiry: expiry,
+                        price: price,
+                        isMonthly: duration === 1
+                    });
 
-                      {groupedVencimentos.length > 0 && (
-                          <div className="mt-8 space-y-8 animate-slide-up">
-                              <div className="bg-indigo-600 p-6 rounded-[2rem] text-white flex justify-between items-center shadow-xl">
-                                  <div>
-                                      <p className="text-[10px] font-black uppercase text-indigo-200">Previsão Total do Período</p>
-                                      <h4 className="text-4xl font-black">R$ {totalPeriod.toFixed(2).replace('.', ',')}</h4>
-                                  </div>
-                                  <div className="text-right">
-                                      <p className="text-[10px] font-black uppercase text-indigo-200">Clientes Ativos</p>
-                                      <h4 className="text-2xl font-black">{groupedVencimentos.length}</h4>
-                                  </div>
-                              </div>
+                    clientMap[client.phone_number].totalUser += price;
+                    globalSum += price;
+                }
+            });
+        });
 
-                              <div className="space-y-4">
-                                  {groupedVencimentos.map((clientData, idx) => (
-                                      <div key={idx} className="bg-gray-50 dark:bg-slate-800/50 rounded-[2rem] overflow-hidden border border-gray-100 dark:border-slate-800 shadow-sm">
-                                          <div className="bg-white dark:bg-slate-900 px-6 py-4 flex justify-between items-center border-b border-gray-100 dark:border-slate-800">
-                                              <div>
-                                                  <h4 className="font-black text-gray-900 dark:text-white flex items-center gap-2">
-                                                      <ChevronRight size={18} className="text-indigo-600" />
-                                                      {clientData.name}
-                                                  </h4>
-                                                  <p className="text-[10px] font-bold text-gray-400 ml-6">{clientData.phone}</p>
-                                              </div>
-                                              <div className="text-right">
-                                                  <span className="text-[10px] font-black text-indigo-400 uppercase block">Total Cliente</span>
-                                                  <span className="font-black text-indigo-600">R$ {clientData.totalUser.toFixed(2).replace('.', ',')}</span>
-                                              </div>
-                                          </div>
-                                          
-                                          <div className="p-4 overflow-x-auto">
-                                              <table className="w-full text-left">
-                                                  <thead>
-                                                      <tr className="text-[9px] font-black uppercase text-gray-400 tracking-[0.1em]">
-                                                          <th className="px-4 py-2">Aplicativo</th>
-                                                          <th className="px-4 py-2">Vencimento</th>
-                                                          <th className="px-4 py-2 text-right">Preço</th>
-                                                      </tr>
-                                                  </thead>
-                                                  <tbody className="divide-y divide-gray-100 dark:divide-slate-800">
-                                                      {clientData.vencimentos.map((v, vIdx) => (
-                                                          <tr key={vIdx} className="text-sm">
-                                                              <td className="px-4 py-3 font-bold text-gray-700 dark:text-gray-300">
-                                                                  <div className="flex items-center gap-2">
-                                                                      <div className={`w-2 h-2 rounded-full ${v.isMonthly ? 'bg-green-500' : 'bg-gray-300'}`}></div>
-                                                                      {v.service}
-                                                                      {!v.isMonthly && <span className="text-[8px] bg-gray-200 text-gray-600 px-1 rounded">NÃO MENSAL</span>}
-                                                                  </div>
-                                                              </td>
-                                                              <td className="px-4 py-3 text-gray-500 font-medium">
-                                                                  {v.expiry.toLocaleDateString()}
-                                                              </td>
-                                                              <td className={`px-4 py-3 text-right font-black ${v.isMonthly ? 'text-indigo-600' : 'text-gray-400'}`}>
-                                                                  R$ {v.price.toFixed(2).replace('.', ',')}
-                                                              </td>
-                                                          </tr>
-                                                      ))}
-                                                  </tbody>
-                                              </table>
-                                          </div>
-                                      </div>
-                                  ))}
-                              </div>
-                          </div>
-                      )}
-                      {groupedVencimentos.length === 0 && dateStart && dateEnd && (
-                          <div className="text-center py-10 bg-gray-50 rounded-3xl border-2 border-dashed border-gray-200">
-                              <p className="text-gray-400 font-bold uppercase tracking-widest text-sm">Nenhum vencimento encontrado neste período.</p>
-                          </div>
-                      )}
-                  </div>
+        const finalResults = Object.values(clientMap).sort((a, b) => a.name.localeCompare(b.name));
+        setGroupedVencimentos(finalResults);
+        setTotalPeriod(globalSum);
+    };
 
-                  <div className="space-y-4">
-                      <div className="flex flex-col gap-1 px-4">
-                          <h3 className="text-xl font-black text-gray-900 dark:text-white">Resumo Geral Mensal</h3>
-                          <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Baseado em assinaturas recorrentes de 1 mês</p>
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          <div className="bg-gradient-to-br from-indigo-600 to-purple-700 p-8 rounded-[2.5rem] shadow-xl relative overflow-hidden group">
-                              <div className="absolute -right-4 -top-4 opacity-10 group-hover:rotate-12 transition-transform"><Banknote size={120} className="text-white"/></div>
-                              <p className="text-[10px] font-black text-white/60 uppercase tracking-widest">Faturamento Mensal Recebido</p>
-                              <h4 className="text-4xl font-black text-white mt-1">R$ {financeStats.grossRevenue.toFixed(2).replace('.', ',')}</h4>
-                              <div className="mt-4 flex items-center gap-1.5 text-xs font-bold text-indigo-100">
-                                  <CheckCircle2 size={14}/> <span>Soma das assinaturas de 1 mês ativas</span>
-                              </div>
-                          </div>
-                          
-                          <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-orange-100 dark:border-slate-800 shadow-sm relative overflow-hidden group">
-                               <div className="absolute -right-4 -top-4 opacity-5 group-hover:rotate-12 transition-transform"><Clock size={120} className="text-orange-500" /></div>
-                              <p className="text-[10px] font-black text-orange-400 uppercase tracking-widest">Saldo Mensal Pendente</p>
-                              <h4 className="text-4xl font-black text-orange-600 mt-1">R$ {financeStats.pendingRevenue.toFixed(2).replace('.', ',')}</h4>
-                              <div className="mt-4 flex items-center gap-1.5 text-xs font-bold text-orange-400">
-                                  <AlertTriangle size={14}/> <span>Assinaturas mensais vencidas</span>
-                              </div>
-                          </div>
-                      </div>
-                  </div>
+    const copyToClipboard = (text: string, id: string) => {
+        navigator.clipboard.writeText(text.trim());
+        setCopiedId(id);
+        setTimeout(() => setCopiedId(null), 2000);
+    };
 
-                  <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-indigo-100 dark:border-slate-800 shadow-sm space-y-6">
-                      <div className="flex flex-col gap-1">
-                          <h3 className="text-xl font-black text-gray-900 dark:text-white">Detalhamento Mensal por App</h3>
-                          <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Métricas de assinaturas de 1 mês por serviço</p>
-                      </div>
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-left border-separate border-spacing-y-2">
-                            <thead>
-                                <tr className="text-[10px] font-black uppercase text-indigo-300 tracking-widest">
-                                    <th className="px-4 py-2">Serviço</th>
-                                    <th className="px-4 py-2">Assinantes Mensais</th>
-                                    <th className="px-4 py-2 text-right">Vencido (Mensal)</th>
-                                    <th className="px-4 py-2 text-right">Total Mensal</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {Object.entries(financeStats.serviceBreakdown).map(([name, data]: [string, any]) => (
-                                    <tr key={name} className="group hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors">
-                                        <td className="px-4 py-4 rounded-l-2xl bg-gray-50 dark:bg-slate-800/50"><span className="font-black text-sm text-gray-800 dark:text-gray-200">{name}</span></td>
-                                        <td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50"><span className="font-bold text-sm text-indigo-600">{data.monthlyCount}</span></td>
-                                        <td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50 text-right font-bold text-orange-400 italic text-xs">R$ {data.pending.toFixed(2).replace('.', ',')}</td>
-                                        <td className="px-4 py-4 rounded-r-2xl bg-gray-50 dark:bg-slate-800/50 text-right font-black text-indigo-600">R$ {data.revenue.toFixed(2).replace('.', ',')}</td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                      </div>
-                  </div>
+    const financeStats = useMemo(() => {
+        const activeClients = clients.filter(c => !c.deleted);
+        const deletedClients = clients.filter(c => c.deleted);
 
-                  <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-indigo-100 dark:border-slate-800 shadow-sm space-y-8">
-                      <div className="flex justify-between items-center">
-                          <div className="flex flex-col gap-1">
-                              <h3 className="text-xl font-black text-gray-900 dark:text-white">Projeção Mensal e Escala</h3>
-                              <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Análise baseada em assinaturas de 1 mês</p>
-                          </div>
-                          <button onClick={handleResetProjection} className={`flex items-center gap-2 px-6 py-4 rounded-full text-[10px] font-black uppercase transition-all shadow-md border-2 ${isConfirmingReset ? 'bg-red-600 text-white border-red-700 animate-pulse' : 'bg-red-50 text-red-600 border-red-100 hover:bg-red-100 active:scale-95'}`}>{isConfirmingReset ? <AlertTriangle size={16} /> : <Eraser size={16} />}{isConfirmingReset ? "CONFIRMAR?" : "RESETAR PROJEÇÃO"}</button>
-                      </div>
+        let grossRevenue = 0;
+        let pendingRevenue = 0;
+        const serviceBreakdown: Record<string, { count: number, monthlyCount: number, revenue: number, pending: number }> = {};
 
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                          <div className="space-y-6">
-                              <div className="flex items-center justify-between p-5 bg-emerald-50 dark:bg-emerald-900/20 rounded-2xl border border-emerald-100">
-                                  <div className="flex items-center gap-4">
-                                      <div className="p-3 bg-white dark:bg-slate-800 rounded-xl shadow-sm text-emerald-600"><Users size={24}/></div>
-                                      <div><p className="text-[10px] font-black uppercase text-emerald-700">Novas Assinaturas (Mês)</p><h5 className="text-xl font-black text-emerald-900 dark:text-emerald-100">+{financeStats.newClientsThisMonth} Growth</h5></div>
-                                  </div>
-                                  <div className="text-emerald-600"><TrendingUp size={28}/></div>
-                              </div>
-                              <div className="flex items-center justify-between p-5 bg-red-50 dark:bg-red-900/20 rounded-2xl border border-red-100">
-                                  <div className="flex items-center gap-4">
-                                      <div className="p-3 bg-white dark:bg-slate-800 rounded-xl shadow-sm text-red-600"><UsersRound size={24}/></div>
-                                      <div><p className="text-[10px] font-black uppercase text-red-700">Cancelamentos / Churn</p><h5 className="text-xl font-black text-red-900 dark:text-red-100">-{financeStats.churnCount} Clientes</h5></div>
-                                  </div>
-                                  <div className="text-red-600 text-xs font-black uppercase">{financeStats.churnRate.toFixed(1)}% Taxa</div>
-                              </div>
-                          </div>
+        SERVICES.forEach(s => serviceBreakdown[s] = { count: 0, monthlyCount: 0, revenue: 0, pending: 0 });
 
-                          <div className="bg-indigo-50 dark:bg-slate-800 p-8 rounded-3xl border border-indigo-100 flex flex-col justify-center text-center space-y-4">
-                              <p className="text-xs font-black text-indigo-400 uppercase tracking-widest">Estimativa de Faturamento Mensal ({projectionMonths} {projectionMonths === 1 ? 'mês' : 'meses'})</p>
-                              <h4 className="text-4xl font-black text-indigo-900 dark:text-indigo-100">R$ {financeStats.projection.toFixed(2).replace('.', ',')}</h4>
-                              <p className="text-xs text-indigo-400 font-bold max-w-[200px] mx-auto">Cálculo baseado no ticket médio mensal de R$ {financeStats.averageTicket.toFixed(2)} e saldo líquido de crescimento.</p>
-                              <div className="pt-4 flex justify-center gap-2">
-                                  {[1, 3, 6, 12].map(m => (
-                                      <button key={m} onClick={() => setProjectionMonths(m)} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase transition-all ${projectionMonths === m ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-600 shadow-sm border border-indigo-50'}`}>{m === 12 ? '1Y' : `${m}M`}</button>
-                                  ))}
-                              </div>
-                          </div>
-                      </div>
-                  </div>
-              </div>
-          )}
+        activeClients.forEach(client => {
+            const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
+            subs.forEach(sub => {
+                const parts = sub.split('|');
+                const duration = parseInt(parts[3] || '1');
 
-          {activeTab === 'trash' && (
-              <div className="space-y-6 animate-fade-in pb-32">
-                  <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-red-100 dark:border-red-900/20 shadow-sm space-y-4">
-                      <div className="flex items-center gap-3">
-                          <div className="p-3 bg-red-50 text-red-500 rounded-2xl"><Trash2 size={24}/></div>
-                          <div>
-                              <h3 className="text-xl font-black text-gray-900 dark:text-white leading-none">Lixeira de Clientes</h3>
-                              <p className="text-xs font-bold text-red-400 uppercase tracking-widest mt-1">Clientes removidos da base ativa</p>
-                          </div>
-                      </div>
-                  </div>
+                if (duration !== 1) return;
 
-                  {deletedClientsList.length === 0 ? (
-                      <div className="text-center py-20 bg-gray-50 dark:bg-slate-900 rounded-[2.5rem] border-2 border-dashed border-gray-200 dark:border-slate-800">
-                          <Trash2 className="w-16 h-16 text-gray-200 dark:text-slate-800 mx-auto mb-4" />
-                          <p className="text-gray-400 font-bold uppercase tracking-widest text-sm">Lixeira vazia</p>
-                      </div>
-                  ) : (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          {deletedClientsList.map(client => (
-                              <div key={client.id} className="bg-white dark:bg-slate-900 p-6 rounded-[2.5rem] border border-gray-200 dark:border-slate-800 opacity-80 hover:opacity-100 transition-all">
-                                  <div className="flex justify-between items-start">
-                                      <div>
-                                          <h4 className="font-black text-gray-800 dark:text-white">{client.client_name || 'Sem Nome'}</h4>
-                                          <p className="text-xs font-bold text-gray-400">{client.phone_number}</p>
-                                      </div>
-                                      <div className="flex gap-2">
-                                          <button onClick={() => handleRestoreClient(client)} className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl hover:bg-indigo-600 hover:text-white transition-all font-black uppercase flex items-center gap-2" title="Restaurar"><Undo2 size={18}/> Restaurar</button>
-                                      </div>
-                                  </div>
-                              </div>
-                          ))}
-                      </div>
-                  )}
-              </div>
-          )}
+                const sName = parts[0];
+                const startDate = parts[1];
+                const price = getServicePrice(sName, duration);
 
-          {activeTab === 'buscar_login' && (
-              <div className="space-y-6 animate-fade-in pb-32">
-                  <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] shadow-sm border border-indigo-100 dark:border-slate-800 space-y-6">
-                      <div className="flex flex-col gap-2">
-                        <h2 className="text-2xl font-black text-gray-900 dark:text-white">Buscar Acessos</h2>
-                        <p className="text-sm text-indigo-400 font-bold uppercase tracking-widest">Localize logins de assinaturas por cliente</p>
-                      </div>
-                      <div className="relative group">
-                          <div className="absolute inset-y-0 left-0 pl-5 flex items-center pointer-events-none"><Search className="text-indigo-400 group-focus-within:text-indigo-600 transition-colors" size={24} /></div>
-                          <input className="w-full bg-indigo-50 dark:bg-slate-800 pl-14 pr-5 py-5 rounded-2xl font-black text-lg outline-none border-2 border-transparent focus:border-indigo-600 transition-all shadow-inner" placeholder="Nome ou WhatsApp do cliente..." value={loginSearchQuery} onChange={e => setLoginSearchQuery(e.target.value)} />
-                      </div>
-                  </div>
-                  <div className="space-y-4">
-                      {loginSearchResults.length === 0 && loginSearchQuery.length >= 2 ? (
-                          <div className="text-center py-20 bg-white/50 rounded-3xl border border-dashed border-indigo-200"><Fingerprint className="mx-auto w-16 h-16 text-indigo-200 mb-4" /><p className="text-indigo-400 font-black uppercase tracking-tighter">Nenhum cliente encontrado</p></div>
-                      ) : (
-                        loginSearchResults.map((res, i) => (
-                            <div key={i} className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-indigo-100 dark:border-slate-800 animate-slide-up">
-                                <div className="flex justify-between items-center mb-6 px-2"><div><h4 className="font-black text-xl text-gray-900 dark:text-white leading-none">{res.clientName}</h4><p className="text-xs font-bold text-indigo-400 mt-1 flex items-center gap-1.5"><Phone size={12}/> {res.phoneNumber}</p></div><div className="bg-indigo-50 text-indigo-600 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest">{res.accesses.length} Assinaturas</div></div>
-                                <div className="overflow-x-auto"><table className="w-full text-left border-separate border-spacing-y-2"><thead><tr className="text-[10px] font-black uppercase text-indigo-300 tracking-widest"><th className="px-4 py-2">Aplicativo</th><th className="px-4 py-2">Status</th><th className="px-4 py-2">E-mail de Acesso</th><th className="px-4 py-2 text-right">Ação</th></tr></thead><tbody>{res.accesses.map((acc, idx) => (<tr key={idx} className={`group hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors ${acc.isExpired ? 'opacity-60' : ''}`}><td className="px-4 py-4 rounded-l-2xl bg-gray-50 dark:bg-slate-800/50"><span className="font-black text-sm text-gray-800 dark:text-gray-200">{acc.serviceName}</span></td><td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50"><span className={`px-2.5 py-1 rounded-lg text-[9px] font-black uppercase border ${acc.isExpired ? 'bg-red-50 text-red-600 border-red-100' : 'bg-green-50 text-green-700 border-green-100'}`}>{acc.isExpired ? 'Expirada' : 'Ativa'}</span></td><td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50"><span className="font-mono text-xs font-bold text-indigo-600 dark:text-indigo-400">{acc.login}</span></td><td className="px-4 py-4 rounded-r-2xl bg-gray-50 dark:bg-slate-800/50 text-right"><button onClick={() => copyToClipboard(acc.login, `copy-login-${i}-${idx}`)} className="p-2 hover:bg-white rounded-lg transition-all text-indigo-400 hover:text-indigo-600 shadow-sm" title="Copiar Login">{copiedId === `copy-login-${i}-${idx}` ? <Check size={16} className="text-green-500" /> : <Copy size={16} />}</button></td></tr>))}</tbody></table></div>
-                            </div>
-                        ))
-                      )}
-                  </div>
-              </div>
-          )}
+                const expiry = calculateExpiry(startDate, duration);
+                const daysLeft = getDaysRemaining(expiry);
 
-          {activeTab === 'credentials' && (
-              <div className="space-y-6 animate-fade-in pb-32">
-                  <div className="flex justify-between items-center px-2"><h3 className="font-bold text-xl flex items-center gap-2"><Key className="text-indigo-600"/> Gestão de Contas</h3><button onClick={() => { setCredForm({ service: SERVICES[0], email: '', password: '', isVisible: true, publishedAt: new Date().toISOString() }); setCredModalOpen(true); }} className="bg-indigo-600 text-white px-5 py-3 rounded-xl text-xs font-black uppercase flex items-center gap-2 shadow-lg"><Plus size={20}/> Nova Conta</button></div>
-                  <div className="space-y-8">
-                    {Object.entries(groupedCredentials).map(([serviceName, creds]) => (
-                        <div key={serviceName} className="space-y-4"><h4 className="text-xs font-black text-indigo-400 uppercase tracking-widest px-2">{serviceName}</h4><div className="grid grid-cols-1 md:grid-cols-2 gap-4">{(creds as AppCredential[]).map(c => { const count = credentialUsage[c.id] || 0; const health = getCredentialHealth(c.service, c.publishedAt, count); return (<div key={c.id} className="bg-white dark:bg-slate-900 p-6 rounded-3xl shadow-sm border border-indigo-50 dark:border-slate-800"><div className="flex justify-between items-center mb-4"><div className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase border ${health.color}`}>{health.label}</div><div className="flex gap-2"><button onClick={() => { setCredForm(c); setCredModalOpen(true); }} className="text-gray-400 hover:text-indigo-600"><Edit2 size={18}/></button><button onClick={async () => { if(confirm("Excluir conta?")) {await deleteCredential(c.id); loadData();} }} className="text-gray-300 hover:text-red-500"><Trash2 size={18}/></button></div></div><p className="font-bold text-lg text-gray-800 dark:text-white break-all">{c.email}</p><p className="font-mono text-sm text-indigo-400 mt-1 bg-indigo-50/50 p-2 rounded-lg inline-block">{c.password}</p><div className="mt-5 pt-4 border-t border-indigo-50 dark:border-slate-800 flex justify-between items-center text-xs font-bold text-gray-400"><span className="flex items-center gap-1.5"><Calendar size={14}/> {new Date(c.publishedAt).toLocaleDateString()}</span><span className="flex items-center gap-1.5"><Users size={14}/> {count} ativos</span></div></div>); })}</div></div>
+                if (serviceBreakdown[sName]) {
+                    grossRevenue += price;
+                    serviceBreakdown[sName].revenue += price;
+                    serviceBreakdown[sName].count++;
+                    serviceBreakdown[sName].monthlyCount++;
+                    if (daysLeft < 0) {
+                        pendingRevenue += price;
+                        serviceBreakdown[sName].pending += price;
+                    }
+                }
+            });
+        });
+
+        const totalClientsCounted = Object.values(serviceBreakdown).reduce((acc, curr) => acc + curr.count, 0);
+        const newClientsSinceReset = activeClients.filter(c => new Date(c.created_at).getTime() > statsReferenceDate).length;
+        const churnSinceReset = deletedClients.filter(c => new Date(c.created_at).getTime() > statsReferenceDate).length;
+
+        const churnRate = totalClientsCounted > 0 ? (churnSinceReset / (totalClientsCounted + churnSinceReset)) * 100 : 0;
+        const avgTicket = totalClientsCounted > 0 ? grossRevenue / totalClientsCounted : 0;
+        const projection = grossRevenue + (newClientsSinceReset * avgTicket * projectionMonths);
+
+        return {
+            grossRevenue,
+            pendingRevenue,
+            totalClients: totalClientsCounted,
+            newClientsThisMonth: newClientsSinceReset,
+            churnCount: churnSinceReset,
+            churnRate,
+            serviceBreakdown,
+            projection,
+            averageTicket: avgTicket
+        };
+    }, [clients, projectionMonths, statsReferenceDate]);
+
+    const credentialUsage = useMemo<Record<string, number>>(() => {
+        const usage: Record<string, number> = {};
+        if (credentials.length === 0 || clients.length === 0) return usage;
+        clients.filter(c => !c.deleted).forEach(client => {
+            const subs = normalizeSubscriptions(client.subscriptions || [], client.duration_months);
+            subs.forEach(sub => {
+                const parts = sub.split('|');
+                const sName = parts[0].trim().toLowerCase();
+                const serviceCreds = credentials
+                    .filter(c => c.isVisible && c.service.toLowerCase().includes(sName))
+                    .sort((a, b) => new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime());
+                if (serviceCreds.length > 0) {
+                    const clientsForService = clients
+                        .filter(c => !c.deleted && normalizeSubscriptions(c.subscriptions || [], client.duration_months).some(s => s.toLowerCase().includes(sName)))
+                        .sort((a, b) => a.phone_number.localeCompare(b.phone_number));
+                    const rank = clientsForService.findIndex(c => c.id === client.id);
+                    if (rank !== -1) {
+                        const credIndex = rank % serviceCreds.length;
+                        const assigned = serviceCreds[credIndex];
+                        if (assigned) usage[assigned.id] = (usage[assigned.id] || 0) + 1;
+                    }
+                }
+            });
+        });
+        return usage;
+    }, [clients, credentials]);
+
+    const groupedCredentials = useMemo<Record<string, AppCredential[]>>(() => {
+        const groups: Record<string, AppCredential[]> = {};
+        const sorted = [...credentials].sort((a, b) => {
+            const timeA = new Date(a.publishedAt).getTime();
+            const timeB = new Date(b.publishedAt).getTime();
+            return credSortOrder === 'asc' ? timeA - timeB : timeB - timeA;
+        });
+        sorted.forEach(c => {
+            if (!groups[c.service]) groups[c.service] = [];
+            groups[c.service].push(c);
+        });
+        return groups;
+    }, [credentials, credSortOrder]);
+
+    const filteredClients = useMemo<ClientDBRow[]>(() => {
+        let list = clients.filter(c => !c.deleted);
+
+        if (clientFilterStatus === 'debtor') {
+            list = list.filter(c => {
+                const subs = normalizeSubscriptions(c.subscriptions || [], c.duration_months);
+                return subs.some(s => getDaysRemaining(calculateExpiry(s.split('|')[1], parseInt(s.split('|')[3] || '1'))) < 0);
+            });
+        } else if (clientFilterStatus === 'charged') {
+            list = list.filter(c => {
+                const subs = normalizeSubscriptions(c.subscriptions || [], c.duration_months);
+                return subs.some(s => s.split('|')[2] === '1');
+            });
+        } else if (clientFilterStatus === 'expiring') {
+            list = list.filter(c => normalizeSubscriptions(c.subscriptions || [], c.duration_months).some(s => {
+                const parts = s.split('|');
+                const days = getDaysRemaining(calculateExpiry(parts[1], parseInt(parts[3] || '1')));
+                return days <= 5 && days >= 0;
+            }));
+        }
+
+        if (clientSearch) {
+            const lower = clientSearch.toLowerCase();
+            list = list.filter(c => c.phone_number.includes(lower) || c.client_name?.toLowerCase().includes(lower));
+        }
+
+        if (clientSortByExpiry) {
+            list = [...list].sort((a, b) => {
+                const getMinDays = (c: ClientDBRow) => {
+                    const subs = normalizeSubscriptions(c.subscriptions, c.duration_months);
+                    if (subs.length === 0) return 9999;
+                    const days = subs.map(s => getDaysRemaining(calculateExpiry(s.split('|')[1], parseInt(s.split('|')[3] || '1'))));
+                    return Math.min(...days);
+                };
+                return getMinDays(a) - getMinDays(b);
+            });
+        }
+
+        return list;
+    }, [clients, clientSearch, clientFilterStatus, clientSortByExpiry]);
+
+    const deletedClientsList = useMemo(() => {
+        return clients.filter(c => c.deleted);
+    }, [clients]);
+
+    const loginSearchResults = useMemo(() => {
+        if (!loginSearchQuery || loginSearchQuery.length < 2) return [];
+        const query = loginSearchQuery.toLowerCase();
+        const matchedClients = clients.filter(c =>
+            !c.deleted &&
+            ((c.client_name?.toLowerCase().includes(query)) || (c.phone_number.includes(query)))
+        );
+
+        return matchedClients.map(client => {
+            const subs = normalizeSubscriptions(client.subscriptions || [], client.duration_months);
+            const subAccesses = subs.map(sub => {
+                const parts = sub.split('|');
+                const serviceName = parts[0].trim();
+                const serviceLower = serviceName.toLowerCase();
+                const expiry = calculateExpiry(parts[1], parseInt(parts[3] || '1'));
+                const daysLeft = getDaysRemaining(expiry);
+                const serviceCreds = credentials
+                    .filter(c => c.isVisible && c.service.toLowerCase().includes(serviceLower))
+                    .sort((a, b) => new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime());
+
+                let assignedLogin = "Não vinculada";
+                if (serviceCreds.length > 0) {
+                    const clientsForThisService = clients
+                        .filter(c => !c.deleted && normalizeSubscriptions(c.subscriptions || [], client.duration_months).some(s => s.toLowerCase().includes(serviceLower)))
+                        .sort((a, b) => a.phone_number.localeCompare(b.phone_number));
+                    const rank = clientsForThisService.findIndex(c => c.id === client.id);
+                    if (rank !== -1) {
+                        const credIndex = rank % serviceCreds.length;
+                        assignedLogin = serviceCreds[credIndex].email;
+                    }
+                }
+                return { serviceName, login: assignedLogin, daysLeft, isExpired: daysLeft < 0 };
+            });
+            return { clientName: client.client_name || "Sem Nome", phoneNumber: client.phone_number, accesses: subAccesses };
+        });
+    }, [clients, credentials, loginSearchQuery]);
+
+    const handleSaveClient = async () => {
+        if (!clientForm.phone_number) return;
+        setSavingClient(true);
+        const { success, msg } = await saveClientToDB(clientForm);
+        if (success) {
+            setClientModalOpen(false);
+            loadData();
+        } else {
+            alert("Erro ao salvar: " + msg);
+        }
+        setSavingClient(false);
+    };
+
+    const handleSoftDeleteClient = async (client: ClientDBRow) => {
+        if (!confirm(`Mover ${client.client_name || client.phone_number} para a lixeira?`)) return;
+        setLoading(true);
+        const { success, msg } = await saveClientToDB({ ...client, deleted: true });
+        if (success) {
+            loadData();
+        } else {
+            alert("Erro ao mover para lixeira: " + msg);
+        }
+        setLoading(false);
+    };
+
+    const handleRestoreClient = async (client: ClientDBRow) => {
+        setLoading(true);
+        const { success, msg } = await saveClientToDB({ ...client, deleted: false });
+        if (success) {
+            loadData();
+        } else {
+            alert("Erro ao restaurar: " + msg);
+        }
+        setLoading(false);
+    };
+
+    const handleSaveCred = async () => {
+        if (!credForm.email || !credForm.password) return;
+        setLoading(true);
+        await saveCredential(credForm as AppCredential);
+        setCredModalOpen(false);
+        loadData();
+        setLoading(false);
+    };
+
+    const handleMarkAsChargedQuick = async (client: ClientDBRow, subIndex: number) => {
+        const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
+        const parts = subs[subIndex].split('|');
+        subs[subIndex] = `${parts[0]}|${parts[1]}|1|${parts[3] || '1'}`;
+        await saveClientToDB({ ...client, subscriptions: subs });
+        loadData();
+    };
+
+    const handleRenewSmart = async (client: ClientDBRow, subIndex: number) => {
+        const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
+        const parts = subs[subIndex].split('|');
+        const serviceName = parts[0];
+        const oldStartDate = parts[1];
+        const months = parseInt(parts[3] || '1');
+        const currentExpiry = calculateExpiry(oldStartDate, months);
+        const today = new Date();
+        const newStartDate = currentExpiry.getTime() < today.getTime() ? today : currentExpiry;
+        subs[subIndex] = `${serviceName}|${newStartDate.toISOString()}|0|${months}`;
+        await saveClientToDB({ ...client, subscriptions: subs });
+        loadData();
+    };
+
+    const handleModalSmartRenew = (subIndex: number) => {
+        const currentSubs = [...((clientForm.subscriptions as string[] | undefined) || [])];
+        if (!currentSubs[subIndex]) return;
+        const parts = currentSubs[subIndex].split('|');
+        const serviceName = parts[0];
+        const oldStartDate = parts[1];
+        const months = parseInt(parts[3] || '1');
+        const currentExpiry = calculateExpiry(oldStartDate, months);
+        const today = new Date();
+        const newStartDate = currentExpiry.getTime() < today.getTime() ? today : currentExpiry;
+        currentSubs[subIndex] = `${serviceName}|${newStartDate.toISOString()}|0|${months}`;
+        setClientForm({ ...clientForm, subscriptions: currentSubs });
+    };
+
+    const handleResetProjection = () => {
+        if (!isConfirmingReset) {
+            setIsConfirmingReset(true);
+            setTimeout(() => setIsConfirmingReset(false), 4000);
+        } else {
+            setProjectionMonths(1);
+            setStatsReferenceDate(Date.now());
+            setIsConfirmingReset(false);
+        }
+    };
+
+    const handleDownloadBackup = () => {
+        if (clients.length === 0) return alert("Nenhum dado para baixar.");
+        const dataStr = JSON.stringify(clients, null, 2);
+        const blob = new Blob([dataStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `backup_eudorama_clientes_${new Date().toISOString().split('T')[0]}.json`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    };
+
+    const handleImportBackup = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        if (!confirm("Isso atualizará os dados existentes. Deseja continuar?")) return;
+        setLoading(true);
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+            try {
+                const importedData = JSON.parse(event.target?.result as string);
+                if (Array.isArray(importedData)) {
+                    const { error } = await supabase.from('clients').upsert(importedData);
+                    if (error) throw error;
+                    alert(`Sucesso! ${importedData.length} registros importados.`);
+                    loadData();
+                } else { alert("Formato de arquivo inválido."); }
+            } catch (err: any) { alert("Erro ao importar: " + err.message); }
+            setLoading(false);
+        };
+        reader.readAsText(file);
+        e.target.value = '';
+    };
+
+    // --- HISTORY LOGIC ---
+
+    const loadHistory = async () => {
+        setHistoryLoading(true);
+        const logs = await getHistoryLogs();
+        const settings = await getHistorySettings();
+        setHistoryLogs(logs);
+        if (settings['retention_days']) setRetentionDays(settings['retention_days']);
+        setHistoryLoading(false);
+    };
+
+    const handleSaveRetention = async (days: string) => {
+        setRetentionDays(days);
+        await updateHistorySetting('retention_days', days);
+        await enforceHistoryRetention();
+        loadHistory(); // Reload to show effect of cleanup immediately if any
+        alert(`Histórico será mantido por ${days} dias.`);
+    };
+
+    const handleClearHistory = async () => {
+        if (!confirm("Tem certeza que deseja apagar TODO o histórico? Essa ação é irreversível.")) return;
+        setHistoryLoading(true);
+        const success = await clearHistoryLogs();
+        if (success) {
+            setHistoryLogs([]);
+            alert("Histórico apagado com sucesso.");
+        } else {
+            alert("Erro ao apagar histórico.");
+        }
+        setHistoryLoading(false);
+    };
+
+    useEffect(() => {
+        if (activeTab === 'history') {
+            loadHistory();
+        }
+    }, [activeTab]);
+
+    useEffect(() => {
+        // Enforce on mount once
+        enforceHistoryRetention();
+    }, []);
+
+    const sendWhatsAppMessage = (phone: string, name: string, service: string, expiryDate: Date) => {
+        const cleanPhone = phone.replace(/\D/g, '');
+        const daysLeft = getDaysRemaining(expiryDate);
+        let message = daysLeft < 0
+            ? `Olá ${name}! 🍿 Notamos que sua assinatura do ${service} venceu. Gostaria de renovar para continuar assistindo seus doramas favoritos conosco? Sem pressão, quando puder nos avise! 💖`
+            : `Olá ${name}! 👋 Passando para avisar que sua assinatura do ${service} vence em ${daysLeft} dias (${expiryDate.toLocaleDateString()}). Se quiser renovar antecipadamente para não perder o acesso, estamos à disposição! ✨`;
+        window.open(`https://wa.me/55${cleanPhone}?text=${encodeURIComponent(message)}`, '_blank');
+    };
+
+    return (
+        <div className={`min-h-screen font-sans transition-colors duration-300 ${darkMode ? "dark bg-slate-950 text-slate-100" : "bg-indigo-50/30 text-indigo-950"}`}>
+            <div className="bg-white dark:bg-slate-900 px-6 py-5 flex justify-between items-center shadow-sm sticky top-0 z-30 border-b border-indigo-100 dark:border-slate-800">
+                <div className="flex items-center gap-3">
+                    <div className="bg-indigo-600 p-2.5 rounded-2xl text-white shadow-lg"><ShieldAlert size={24} /></div>
+                    <h1 className="font-black text-xl">EuDorama Admin</h1>
+                    <div className="hidden sm:flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-600 rounded-full border border-emerald-100">
+                        <Wifi size={12} className="animate-pulse" />
+                        <span className="text-[10px] font-black uppercase tracking-widest">Realtime Ativo</span>
+                    </div>
+                </div>
+                <div className="flex items-center gap-2">
+                    <button onClick={() => setDarkMode(!darkMode)} className="p-2.5 rounded-xl bg-indigo-50 dark:bg-slate-800 text-indigo-600">
+                        {darkMode ? <Sun size={20} /> : <Moon size={20} />}
+                    </button>
+                    <button onClick={onLogout} className="flex items-center gap-2 text-red-500 bg-red-50 dark:bg-red-900/20 px-4 py-2.5 rounded-xl font-bold text-xs uppercase">
+                        Sair
+                    </button>
+                </div>
+            </div>
+
+            <main className="max-w-5xl mx-auto px-4 mt-8 space-y-6">
+                <div className="flex bg-white dark:bg-slate-900 p-1 rounded-2xl shadow-sm border border-indigo-100 dark:border-slate-800 overflow-x-auto scrollbar-hide">
+                    {[
+                        { id: 'clients', icon: Users, label: 'Clientes' },
+                        { id: 'finances', icon: BarChart3, label: 'Finanças' },
+                        { id: 'buscar_login', icon: Search, label: 'Buscar Login' },
+                        { id: 'credentials', icon: Key, label: 'Contas' },
+                        { id: 'trash', icon: Trash2, label: 'Lixeira' },
+                        { id: 'history', icon: History, label: 'Histórico' },
+                        { id: 'danger', icon: AlertTriangle, label: 'Segurança' }
+                    ].map(tab => (
+                        <button key={tab.id} onClick={() => setActiveTab(tab.id as any)} className={`flex-1 min-w-fit py-3 px-5 rounded-xl text-[10px] font-black uppercase transition-all flex flex-col sm:flex-row items-center justify-center gap-1.5 ${activeTab === tab.id ? 'bg-indigo-600 text-white shadow-md' : 'text-indigo-400 hover:bg-indigo-50'}`}>
+                            <tab.icon size={16} /> <span className="hidden sm:inline">{tab.label}</span>
+                        </button>
                     ))}
-                  </div>
-              </div>
-          )}
+                </div>
 
-          {activeTab === 'danger' && (
-              <div className="flex flex-col items-center justify-center min-h-[50vh] space-y-10 animate-fade-in text-center px-6">
-                  <div className="bg-red-50 dark:bg-red-900/20 p-10 rounded-full animate-pulse"><Shield className="w-16 h-16 text-red-500" /></div>
-                  <div className="w-full max-w-sm space-y-4 pb-32">
-                      <h2 className="text-2xl font-black text-red-600">Zona de Segurança</h2>
-                      <button onClick={async () => { if(confirm("Deseja resetar todas as senhas de clientes?")) await resetAllClientPasswords(); loadData(); }} className="w-full bg-white dark:bg-slate-900 border-2 border-red-100 text-red-500 font-black py-5 rounded-2xl text-sm uppercase shadow-sm">Resetar Senhas Clientes</button>
-                      <button onClick={async () => { if(prompt("DIGITE 1202 PARA LIMPAR") === "1202") await hardDeleteAllClients(); loadData(); }} className="w-full bg-red-600 text-white font-black py-5 rounded-2xl shadow-xl text-sm uppercase">Limpar Histórico e Contas</button>
-                      <p className="text-[10px] font-bold text-gray-400 uppercase mt-4">Nota: Clientes nunca são excluídos permanentemente para preservar o histórico.</p>
-                  </div>
-              </div>
-          )}
-      </main>
+                {activeTab === 'clients' && (
+                    <div className="space-y-6 animate-fade-in pb-32">
+                        <div className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] shadow-sm border border-indigo-100 dark:border-slate-800 space-y-4">
+                            <div className="flex justify-between items-center px-1">
+                                <p className="text-xs font-black text-indigo-400 uppercase tracking-widest">Base de Dados</p>
+                                <div className="bg-indigo-50 text-indigo-600 px-3 py-1 rounded-lg text-[10px] font-black uppercase">Total: {clients.filter(c => !c.deleted).length} Clientes</div>
+                            </div>
+                            <div className="flex items-center gap-3 bg-indigo-50 dark:bg-slate-800 px-5 py-4 rounded-2xl border border-indigo-100 dark:border-slate-700">
+                                <Search className="text-indigo-400" size={24} />
+                                <input className="bg-transparent outline-none text-base font-bold w-full" placeholder="Buscar por nome ou WhatsApp..." value={clientSearch} onChange={e => setClientSearch(e.target.value)} />
+                            </div>
+                            <div className="flex flex-wrap gap-2 items-center">
+                                <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide flex-1">
+                                    {[
+                                        { id: 'all', label: 'Todos', color: 'bg-indigo-600 text-white' },
+                                        { id: 'charged', label: 'Cobrados', color: 'bg-emerald-100 text-emerald-700' },
+                                        { id: 'expiring', label: 'Vencendo', color: 'bg-orange-100 text-orange-700' },
+                                        { id: 'debtor', label: 'Pendentes', color: 'bg-red-100 text-red-700' }
+                                    ].map(f => (
+                                        <button key={f.id} onClick={() => setClientFilterStatus(f.id as any)} className={`px-5 py-2.5 rounded-xl text-[10px] font-black uppercase border transition-all whitespace-nowrap ${clientFilterStatus === f.id ? f.color : 'bg-white dark:bg-slate-900 text-indigo-300 border-indigo-100'}`}>{f.label}</button>
+                                    ))}
+                                </div>
 
-      {/* MODAL CLIENTE */}
-      {clientModalOpen && (
-          <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-              <div className="bg-white dark:bg-slate-900 w-full max-w-sm rounded-[2.5rem] p-8 shadow-2xl relative max-h-[90vh] overflow-y-auto border-4 border-indigo-50">
-                  <div className="flex justify-between items-center mb-8"><h3 className="font-black text-xl text-gray-900 dark:text-white leading-none">{clientForm.id ? 'Editar Perfil' : 'Novo Cliente'}</h3><button onClick={() => setClientModalOpen(false)} className="p-2.5 bg-indigo-50 dark:bg-slate-800 rounded-full text-indigo-400"><X size={24}/></button></div>
-                  <div className="space-y-6">
-                      <div className="space-y-2"><label className="text-xs font-black uppercase text-indigo-400 ml-1">WhatsApp (DDD + Número)</label><input className="w-full bg-indigo-50 dark:bg-slate-800 p-4 rounded-2xl font-bold text-lg outline-none border-2 border-transparent focus:border-indigo-300" value={clientForm.phone_number} onChange={e => setClientForm({...clientForm, phone_number: e.target.value})} placeholder="88999991234" /></div>
-                      <div className="space-y-2"><label className="text-xs font-black uppercase text-indigo-400 ml-1">Nome Completo</label><input className="w-full bg-indigo-50 dark:bg-slate-800 p-4 rounded-2xl font-bold text-lg outline-none border-2 border-transparent focus:border-indigo-300" value={clientForm.client_name} onChange={e => setClientForm({...clientForm, client_name: e.target.value})} placeholder="Ex: Maria Silva" /></div>
-                      <div className="space-y-2"><label className="text-xs font-black uppercase text-indigo-400 ml-1">Senha do Dashboard</label><div className="relative group"><input className="w-full bg-indigo-50 dark:bg-slate-800 p-4 pl-12 rounded-2xl font-bold text-lg outline-none border-2 border-transparent focus:border-indigo-300 transition-all" value={clientForm.client_password || ''} onChange={e => setClientForm({...clientForm, client_password: e.target.value})} placeholder="Definir senha do cliente" /><Lock className="absolute left-4 top-4 text-indigo-300 group-focus-within:text-indigo-600" size={20} /></div><p className="text-[10px] font-bold text-gray-400 ml-1">Esta é a senha que o cliente usa para entrar no app.</p></div>
-                      <div className="pt-4 space-y-5">
-                          <p className="text-xs font-black uppercase text-indigo-400 tracking-widest border-b-2 border-indigo-50 pb-2">Gerenciar Assinaturas</p>
-                          <div className="space-y-4">
-                              {(normalizeSubscriptions(clientForm.subscriptions, clientForm.duration_months) as string[]).map((sub, i) => {
-                                  const parts = sub.split('|');
-                                  const serviceName = parts[0];
-                                  const startDate = parts[1];
-                                  const durationStr = parts[3] || String(clientForm.duration_months || 1);
-                                  const duration = parseInt(durationStr);
-                                  const expiryDate = calculateExpiry(startDate, duration);
-                                  const isCharged = parts[2] === '1';
-                                  return (
-                                      <div key={i} className="flex flex-col p-5 bg-gray-50 dark:bg-slate-800 rounded-3xl border border-indigo-50 dark:border-slate-700 gap-4 shadow-sm">
-                                          <div className="flex justify-between items-center"><p className="font-black text-gray-800 dark:text-white uppercase">{serviceName}</p><div className="flex gap-2"><button onClick={() => sendWhatsAppMessage(clientForm.phone_number || '', clientForm.client_name || 'Dorameira', serviceName, expiryDate)} className="p-2 text-emerald-500 hover:bg-emerald-50 rounded-xl" title="Mandar cobrança WhatsApp"><MessageCircle size={20} /></button><button onClick={() => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; n.splice(i, 1); setClientForm({...clientForm, subscriptions: n}); }} className="p-2 text-red-400 hover:bg-red-50 rounded-xl" title="Remover Assinatura"><Trash2 size={20} /></button></div></div>
-                                          <div className="space-y-3"><div className="grid grid-cols-2 gap-3"><div className="space-y-1"><label className="text-[9px] font-black uppercase text-indigo-400 ml-1">Data de Início</label><input type="date" className="w-full bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-bold outline-none border border-indigo-50" value={toDateInput(startDate)} onChange={(e) => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; if (n[i]) { const p = n[i].split('|'); n[i] = `${p[0]}|${new Date(e.target.value).toISOString()}|${p[2]}|${p[3] || '1'}`; setClientForm({...clientForm, subscriptions: n}); } }} /></div><div className="space-y-1"><label className="text-[9px] font-black uppercase text-indigo-400 ml-1">Plano</label><div className="flex gap-1.5"><select className="flex-1 bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-black outline-none border border-indigo-50 h-[34px]" value={durationStr} onChange={(e) => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; if (n[i]) { const p = n[i].split('|'); n[i] = `${p[0]}|${p[1]}|${p[2]}|${e.target.value}`; setClientForm({...clientForm, subscriptions: n}); } }}>{PLAN_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}</select><button onClick={() => handleModalSmartRenew(i)} className="p-1.5 bg-indigo-600 text-white rounded-xl shadow-sm hover:bg-indigo-700 transition-all active:scale-90" title="Renovação Inteligente"><Zap size={16} /></button></div></div></div><div className="grid grid-cols-2 gap-2"><div className="bg-indigo-50/50 dark:bg-slate-900/50 p-2.5 rounded-xl border border-indigo-100/50 flex justify-between items-center"><span className="text-[9px] font-black text-indigo-400 uppercase">Fim</span><span className="text-xs font-black text-indigo-600">{expiryDate.toLocaleDateString()}</span></div><button onClick={() => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; if (n[i]) { const p = n[i].split('|'); n[i] = `${p[0]}|${p[1]}|${isCharged ? '0' : '1'}|${p[3] || '1'}`; setClientForm({...clientForm, subscriptions: n}); } }} className={`rounded-xl text-[9px] font-black uppercase border transition-all ${isCharged ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-indigo-600 border-indigo-100'}`}>{isCharged ? 'Cobrado ✓' : 'Marcar Cobrado'}</button></div></div>
-                                      </div>
-                                  );
-                              })}
-                          </div>
-                          <div className="p-6 bg-indigo-50/50 dark:bg-slate-800 rounded-[2.5rem] border-2 border-dashed border-indigo-100 dark:border-slate-700 space-y-4"><p className="text-[10px] font-black uppercase text-indigo-400 text-center">Adicionar Novo Aplicativo</p><div className="grid grid-cols-2 gap-3"><select className="w-full bg-white dark:bg-slate-900 p-3 rounded-2xl font-bold text-xs outline-none border border-indigo-50" value={newSubService} onChange={e => setNewSubService(e.target.value)}>{SERVICES.map(s => <option key={s} value={s}>{s}</option>)}</select><select className="w-full bg-white dark:bg-slate-900 p-3 rounded-2xl font-bold text-xs outline-none border border-indigo-50" value={newSubPlan} onChange={e => setNewSubPlan(e.target.value)}>{PLAN_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}</select></div><button onClick={() => { setClientForm({...clientForm, subscriptions: [...((clientForm.subscriptions as string[] | undefined) || []), `${newSubService}|${new Date().toISOString()}|0|${newSubPlan}`]}); }} className="w-full bg-indigo-600 text-white p-4 rounded-2xl flex items-center justify-center gap-2 font-black text-xs uppercase shadow-md"><Plus size={18}/> Incluir Plano</button></div>
-                      </div>
-                      <button onClick={handleSaveClient} disabled={savingClient} className="w-full bg-indigo-600 text-white font-black py-5 rounded-3xl shadow-xl mt-6 active:scale-95 transition-transform">{savingClient ? <Loader2 className="w-6 h-6 animate-spin mx-auto"/> : 'Salvar Alterações'}</button>
-                  </div>
-              </div>
-          </div>
-      )}
+                                <div className="flex gap-2">
+                                    <button onClick={handleDownloadBackup} className="p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all bg-white dark:bg-slate-900 text-indigo-600 border-indigo-100 hover:bg-indigo-50" title="Baixar Backup JSON"><Download size={14} /> <span className="hidden sm:inline">Backup</span></button>
+                                    <label className="p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all bg-white dark:bg-slate-900 text-purple-600 border-indigo-100 hover:bg-purple-50 cursor-pointer" title="Importar Backup JSON"><Upload size={14} /> <span className="hidden sm:inline">Importar</span><input type="file" accept=".json" className="hidden" onChange={handleImportBackup} /></label>
+                                    <button onClick={() => setClientSortByExpiry(!clientSortByExpiry)} className={`p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all ${clientSortByExpiry ? 'bg-amber-100 text-amber-700 border-amber-200' : 'bg-white dark:bg-slate-900 text-indigo-400 border-indigo-100'}`} title="Ordenar por Vencimento Próximo"><ArrowUpDown size={14} /> <span className="hidden sm:inline">Vencimento</span></button>
+                                </div>
+                            </div>
+                            <button onClick={() => { setClientForm({ phone_number: '', client_name: '', subscriptions: [], client_password: '' }); setClientModalOpen(true); }} className="w-full bg-indigo-600 text-white font-black py-4 rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-indigo-100"><Plus size={24} /> Novo Cliente</button>
+                        </div>
 
-      {/* MODAL CONTA */}
-      {credModalOpen && (
-          <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-              <div className="bg-white dark:bg-slate-900 w-full max-w-sm rounded-[2.5rem] p-8 shadow-2xl relative border border-indigo-100"><div className="flex justify-between items-center mb-8"><h3 className="font-black text-xl text-gray-900 dark:text-white leading-none">{credForm.id ? 'Editar Conta' : 'Nova Conta'}</h3><button onClick={() => setCredModalOpen(false)} className="p-2.5 bg-gray-100 dark:bg-slate-800 rounded-full text-gray-400"><X size={24}/></button></div><div className="space-y-5"><div className="space-y-2"><label className="text-xs font-black uppercase text-indigo-400 ml-1">Serviço</label><select className="w-full bg-indigo-50 dark:bg-slate-800 p-4 rounded-2xl font-bold text-lg outline-none border border-indigo-100" value={credForm.service} onChange={e => setCredForm({...credForm, service: e.target.value})}>{SERVICES.map(s => <option key={s} value={s}>{s}</option>)}</select></div><div className="space-y-2"><label className="text-xs font-black uppercase text-indigo-400 ml-1">E-mail / Login</label><input className="w-full bg-indigo-50 dark:bg-slate-800 p-4 rounded-2xl font-bold text-lg outline-none border border-indigo-100" value={credForm.email} onChange={e => setCredForm({...credForm, email: e.target.value})} placeholder="email@exemplo.com" /></div><div className="space-y-2"><label className="text-xs font-black uppercase text-indigo-400 ml-1">Senha</label><input className="w-full bg-indigo-50 dark:bg-slate-800 p-4 rounded-2xl font-bold text-lg outline-none border border-indigo-100" value={credForm.password} onChange={e => setCredForm({...credForm, password: e.target.value})} placeholder="******" /></div><div className="space-y-2"><label className="text-xs font-black uppercase text-indigo-400 ml-1">Data de Publicação</label><input type="datetime-local" className="w-full bg-indigo-50 dark:bg-slate-800 p-4 rounded-2xl font-bold text-lg outline-none border border-indigo-100" value={toLocalInput(credForm.publishedAt || new Date().toISOString())} onChange={e => setCredForm({...credForm, publishedAt: new Date(e.target.value).toISOString()})} /></div><button onClick={handleSaveCred} disabled={loading} className="w-full bg-indigo-600 text-white font-black py-5 rounded-3xl shadow-xl mt-6 active:scale-95 transition-transform">{loading ? <Loader2 className="animate-spin w-6 h-6 mx-auto"/> : 'Salvar Dados'}</button></div></div>
-          </div>
-      )}
-    </div>
-  );
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {filteredClients.map((client) => (
+                                <div key={client.id} className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-indigo-50 flex flex-col hover:border-indigo-200 transition-all">
+                                    <div className="flex justify-between items-start mb-4">
+                                        <div className="min-w-0">
+                                            <h3 className="font-black text-gray-900 dark:text-white text-lg truncate leading-tight">{client.client_name || 'Sem Nome'}</h3>
+                                            <p className="text-xs font-bold text-indigo-400 mt-1 flex items-center gap-1.5"><Phone size={12} /> {client.phone_number}</p>
+                                        </div>
+                                        <div className="flex gap-2">
+                                            <button onClick={() => { setClientForm({ ...client, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months) }); setClientModalOpen(true); }} className="p-3 rounded-xl bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white transition-all"><Edit2 size={18} /></button>
+                                            <button onClick={() => handleSoftDeleteClient(client)} className="p-3 rounded-xl bg-red-50 text-red-600 hover:bg-red-600 hover:text-white transition-all"><Trash2 size={18} /></button>
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-3 mb-4">
+                                        {(normalizeSubscriptions(client.subscriptions || [], client.duration_months) as string[]).map((sub, i) => {
+                                            const parts = sub.split('|');
+                                            const serviceName = parts[0];
+                                            const expiry = calculateExpiry(parts[1], parseInt(parts[3] || '1'));
+                                            const daysLeft = getDaysRemaining(expiry);
+                                            const isCharged = parts[2] === '1';
+                                            let statusColor = daysLeft < 0 ? "bg-red-50 text-red-600 border-red-100" : (daysLeft <= 5 ? "bg-amber-50 text-amber-600 border-amber-100" : "bg-green-50 text-green-700 border-green-100");
+                                            return (
+                                                <div key={i} className={`p-4 rounded-2xl border flex flex-col gap-3 transition-all ${statusColor}`}>
+                                                    <div className="flex justify-between items-center">
+                                                        <div className="flex flex-col">
+                                                            <span className="font-black text-xs uppercase tracking-wider">{serviceName}</span>
+                                                            <span className="text-[10px] font-bold opacity-80">{daysLeft < 0 ? 'Vencido há ' + Math.abs(daysLeft) + 'd' : `Vence em ${expiry.toLocaleDateString()} (${daysLeft}d)`}</span>
+                                                        </div>
+                                                        <div className="flex gap-1.5">
+                                                            <button onClick={() => sendWhatsAppMessage(client.phone_number, client.client_name || 'Dorameira', serviceName, expiry)} className="p-2.5 bg-white/50 hover:bg-emerald-500 hover:text-white rounded-xl transition-all"><MessageCircle size={16} className="text-emerald-600 hover:text-inherit" /></button>
+                                                            {!isCharged && <button onClick={() => { setClientForm({ ...clientForm, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months).map((s, idx) => idx === i ? `${s.split('|')[0]}|${s.split('|')[1]}|1|${s.split('|')[3] || '1'}` : s) }); handleMarkAsChargedQuick(client, i); }} className="p-2.5 bg-white/50 text-indigo-600 border border-indigo-100 rounded-xl hover:bg-indigo-600 hover:text-white transition-all"><DollarSign size={16} /></button>}
+                                                        </div>
+                                                    </div>
+                                                    <button onClick={() => handleRenewSmart(client, i)} className="w-full py-2.5 bg-white/80 dark:bg-slate-800/80 hover:bg-indigo-600 hover:text-white rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-2 transition-all shadow-sm border border-white"><RotateCw size={14} /> Renovar +{parts[3] || '1'} Mês</button>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                {activeTab === 'finances' && (
+                    <div className="space-y-8 animate-fade-in pb-32">
+                        {/* --- CONSULTA DE VENCIMENTOS AGRUPADA --- */}
+                        <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border-4 border-indigo-600/10 shadow-sm space-y-6">
+                            <div className="flex items-center gap-3 mb-2">
+                                <div className="p-3 bg-indigo-600 text-white rounded-2xl shadow-lg shadow-indigo-200"><Filter size={24} /></div>
+                                <div>
+                                    <h3 className="text-xl font-black text-gray-900 dark:text-white">Consulta de Vencimentos</h3>
+                                    <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Recebimentos agrupados por cliente e período</p>
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-end">
+                                <div className="space-y-1">
+                                    <label className="text-[10px] font-black uppercase text-gray-400 ml-1">Data de Início</label>
+                                    <input
+                                        type="date"
+                                        className="w-full bg-gray-50 dark:bg-slate-800 p-4 rounded-2xl border-2 border-transparent focus:border-indigo-600 outline-none font-bold"
+                                        value={dateStart}
+                                        onChange={e => setDateStart(e.target.value)}
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-[10px] font-black uppercase text-gray-400 ml-1">Data de Fim</label>
+                                    <input
+                                        type="date"
+                                        className="w-full bg-gray-50 dark:bg-slate-800 p-4 rounded-2xl border-2 border-transparent focus:border-indigo-600 outline-none font-bold"
+                                        value={dateEnd}
+                                        onChange={e => setDateEnd(e.target.value)}
+                                    />
+                                </div>
+                                <button
+                                    onClick={handleConsultVencimentos}
+                                    className="bg-indigo-600 text-white font-black py-4 rounded-2xl shadow-lg hover:bg-indigo-700 transition-all flex items-center justify-center gap-2 active:scale-95"
+                                >
+                                    Consultar Vencimentos
+                                </button>
+                            </div>
+
+                            {groupedVencimentos.length > 0 && (
+                                <div className="mt-8 space-y-8 animate-slide-up">
+                                    <div className="bg-indigo-600 p-6 rounded-[2rem] text-white flex justify-between items-center shadow-xl">
+                                        <div>
+                                            <p className="text-[10px] font-black uppercase text-indigo-200">Previsão Total do Período</p>
+                                            <h4 className="text-4xl font-black">R$ {totalPeriod.toFixed(2).replace('.', ',')}</h4>
+                                        </div>
+                                        <div className="text-right">
+                                            <p className="text-[10px] font-black uppercase text-indigo-200">Clientes Ativos</p>
+                                            <h4 className="text-2xl font-black">{groupedVencimentos.length}</h4>
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-4">
+                                        {groupedVencimentos.map((clientData, idx) => (
+                                            <div key={idx} className="bg-gray-50 dark:bg-slate-800/50 rounded-[2rem] overflow-hidden border border-gray-100 dark:border-slate-800 shadow-sm">
+                                                <div className="bg-white dark:bg-slate-900 px-6 py-4 flex justify-between items-center border-b border-gray-100 dark:border-slate-800">
+                                                    <div>
+                                                        <h4 className="font-black text-gray-900 dark:text-white flex items-center gap-2">
+                                                            <ChevronRight size={18} className="text-indigo-600" />
+                                                            {clientData.name}
+                                                        </h4>
+                                                        <p className="text-[10px] font-bold text-gray-400 ml-6">{clientData.phone}</p>
+                                                    </div>
+                                                    <div className="text-right">
+                                                        <span className="text-[10px] font-black text-indigo-400 uppercase block">Total Cliente</span>
+                                                        <span className="font-black text-indigo-600">R$ {clientData.totalUser.toFixed(2).replace('.', ',')}</span>
+                                                    </div>
+                                                </div>
+
+                                                <div className="p-4 overflow-x-auto">
+                                                    <table className="w-full text-left">
+                                                        <thead>
+                                                            <tr className="text-[9px] font-black uppercase text-gray-400 tracking-[0.1em]">
+                                                                <th className="px-4 py-2">Aplicativo</th>
+                                                                <th className="px-4 py-2">Vencimento</th>
+                                                                <th className="px-4 py-2 text-right">Preço</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody className="divide-y divide-gray-100 dark:divide-slate-800">
+                                                            {clientData.vencimentos.map((v, vIdx) => (
+                                                                <tr key={vIdx} className="text-sm">
+                                                                    <td className="px-4 py-3 font-bold text-gray-700 dark:text-gray-300">
+                                                                        <div className="flex items-center gap-2">
+                                                                            <div className={`w-2 h-2 rounded-full ${v.isMonthly ? 'bg-green-500' : 'bg-gray-300'}`}></div>
+                                                                            {v.service}
+                                                                            {!v.isMonthly && <span className="text-[8px] bg-gray-200 text-gray-600 px-1 rounded">NÃO MENSAL</span>}
+                                                                        </div>
+                                                                    </td>
+                                                                    <td className="px-4 py-3 text-gray-500 font-medium">
+                                                                        {v.expiry.toLocaleDateString()}
+                                                                    </td>
+                                                                    <td className={`px-4 py-3 text-right font-black ${v.isMonthly ? 'text-indigo-600' : 'text-gray-400'}`}>
+                                                                        R$ {v.price.toFixed(2).replace('.', ',')}
+                                                                    </td>
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                            {groupedVencimentos.length === 0 && dateStart && dateEnd && (
+                                <div className="text-center py-10 bg-gray-50 rounded-3xl border-2 border-dashed border-gray-200">
+                                    <p className="text-gray-400 font-bold uppercase tracking-widest text-sm">Nenhum vencimento encontrado neste período.</p>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="space-y-4">
+                            <div className="flex flex-col gap-1 px-4">
+                                <h3 className="text-xl font-black text-gray-900 dark:text-white">Resumo Geral Mensal</h3>
+                                <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Baseado em assinaturas recorrentes de 1 mês</p>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="bg-gradient-to-br from-indigo-600 to-purple-700 p-8 rounded-[2.5rem] shadow-xl relative overflow-hidden group">
+                                    <div className="absolute -right-4 -top-4 opacity-10 group-hover:rotate-12 transition-transform"><Banknote size={120} className="text-white" /></div>
+                                    <p className="text-[10px] font-black text-white/60 uppercase tracking-widest">Faturamento Mensal Recebido</p>
+                                    <h4 className="text-4xl font-black text-white mt-1">R$ {financeStats.grossRevenue.toFixed(2).replace('.', ',')}</h4>
+                                    <div className="mt-4 flex items-center gap-1.5 text-xs font-bold text-indigo-100">
+                                        <CheckCircle2 size={14} /> <span>Soma das assinaturas de 1 mês ativas</span>
+                                    </div>
+                                </div>
+
+                                <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-orange-100 dark:border-slate-800 shadow-sm relative overflow-hidden group">
+                                    <div className="absolute -right-4 -top-4 opacity-5 group-hover:rotate-12 transition-transform"><Clock size={120} className="text-orange-500" /></div>
+                                    <p className="text-[10px] font-black text-orange-400 uppercase tracking-widest">Saldo Mensal Pendente</p>
+                                    <h4 className="text-4xl font-black text-orange-600 mt-1">R$ {financeStats.pendingRevenue.toFixed(2).replace('.', ',')}</h4>
+                                    <div className="mt-4 flex items-center gap-1.5 text-xs font-bold text-orange-400">
+                                        <AlertTriangle size={14} /> <span>Assinaturas mensais vencidas</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-indigo-100 dark:border-slate-800 shadow-sm space-y-6">
+                            <div className="flex flex-col gap-1">
+                                <h3 className="text-xl font-black text-gray-900 dark:text-white">Detalhamento Mensal por App</h3>
+                                <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Métricas de assinaturas de 1 mês por serviço</p>
+                            </div>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-left border-separate border-spacing-y-2">
+                                    <thead>
+                                        <tr className="text-[10px] font-black uppercase text-indigo-300 tracking-widest">
+                                            <th className="px-4 py-2">Serviço</th>
+                                            <th className="px-4 py-2">Assinantes Mensais</th>
+                                            <th className="px-4 py-2 text-right">Vencido (Mensal)</th>
+                                            <th className="px-4 py-2 text-right">Total Mensal</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {Object.entries(financeStats.serviceBreakdown).map(([name, data]: [string, any]) => (
+                                            <tr key={name} className="group hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors">
+                                                <td className="px-4 py-4 rounded-l-2xl bg-gray-50 dark:bg-slate-800/50"><span className="font-black text-sm text-gray-800 dark:text-gray-200">{name}</span></td>
+                                                <td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50"><span className="font-bold text-sm text-indigo-600">{data.monthlyCount}</span></td>
+                                                <td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50 text-right font-bold text-orange-400 italic text-xs">R$ {data.pending.toFixed(2).replace('.', ',')}</td>
+                                                <td className="px-4 py-4 rounded-r-2xl bg-gray-50 dark:bg-slate-800/50 text-right font-black text-indigo-600">R$ {data.revenue.toFixed(2).replace('.', ',')}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-indigo-100 dark:border-slate-800 shadow-sm space-y-8">
+                            <div className="flex justify-between items-center">
+                                <div className="flex flex-col gap-1">
+                                    <h3 className="text-xl font-black text-gray-900 dark:text-white">Projeção Mensal e Escala</h3>
+                                    <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Análise baseada em assinaturas de 1 mês</p>
+                                </div>
+                                <button onClick={handleResetProjection} className={`flex items-center gap-2 px-6 py-4 rounded-full text-[10px] font-black uppercase transition-all shadow-md border-2 ${isConfirmingReset ? 'bg-red-600 text-white border-red-700 animate-pulse' : 'bg-red-50 text-red-600 border-red-100 hover:bg-red-100 active:scale-95'}`}>{isConfirmingReset ? <AlertTriangle size={16} /> : <Eraser size={16} />}{isConfirmingReset ? "CONFIRMAR?" : "RESETAR PROJEÇÃO"}</button>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                                <div className="space-y-6">
+                                    <div className="flex items-center justify-between p-5 bg-emerald-50 dark:bg-emerald-900/20 rounded-2xl border border-emerald-100">
+                                        <div className="flex items-center gap-4">
+                                            <div className="p-3 bg-white dark:bg-slate-800 rounded-xl shadow-sm text-emerald-600"><Users size={24} /></div>
+                                            <div><p className="text-[10px] font-black uppercase text-emerald-700">Novas Assinaturas (Mês)</p><h5 className="text-xl font-black text-emerald-900 dark:text-emerald-100">+{financeStats.newClientsThisMonth} Growth</h5></div>
+                                        </div>
+                                        <div className="text-emerald-600"><TrendingUp size={28} /></div>
+                                    </div>
+                                    <div className="flex items-center justify-between p-5 bg-red-50 dark:bg-red-900/20 rounded-2xl border border-red-100">
+                                        <div className="flex items-center gap-4">
+                                            <div className="p-3 bg-white dark:bg-slate-800 rounded-xl shadow-sm text-red-600"><UsersRound size={24} /></div>
+                                            <div><p className="text-[10px] font-black uppercase text-red-700">Cancelamentos / Churn</p><h5 className="text-xl font-black text-red-900 dark:text-red-100">-{financeStats.churnCount} Clientes</h5></div>
+                                        </div>
+                                        <div className="text-red-600 text-xs font-black uppercase">{financeStats.churnRate.toFixed(1)}% Taxa</div>
+                                    </div>
+                                </div>
+
+                                <div className="bg-indigo-50 dark:bg-slate-800 p-8 rounded-3xl border border-indigo-100 flex flex-col justify-center text-center space-y-4">
+                                    <p className="text-xs font-black text-indigo-400 uppercase tracking-widest">Estimativa de Faturamento Mensal ({projectionMonths} {projectionMonths === 1 ? 'mês' : 'meses'})</p>
+                                    <h4 className="text-4xl font-black text-indigo-900 dark:text-indigo-100">R$ {financeStats.projection.toFixed(2).replace('.', ',')}</h4>
+                                    <p className="text-xs text-indigo-400 font-bold max-w-[200px] mx-auto">Cálculo baseado no ticket médio mensal de R$ {financeStats.averageTicket.toFixed(2)} e saldo líquido de crescimento.</p>
+                                    <div className="pt-4 flex justify-center gap-2">
+                                        {[1, 3, 6, 12].map(m => (
+                                            <button key={m} onClick={() => setProjectionMonths(m)} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase transition-all ${projectionMonths === m ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-600 shadow-sm border border-indigo-50'}`}>{m === 12 ? '1Y' : `${m}M`}</button>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {activeTab === 'trash' && (
+                    <div className="space-y-6 animate-fade-in pb-32">
+                        <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-red-100 dark:border-red-900/20 shadow-sm space-y-4">
+                            <div className="flex items-center gap-3">
+                                <div className="p-3 bg-red-50 text-red-500 rounded-2xl"><Trash2 size={24} /></div>
+                                <div>
+                                    <h3 className="text-xl font-black text-gray-900 dark:text-white leading-none">Lixeira de Clientes</h3>
+                                    <p className="text-xs font-bold text-red-400 uppercase tracking-widest mt-1">Clientes removidos da base ativa</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        {deletedClientsList.length === 0 ? (
+                            <div className="text-center py-20 bg-gray-50 dark:bg-slate-900 rounded-[2.5rem] border-2 border-dashed border-gray-200 dark:border-slate-800">
+                                <Trash2 className="w-16 h-16 text-gray-200 dark:text-slate-800 mx-auto mb-4" />
+                                <p className="text-gray-400 font-bold uppercase tracking-widest text-sm">Lixeira vazia</p>
+                            </div>
+                        ) : (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                {deletedClientsList.map(client => (
+                                    <div key={client.id} className="bg-white dark:bg-slate-900 p-6 rounded-[2.5rem] border border-gray-200 dark:border-slate-800 opacity-80 hover:opacity-100 transition-all">
+                                        <div className="flex justify-between items-start">
+                                            <div>
+                                                <h4 className="font-black text-gray-800 dark:text-white">{client.client_name || 'Sem Nome'}</h4>
+                                                <p className="text-xs font-bold text-gray-400">{client.phone_number}</p>
+                                            </div>
+                                            <div className="flex gap-2">
+                                                <button onClick={() => handleRestoreClient(client)} className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl hover:bg-indigo-600 hover:text-white transition-all font-black uppercase flex items-center gap-2" title="Restaurar"><Undo2 size={18} /> Restaurar</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {activeTab === 'buscar_login' && (
+                    <div className="space-y-6 animate-fade-in pb-32">
+                        <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] shadow-sm border border-indigo-100 dark:border-slate-800 space-y-6">
+                            <div className="flex flex-col gap-2">
+                                <h2 className="text-2xl font-black text-gray-900 dark:text-white">Buscar Acessos</h2>
+                                <p className="text-sm text-indigo-400 font-bold uppercase tracking-widest">Localize logins de assinaturas por cliente</p>
+                            </div>
+                            <div className="relative group">
+                                <div className="absolute inset-y-0 left-0 pl-5 flex items-center pointer-events-none"><Search className="text-indigo-400 group-focus-within:text-indigo-600 transition-colors" size={24} /></div>
+                                <input className="w-full bg-indigo-50 dark:bg-slate-800 pl-14 pr-5 py-5 rounded-2xl font-black text-lg outline-none border-2 border-transparent focus:border-indigo-600 transition-all shadow-inner" placeholder="Nome ou WhatsApp do cliente..." value={loginSearchQuery} onChange={e => setLoginSearchQuery(e.target.value)} />
+                            </div>
+                        </div>
+                        <div className="space-y-4">
+                            {loginSearchResults.length === 0 && loginSearchQuery.length >= 2 ? (
+                                <div className="text-center py-20 bg-white/50 rounded-3xl border border-dashed border-indigo-200"><Fingerprint className="mx-auto w-16 h-16 text-indigo-200 mb-4" /><p className="text-indigo-400 font-black uppercase tracking-tighter">Nenhum cliente encontrado</p></div>
+                            ) : (
+                                loginSearchResults.map((res, i) => (
+                                    <div key={i} className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-indigo-100 dark:border-slate-800 animate-slide-up">
+                                        <div className="flex justify-between items-center mb-6 px-2"><div><h4 className="font-black text-xl text-gray-900 dark:text-white leading-none">{res.clientName}</h4><p className="text-xs font-bold text-indigo-400 mt-1 flex items-center gap-1.5"><Phone size={12} /> {res.phoneNumber}</p></div><div className="bg-indigo-50 text-indigo-600 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest">{res.accesses.length} Assinaturas</div></div>
+                                        <div className="overflow-x-auto"><table className="w-full text-left border-separate border-spacing-y-2"><thead><tr className="text-[10px] font-black uppercase text-indigo-300 tracking-widest"><th className="px-4 py-2">Aplicativo</th><th className="px-4 py-2">Status</th><th className="px-4 py-2">E-mail de Acesso</th><th className="px-4 py-2 text-right">Ação</th></tr></thead><tbody>{res.accesses.map((acc, idx) => (<tr key={idx} className={`group hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors ${acc.isExpired ? 'opacity-60' : ''}`}><td className="px-4 py-4 rounded-l-2xl bg-gray-50 dark:bg-slate-800/50"><span className="font-black text-sm text-gray-800 dark:text-gray-200">{acc.serviceName}</span></td><td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50"><span className={`px-2.5 py-1 rounded-lg text-[9px] font-black uppercase border ${acc.isExpired ? 'bg-red-50 text-red-600 border-red-100' : 'bg-green-50 text-green-700 border-green-100'}`}>{acc.isExpired ? 'Expirada' : 'Ativa'}</span></td><td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50"><span className="font-mono text-xs font-bold text-indigo-600 dark:text-indigo-400">{acc.login}</span></td><td className="px-4 py-4 rounded-r-2xl bg-gray-50 dark:bg-slate-800/50 text-right"><button onClick={() => copyToClipboard(acc.login, `copy-login-${i}-${idx}`)} className="p-2 hover:bg-white rounded-lg transition-all text-indigo-400 hover:text-indigo-600 shadow-sm" title="Copiar Login">{copiedId === `copy-login-${i}-${idx}` ? <Check size={16} className="text-green-500" /> : <Copy size={16} />}</button></td></tr>))}</tbody></table></div>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                    </div>
+                )}
+
+                {activeTab === 'credentials' && (
+                    <div className="space-y-6 animate-fade-in pb-32">
+                        <div className="flex justify-between items-center px-2"><h3 className="font-bold text-xl flex items-center gap-2"><Key className="text-indigo-600" /> Gestão de Contas</h3><button onClick={() => { setCredForm({ service: SERVICES[0], email: '', password: '', isVisible: true, publishedAt: new Date().toISOString() }); setCredModalOpen(true); }} className="bg-indigo-600 text-white px-5 py-3 rounded-xl text-xs font-black uppercase flex items-center gap-2 shadow-lg"><Plus size={20} /> Nova Conta</button></div>
+                        <div className="space-y-8">
+                            {Object.entries(groupedCredentials).map(([serviceName, creds]) => (
+                                <div key={serviceName} className="space-y-4"><h4 className="text-xs font-black text-indigo-400 uppercase tracking-widest px-2">{serviceName}</h4><div className="grid grid-cols-1 md:grid-cols-2 gap-4">{(creds as AppCredential[]).map(c => { const count = credentialUsage[c.id] || 0; const health = getCredentialHealth(c.service, c.publishedAt, count); return (<div key={c.id} className="bg-white dark:bg-slate-900 p-6 rounded-3xl shadow-sm border border-indigo-50 dark:border-slate-800"><div className="flex justify-between items-center mb-4"><div className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase border ${health.color}`}>{health.label}</div><div className="flex gap-2"><button onClick={() => { setCredForm(c); setCredModalOpen(true); }} className="text-gray-400 hover:text-indigo-600"><Edit2 size={18} /></button><button onClick={async () => { if (confirm("Excluir conta?")) { await deleteCredential(c.id); loadData(); } }} className="text-gray-300 hover:text-red-500"><Trash2 size={18} /></button></div></div><p className="font-bold text-lg text-gray-800 dark:text-white break-all">{c.email}</p><p className="font-mono text-sm text-indigo-400 mt-1 bg-indigo-50/50 p-2 rounded-lg inline-block">{c.password}</p><div className="mt-5 pt-4 border-t border-indigo-50 dark:border-slate-800 flex justify-between items-center text-xs font-bold text-gray-400"><span className="flex items-center gap-1.5"><Calendar size={14} /> {new Date(c.publishedAt).toLocaleDateString()}</span><span className="flex items-center gap-1.5"><Users size={14} /> {count} ativos</span></div></div>); })}</div></div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                {activeTab === 'danger' && (
+                    <div className="flex flex-col items-center justify-center min-h-[50vh] space-y-10 animate-fade-in text-center px-6">
+                        <div className="bg-red-50 dark:bg-red-900/20 p-10 rounded-full animate-pulse"><Shield className="w-16 h-16 text-red-500" /></div>
+                        <div className="w-full max-w-sm space-y-4 pb-32">
+                            <h2 className="text-2xl font-black text-red-600">Zona de Segurança</h2>
+                            <button onClick={async () => { if (confirm("Deseja resetar todas as senhas de clientes?")) await resetAllClientPasswords(); loadData(); }} className="w-full bg-white dark:bg-slate-900 border-2 border-red-100 text-red-500 font-black py-5 rounded-2xl text-sm uppercase shadow-sm">Resetar Senhas Clientes</button>
+                            <button onClick={async () => { if (prompt("DIGITE 1202 PARA LIMPAR") === "1202") await hardDeleteAllClients(); loadData(); }} className="w-full bg-red-600 text-white font-black py-5 rounded-2xl shadow-xl text-sm uppercase">Limpar Histórico e Contas</button>
+                            <p className="text-[10px] font-bold text-gray-400 uppercase mt-4">Nota: Clientes nunca são excluídos permanentemente para preservar o histórico.</p>
+                        </div>
+                    </div>
+                )}
+
+                {activeTab === 'history' && (
+                    <div className="space-y-6 animate-fade-in pb-32">
+                        <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] shadow-sm border border-indigo-100 dark:border-slate-800 space-y-6">
+                            <div className="flex flex-col md:flex-row justify-between items-center gap-4">
+                                <div className="flex items-center gap-3">
+                                    <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl"><History size={24} /></div>
+                                    <div>
+                                        <h2 className="text-2xl font-black text-gray-900 dark:text-white">Histórico de Atividades</h2>
+                                        <p className="text-sm text-indigo-400 font-bold uppercase tracking-widest">Logs de alterações e auditoria</p>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    <div className="flex items-center gap-2 bg-indigo-50 dark:bg-slate-800 p-2 rounded-xl">
+                                        <span className="text-[10px] font-black uppercase text-indigo-400 pl-2">Retenção:</span>
+                                        <select
+                                            value={retentionDays}
+                                            onChange={(e) => handleSaveRetention(e.target.value)}
+                                            className="bg-white dark:bg-slate-900 text-indigo-600 font-bold text-xs p-2 rounded-lg outline-none border border-indigo-100"
+                                        >
+                                            <option value="3">3 Dias</option>
+                                            <option value="7">7 Dias</option>
+                                            <option value="15">15 Dias</option>
+                                            <option value="30">30 Dias</option>
+                                        </select>
+                                    </div>
+                                    <button onClick={handleClearHistory} className="bg-red-50 text-red-500 hover:bg-red-500 hover:text-white px-5 py-3 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all shadow-sm border border-red-100">
+                                        <Trash2 size={16} /> Limpar Tudo
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        {historyLoading ? (
+                            <div className="text-center py-20"><Loader2 className="w-10 h-10 text-indigo-600 animate-spin mx-auto" /></div>
+                        ) : historyLogs.length === 0 ? (
+                            <div className="text-center py-20 bg-white/50 rounded-3xl border border-dashed border-indigo-200">
+                                <History className="mx-auto w-16 h-16 text-indigo-200 mb-4" />
+                                <p className="text-indigo-400 font-black uppercase tracking-tighter">Nenhum registro encontrado</p>
+                            </div>
+                        ) : (
+                            <div className="space-y-4">
+                                {historyLogs.map(log => (
+                                    <div key={log.id} className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] border border-gray-100 dark:border-slate-800 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4 hover:border-indigo-200 transition-colors">
+                                        <div className="flex items-start gap-4">
+                                            <div className="p-3 bg-indigo-50 dark:bg-slate-800 rounded-2xl text-indigo-600">
+                                                {log.action.includes('Remov') || log.action.includes('Delet') ? <Trash2 size={20} /> :
+                                                    log.action.includes('Novo') || log.action.includes('Adiciona') ? <Plus size={20} /> :
+                                                        log.action.includes('Modific') || log.action.includes('Atualiza') ? <Edit2 size={20} /> : <History size={20} />}
+                                            </div>
+                                            <div>
+                                                <h4 className="font-black text-gray-900 dark:text-white text-lg">{log.action}</h4>
+                                                <p className="text-sm font-medium text-gray-500 dark:text-gray-400 mt-1">{log.details.replace(/^"|"$/g, '')}</p>
+                                            </div>
+                                        </div>
+                                        <div className="text-right min-w-fit">
+                                            <span className="text-[10px] font-black uppercase text-indigo-300 bg-indigo-50 dark:bg-slate-800 px-3 py-1.5 rounded-lg flex items-center gap-1.5">
+                                                <Clock size={12} /> {new Date(log.created_at).toLocaleString()}
+                                            </span>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                )}
+            </main>
+
+            {/* MODAL CLIENTE */}
+            {clientModalOpen && (
+                <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+                    <div className="bg-white dark:bg-slate-900 w-full max-w-sm rounded-[2.5rem] p-8 shadow-2xl relative max-h-[90vh] overflow-y-auto border-4 border-indigo-50">
+                        <div className="flex justify-between items-center mb-8"><h3 className="font-black text-xl text-gray-900 dark:text-white leading-none">{clientForm.id ? 'Editar Perfil' : 'Novo Cliente'}</h3><button onClick={() => setClientModalOpen(false)} className="p-2.5 bg-indigo-50 dark:bg-slate-800 rounded-full text-indigo-400"><X size={24} /></button></div>
+                        <div className="space-y-6">
+                            <div className="space-y-2"><label className="text-xs font-black uppercase text-indigo-400 ml-1">WhatsApp (DDD + Número)</label><input className="w-full bg-indigo-50 dark:bg-slate-800 p-4 rounded-2xl font-bold text-lg outline-none border-2 border-transparent focus:border-indigo-300" value={clientForm.phone_number} onChange={e => setClientForm({ ...clientForm, phone_number: e.target.value })} placeholder="88999991234" /></div>
+                            <div className="space-y-2"><label className="text-xs font-black uppercase text-indigo-400 ml-1">Nome Completo</label><input className="w-full bg-indigo-50 dark:bg-slate-800 p-4 rounded-2xl font-bold text-lg outline-none border-2 border-transparent focus:border-indigo-300" value={clientForm.client_name} onChange={e => setClientForm({ ...clientForm, client_name: e.target.value })} placeholder="Ex: Maria Silva" /></div>
+                            <div className="space-y-2"><label className="text-xs font-black uppercase text-indigo-400 ml-1">Senha do Dashboard</label><div className="relative group"><input className="w-full bg-indigo-50 dark:bg-slate-800 p-4 pl-12 rounded-2xl font-bold text-lg outline-none border-2 border-transparent focus:border-indigo-300 transition-all" value={clientForm.client_password || ''} onChange={e => setClientForm({ ...clientForm, client_password: e.target.value })} placeholder="Definir senha do cliente" /><Lock className="absolute left-4 top-4 text-indigo-300 group-focus-within:text-indigo-600" size={20} /></div><p className="text-[10px] font-bold text-gray-400 ml-1">Esta é a senha que o cliente usa para entrar no app.</p></div>
+                            <div className="pt-4 space-y-5">
+                                <p className="text-xs font-black uppercase text-indigo-400 tracking-widest border-b-2 border-indigo-50 pb-2">Gerenciar Assinaturas</p>
+                                <div className="space-y-4">
+                                    {(normalizeSubscriptions(clientForm.subscriptions, clientForm.duration_months) as string[]).map((sub, i) => {
+                                        const parts = sub.split('|');
+                                        const serviceName = parts[0];
+                                        const startDate = parts[1];
+                                        const durationStr = parts[3] || String(clientForm.duration_months || 1);
+                                        const duration = parseInt(durationStr);
+                                        const expiryDate = calculateExpiry(startDate, duration);
+                                        const isCharged = parts[2] === '1';
+                                        return (
+                                            <div key={i} className="flex flex-col p-5 bg-gray-50 dark:bg-slate-800 rounded-3xl border border-indigo-50 dark:border-slate-700 gap-4 shadow-sm">
+                                                <div className="flex justify-between items-center"><p className="font-black text-gray-800 dark:text-white uppercase">{serviceName}</p><div className="flex gap-2"><button onClick={() => sendWhatsAppMessage(clientForm.phone_number || '', clientForm.client_name || 'Dorameira', serviceName, expiryDate)} className="p-2 text-emerald-500 hover:bg-emerald-50 rounded-xl" title="Mandar cobrança WhatsApp"><MessageCircle size={20} /></button><button onClick={() => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; n.splice(i, 1); setClientForm({ ...clientForm, subscriptions: n }); }} className="p-2 text-red-400 hover:bg-red-50 rounded-xl" title="Remover Assinatura"><Trash2 size={20} /></button></div></div>
+                                                <div className="space-y-3"><div className="grid grid-cols-2 gap-3"><div className="space-y-1"><label className="text-[9px] font-black uppercase text-indigo-400 ml-1">Data de Início</label><input type="date" className="w-full bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-bold outline-none border border-indigo-50" value={toDateInput(startDate)} onChange={(e) => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; if (n[i]) { const p = n[i].split('|'); n[i] = `${p[0]}|${new Date(e.target.value).toISOString()}|${p[2]}|${p[3] || '1'}`; setClientForm({ ...clientForm, subscriptions: n }); } }} /></div><div className="space-y-1"><label className="text-[9px] font-black uppercase text-indigo-400 ml-1">Plano</label><div className="flex gap-1.5"><select className="flex-1 bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-black outline-none border border-indigo-50 h-[34px]" value={durationStr} onChange={(e) => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; if (n[i]) { const p = n[i].split('|'); n[i] = `${p[0]}|${p[1]}|${p[2]}|${e.target.value}`; setClientForm({ ...clientForm, subscriptions: n }); } }}>{PLAN_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}</select><button onClick={() => handleModalSmartRenew(i)} className="p-1.5 bg-indigo-600 text-white rounded-xl shadow-sm hover:bg-indigo-700 transition-all active:scale-90" title="Renovação Inteligente"><Zap size={16} /></button></div></div></div><div className="grid grid-cols-2 gap-2"><div className="bg-indigo-50/50 dark:bg-slate-900/50 p-2.5 rounded-xl border border-indigo-100/50 flex justify-between items-center"><span className="text-[9px] font-black text-indigo-400 uppercase">Fim</span><span className="text-xs font-black text-indigo-600">{expiryDate.toLocaleDateString()}</span></div><button onClick={() => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; if (n[i]) { const p = n[i].split('|'); n[i] = `${p[0]}|${p[1]}|${isCharged ? '0' : '1'}|${p[3] || '1'}`; setClientForm({ ...clientForm, subscriptions: n }); } }} className={`rounded-xl text-[9px] font-black uppercase border transition-all ${isCharged ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-indigo-600 border-indigo-100'}`}>{isCharged ? 'Cobrado ✓' : 'Marcar Cobrado'}</button></div></div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                                <div className="p-6 bg-indigo-50/50 dark:bg-slate-800 rounded-[2.5rem] border-2 border-dashed border-indigo-100 dark:border-slate-700 space-y-4"><p className="text-[10px] font-black uppercase text-indigo-400 text-center">Adicionar Novo Aplicativo</p><div className="grid grid-cols-2 gap-3"><select className="w-full bg-white dark:bg-slate-900 p-3 rounded-2xl font-bold text-xs outline-none border border-indigo-50" value={newSubService} onChange={e => setNewSubService(e.target.value)}>{SERVICES.map(s => <option key={s} value={s}>{s}</option>)}</select><select className="w-full bg-white dark:bg-slate-900 p-3 rounded-2xl font-bold text-xs outline-none border border-indigo-50" value={newSubPlan} onChange={e => setNewSubPlan(e.target.value)}>{PLAN_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}</select></div><button onClick={() => { setClientForm({ ...clientForm, subscriptions: [...((clientForm.subscriptions as string[] | undefined) || []), `${newSubService}|${new Date().toISOString()}|0|${newSubPlan}`] }); }} className="w-full bg-indigo-600 text-white p-4 rounded-2xl flex items-center justify-center gap-2 font-black text-xs uppercase shadow-md"><Plus size={18} /> Incluir Plano</button></div>
+                            </div>
+                            <button onClick={handleSaveClient} disabled={savingClient} className="w-full bg-indigo-600 text-white font-black py-5 rounded-3xl shadow-xl mt-6 active:scale-95 transition-transform">{savingClient ? <Loader2 className="w-6 h-6 animate-spin mx-auto" /> : 'Salvar Alterações'}</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* MODAL CONTA */}
+            {credModalOpen && (
+                <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+                    <div className="bg-white dark:bg-slate-900 w-full max-w-sm rounded-[2.5rem] p-8 shadow-2xl relative border border-indigo-100"><div className="flex justify-between items-center mb-8"><h3 className="font-black text-xl text-gray-900 dark:text-white leading-none">{credForm.id ? 'Editar Conta' : 'Nova Conta'}</h3><button onClick={() => setCredModalOpen(false)} className="p-2.5 bg-gray-100 dark:bg-slate-800 rounded-full text-gray-400"><X size={24} /></button></div><div className="space-y-5"><div className="space-y-2"><label className="text-xs font-black uppercase text-indigo-400 ml-1">Serviço</label><select className="w-full bg-indigo-50 dark:bg-slate-800 p-4 rounded-2xl font-bold text-lg outline-none border border-indigo-100" value={credForm.service} onChange={e => setCredForm({ ...credForm, service: e.target.value })}>{SERVICES.map(s => <option key={s} value={s}>{s}</option>)}</select></div><div className="space-y-2"><label className="text-xs font-black uppercase text-indigo-400 ml-1">E-mail / Login</label><input className="w-full bg-indigo-50 dark:bg-slate-800 p-4 rounded-2xl font-bold text-lg outline-none border border-indigo-100" value={credForm.email} onChange={e => setCredForm({ ...credForm, email: e.target.value })} placeholder="email@exemplo.com" /></div><div className="space-y-2"><label className="text-xs font-black uppercase text-indigo-400 ml-1">Senha</label><input className="w-full bg-indigo-50 dark:bg-slate-800 p-4 rounded-2xl font-bold text-lg outline-none border border-indigo-100" value={credForm.password} onChange={e => setCredForm({ ...credForm, password: e.target.value })} placeholder="******" /></div><div className="space-y-2"><label className="text-xs font-black uppercase text-indigo-400 ml-1">Data de Publicação</label><input type="datetime-local" className="w-full bg-indigo-50 dark:bg-slate-800 p-4 rounded-2xl font-bold text-lg outline-none border border-indigo-100" value={toLocalInput(credForm.publishedAt || new Date().toISOString())} onChange={e => setCredForm({ ...credForm, publishedAt: new Date(e.target.value).toISOString() })} /></div><button onClick={handleSaveCred} disabled={loading} className="w-full bg-indigo-600 text-white font-black py-5 rounded-3xl shadow-xl mt-6 active:scale-95 transition-transform">{loading ? <Loader2 className="animate-spin w-6 h-6 mx-auto" /> : 'Salvar Dados'}</button></div></div>
+                </div>
+            )}
+        </div>
+    );
 };

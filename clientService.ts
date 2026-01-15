@@ -1,6 +1,6 @@
 
 import { createClient } from '@supabase/supabase-js';
-import { User, ClientDBRow, Dorama, AdminUserDBRow, SubscriptionDetail } from './types';
+import { User, ClientDBRow, Dorama, AdminUserDBRow, SubscriptionDetail, HistoryLog, HistorySettings } from './types';
 
 // --- CONFIGURAÇÃO DO SUPABASE ---
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://mhiormzpctfoyjbrmxfz.supabase.co';
@@ -158,9 +158,56 @@ export const processUserLogin = (userRows: ClientDBRow[]): { user: User | null, 
 export const saveClientToDB = async (client: Partial<ClientDBRow>): Promise<{ success: boolean; msg: string }> => {
   try {
     const payload = { ...client };
+
+    // FETCH OLD DATA IF UPDATING
+    let oldData: ClientDBRow | null = null;
+    if (payload.id) {
+      const { data } = await supabase.from('clients').select('*').eq('id', payload.id).single();
+      if (data) oldData = data as ClientDBRow;
+    } else if (payload.phone_number) {
+      const { data } = await supabase.from('clients').select('*').eq('phone_number', payload.phone_number).single();
+      if (data) oldData = data as ClientDBRow;
+    }
+
     if (!payload.id || payload.id === '') delete payload.id;
     const { error } = await supabase.from('clients').upsert(payload);
+
     if (error) throw error;
+
+    // --- LOGGING LOGIC ---
+    const clientName = payload.client_name || oldData?.client_name || payload.phone_number || "Cliente";
+
+    if (!oldData) {
+      // NEW CLIENT
+      await logHistory('Novo Cliente', `Cliente ${clientName} (${payload.phone_number}) foi adicionado.`);
+    } else {
+      // UPDATE OR DELETE
+      if (payload.deleted && !oldData.deleted) {
+        await logHistory('Cliente Removido', `Cliente ${clientName} enviado para lixeira.`);
+      } else if (payload.deleted === false && oldData.deleted) {
+        await logHistory('Cliente Restaurado', `Cliente ${clientName} restaurado da lixeira.`);
+      } else {
+        // CHECK SUBSCRIPTION CHANGES
+        const oldSubs = (oldData.subscriptions || []) as string[];
+        const newSubs = (payload.subscriptions || []) as string[];
+
+        if (JSON.stringify(oldSubs) !== JSON.stringify(newSubs)) {
+          // Simple diff
+          if (newSubs.length > oldSubs.length) {
+            await logHistory('Assinatura Adicionada', `Nova assinatura adicionada para ${clientName}.`);
+          } else if (newSubs.length < oldSubs.length) {
+            await logHistory('Assinatura Removida', `Assinatura removida de ${clientName}.`);
+          } else {
+            // Same count, content changed (renewals, etc)
+            await logHistory('Assinatura Modificada', `Assinaturas de ${clientName} atualizadas (Renovação/Edição).`);
+          }
+        } else {
+          // GENERIC DATA UPDATE
+          await logHistory('Dados Atualizados', `Dados de ${clientName} foram modificados.`);
+        }
+      }
+    }
+
     return { success: true, msg: "Salvo com sucesso!" };
   } catch (e: any) { return { success: false, msg: e.message }; }
 };
@@ -195,6 +242,7 @@ export const hardDeleteAllClients = async (): Promise<{ success: boolean, msg: s
     // Limpa dados auxiliares mas MANTÉM a tabela de clientes intacta para evitar perdas
     await supabase.from('doramas').delete().neq('id', '0');
     await supabase.from('credentials').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    await logHistory('Limpeza Geral', 'Todas as credenciais e doramas foram apagados (Hard Reset).');
     return { success: true, msg: "Dados auxiliares limpos. Clientes preservados." };
   } catch (e: any) { return { success: false, msg: e.message }; }
 };
@@ -289,4 +337,58 @@ export const verifyAdminLogin = async (login: string, pass: string): Promise<boo
 export const updateAdminPassword = async (newPassword: string) => {
   const { error } = await supabase.from('admin_users').upsert({ username: 'admin', password: newPassword }, { onConflict: 'username' });
   return !error;
+};
+
+// --- HISTORY & LOGGING SERVICE ---
+
+export const logHistory = async (action: string, details: any) => {
+  try {
+    const detailsStr = typeof details === 'string' ? details : JSON.stringify(details);
+    await supabase.from('history_logs').insert({ action, details: detailsStr });
+  } catch (e) { console.error("Falha ao registrar log:", e); }
+};
+
+export const getHistoryLogs = async (): Promise<HistoryLog[]> => {
+  try {
+    const { data, error } = await supabase.from('history_logs').select('*').order('created_at', { ascending: false });
+    if (error) return [];
+    return data as unknown as HistoryLog[];
+  } catch (e) { return []; }
+};
+
+export const clearHistoryLogs = async (): Promise<boolean> => {
+  try {
+    const { error } = await supabase.from('history_logs').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    return !error;
+  } catch (e) { return false; }
+};
+
+export const getHistorySettings = async (): Promise<Record<string, string>> => {
+  try {
+    const { data } = await supabase.from('history_settings').select('*');
+    if (!data) return {};
+    const settings: Record<string, string> = {};
+    data.forEach((row: any) => settings[row.key] = row.value);
+    return settings;
+  } catch (e) { return {}; }
+};
+
+export const updateHistorySetting = async (key: string, value: string): Promise<boolean> => {
+  try {
+    const { error } = await supabase.from('history_settings').upsert({ key, value });
+    return !error;
+  } catch (e) { return false; }
+};
+
+export const enforceHistoryRetention = async (): Promise<void> => {
+  try {
+    const settings = await getHistorySettings();
+    const daysStr = settings['retention_days'] || '7';
+    const days = parseInt(daysStr) || 7;
+
+    const limitDate = new Date();
+    limitDate.setDate(limitDate.getDate() - days);
+
+    await supabase.from('history_logs').delete().lt('created_at', limitDate.toISOString());
+  } catch (e) { console.error("Erro ao limpar histórico antigo:", e); }
 };
