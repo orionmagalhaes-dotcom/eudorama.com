@@ -599,8 +599,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             <div className="bg-white dark:bg-slate-900 px-6 py-5 flex justify-between items-center shadow-sm sticky top-0 z-30 border-b border-indigo-100 dark:border-slate-800">
                 <div className="flex items-center gap-3">
                     <div className="bg-indigo-600 p-2.5 rounded-2xl text-white shadow-lg"><ShieldAlert size={24} /></div>
-                    <h1 className="font-black text-xl">EuDorama Admin</h1>
-                    <div className="hidden sm:flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-600 rounded-full border border-emerald-100">
+                    <h1 className="font-black text-xl text-indigo-900 dark:text-white">EuDorama Admin</h1>
+                    <div className="hidden sm:flex items-center gap-1.5 px-3 py-1 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 rounded-full border border-emerald-100 dark:border-emerald-800/30">
                         <Wifi size={12} className="animate-pulse" />
                         <span className="text-[10px] font-black uppercase tracking-widest">Realtime Ativo</span>
                     </div>
