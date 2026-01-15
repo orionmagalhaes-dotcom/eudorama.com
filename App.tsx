@@ -13,7 +13,7 @@ import Toast from './components/Toast';
 import PWAInstallOverlay from './components/PWAInstallOverlay';
 import { User, Dorama } from './types';
 import { addDoramaToDB, updateDoramaInDB, removeDoramaFromDB, getUserDoramasFromDB, saveGameProgress, addLocalDorama, refreshUserProfile, updateLastActive, supabase } from './services/clientService';
-import { Heart, X, CheckCircle2, MessageCircle, Gift, Gamepad2, Sparkles, Home, Tv2, Palette, RefreshCw, LogOut, AlertTriangle } from 'lucide-react';
+import { Heart, X, CheckCircle2, MessageCircle, Gift, Gamepad2, Sparkles, Home, Tv2, Palette, RefreshCw, LogOut, AlertTriangle, Smartphone } from 'lucide-react';
 
 const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -22,6 +22,7 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'home' | 'watching' | 'favorites' | 'games' | 'completed'>('home');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [syncTrigger, setSyncTrigger] = useState(0);
+  const [isStandalone, setIsStandalone] = useState(false);
 
   const [showPalette, setShowPalette] = useState(false);
   const [isSupportOpen, setIsSupportOpen] = useState(false);
@@ -115,6 +116,13 @@ const App: React.FC = () => {
       setIsAdminMode(true);
       setIsAdminLoggedIn(true);
     }
+
+    const checkStandalone = () => {
+      const standalone = window.matchMedia('(display-mode: standalone)').matches || (window.navigator as any).standalone;
+      setIsStandalone(!!standalone);
+    };
+    checkStandalone();
+    window.matchMedia('(display-mode: standalone)').addListener(checkStandalone);
   }, []);
 
   // --- REAL-TIME UPDATES (Ouvinte do Supabase) ---
@@ -441,6 +449,19 @@ const App: React.FC = () => {
           <span className="text-xs text-gray-400 font-bold uppercase tracking-widest -mt-1 ml-0.5">Clube Exclusivo</span>
         </div>
         <div className="flex items-center gap-2">
+          {!isStandalone && (
+            <button
+              onClick={() => {
+                const url = new URL(window.location.href);
+                url.searchParams.set('install', 'true');
+                window.history.pushState({}, '', url);
+                window.dispatchEvent(new CustomEvent('trigger-pwa-overlay'));
+              }}
+              className="flex items-center gap-1 px-3 py-2 bg-pink-600 text-white rounded-xl text-sm font-black transition-all border border-pink-500 shadow-lg shadow-pink-100 active:scale-95 animate-pulse"
+            >
+              <Smartphone className="w-4 h-4" /> <span>Baixar App</span>
+            </button>
+          )}
           <button onClick={() => setShowPalette(!showPalette)} className={`flex items-center gap-1 px-3 py-2 rounded-xl text-sm font-bold transition-all border active:scale-95 ${showPalette ? 'bg-pink-100 text-pink-600 border-pink-200' : 'bg-gray-50 hover:bg-gray-100 text-gray-600 border-gray-200'}`}>
             <Palette className="w-4 h-4" /> <span className="hidden sm:inline">Personalizar</span>
           </button>

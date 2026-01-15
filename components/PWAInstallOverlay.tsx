@@ -22,7 +22,13 @@ const PWAInstallOverlay: React.FC = () => {
             setIsVisible(true);
         };
 
+        const triggerHandler = () => {
+            console.log('PWA: Trigger manual do overlay recebido.');
+            setIsVisible(true);
+        };
+
         window.addEventListener('beforeinstallprompt', handler);
+        window.addEventListener('trigger-pwa-overlay', triggerHandler);
 
         // Se for modo debug, mostra o overlay após 3 segundos mesmo sem o evento, para teste visual
         if (isDebug) {
@@ -31,15 +37,18 @@ const PWAInstallOverlay: React.FC = () => {
         }
 
         const checkStandalone = () => {
-            const isStandalone = (window.matchMedia('(display-mode: standalone)').matches) || (window.navigator as any).standalone;
-            if (isStandalone) {
+            const isS = (window.matchMedia('(display-mode: standalone)').matches) || (window.navigator as any).standalone;
+            if (isS) {
                 console.log('PWA: Já está rodando como App instalado.');
                 setIsVisible(false);
             }
         };
 
         checkStandalone();
-        return () => window.removeEventListener('beforeinstallprompt', handler);
+        return () => {
+            window.removeEventListener('beforeinstallprompt', handler);
+            window.removeEventListener('trigger-pwa-overlay', triggerHandler);
+        };
     }, []);
 
     const handleInstallClick = async () => {
