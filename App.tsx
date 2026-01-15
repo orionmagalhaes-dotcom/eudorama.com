@@ -422,7 +422,7 @@ const App: React.FC = () => {
           <Icon className={`w-6 h-6 ${isActive ? 'fill-current' : ''}`} />
         </div>
         {isActive && (
-          <span className="absolute -bottom-4 text-xs font-bold text-pink-600 animate-fade-in tracking-tight">
+          <span className="absolute -bottom-1 text-[9px] font-black text-pink-600 animate-fade-in tracking-tight uppercase">
             {label}
           </span>
         )}
@@ -547,7 +547,7 @@ const App: React.FC = () => {
         </div>
       )}
       <div className="fixed bottom-6 inset-x-0 z-40 px-4 flex justify-center pointer-events-none">
-        <nav className="bg-white/90 backdrop-blur-lg border border-white/50 rounded-[2rem] shadow-2xl p-2 flex justify-between items-center w-full max-w-sm pointer-events-auto ring-1 ring-black/5">
+        <nav className="bg-white/95 backdrop-blur-xl border border-white/50 rounded-[2.5rem] shadow-2xl px-2 py-3 flex justify-between items-center w-full max-w-sm pointer-events-auto ring-1 ring-black/5">
           <NavItem id="home" icon={Home} label="Início" />
           <NavItem id="watching" icon={Tv2} label="Vendo" />
           <NavItem id="games" icon={Gamepad2} label="Jogos" />
