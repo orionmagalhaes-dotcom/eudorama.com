@@ -227,7 +227,9 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                             {isEditingName ? (
                                 <input autoFocus className="bg-white border border-pink-300 rounded-lg px-2 py-1 text-sm font-bold outline-none w-32 text-gray-900" value={tempName} onChange={(e) => setTempName(e.target.value)} onBlur={handleEditName} onKeyDown={(e) => e.key === 'Enter' && handleEditName()} />
                             ) : (
-                                <h2 className={`text-2xl font-black tracking-tight leading-none truncate ${getTextColorClass()}`}>{user.name}</h2>
+                                <h2 className={`text-2xl font-black tracking-tight leading-none truncate ${getTextColorClass()}`}>
+                                    {user.name === 'Orion Magalhães' ? 'Demo' : user.name}
+                                </h2>
                             )}
                             <button onClick={handleEditName} className="p-1 text-gray-400 hover:text-pink-600 transition-colors"><Edit3 size={16} /></button>
                         </div>
@@ -276,7 +278,9 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                                     <AlertTriangle className="text-white animate-pulse" size={28} />
                                 </div>
                                 <div>
-                                    <p className="text-xs font-black uppercase tracking-widest text-white/80">Atenção {user.name.split(' ')[0]}!</p>
+                                    <p className="text-xs font-black uppercase tracking-widest text-white/80">
+                                        Atenção {user.name === 'Orion Magalhães' ? 'Demo' : user.name.split(' ')[0]}!
+                                    </p>
                                     <h3 className="text-xl font-black">
                                         {expiringServices.length === 1
                                             ? `1 assinatura ${expiringServices[0].daysLeft < 0 ? 'vencida' : 'próxima do vencimento'}`

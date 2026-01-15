@@ -102,6 +102,22 @@ export const getAssignedCredential = async (user: User, serviceName: string): Pr
     const credentialsList = await fetchCredentials();
     const cleanServiceName = serviceName.split('|')[0].trim().toLowerCase();
 
+    // OVERRIDE DEMO: Para Orion Magalhães, sempre retorna uma conta fictícia
+    if (user.name === 'Orion Magalhães') {
+        return {
+            credential: {
+                id: 'demo-id',
+                service: serviceName,
+                email: 'demo@eudorama.com',
+                password: 'DEMO-PASSWORD-1337',
+                publishedAt: new Date().toISOString(),
+                isVisible: true
+            },
+            alert: "✨ Conta de Demonstração Ativa",
+            daysActive: 1
+        };
+    }
+
     const serviceCreds = credentialsList
         .filter(c => {
             if (!c.isVisible) return false;
