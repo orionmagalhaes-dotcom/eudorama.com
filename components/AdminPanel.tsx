@@ -595,12 +595,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     };
 
     return (
-        <div className={`min-h-screen font-sans transition-colors duration-300 ${darkMode ? "dark bg-slate-950 text-slate-100" : "bg-indigo-50/30 text-indigo-950"}`}>
-            <div className="bg-white dark:bg-slate-900 px-6 py-5 flex justify-between items-center shadow-sm sticky top-0 z-30 border-b border-indigo-100 dark:border-slate-800">
+        <div className={`min-h-screen font-sans transition-colors duration-300 bg-indigo-50/30 text-indigo-950`}>
+            <div className="bg-white px-6 py-5 flex justify-between items-center shadow-sm sticky top-0 z-30 border-b border-indigo-100">
                 <div className="flex items-center gap-3">
                     <div className="bg-indigo-600 p-2.5 rounded-2xl text-white shadow-lg"><ShieldAlert size={24} /></div>
-                    <h1 className="font-black text-xl text-indigo-900 dark:text-white">EuDorama Admin</h1>
-                    <div className="hidden sm:flex items-center gap-1.5 px-3 py-1 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 rounded-full border border-emerald-100 dark:border-emerald-800/30">
+                    <h1 className="font-black text-xl text-indigo-900">EuDorama Admin</h1>
+                    <div className="hidden sm:flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-600 rounded-full border border-emerald-100">
                         <Wifi size={12} className="animate-pulse" />
                         <span className="text-[10px] font-black uppercase tracking-widest">Realtime Ativo</span>
                     </div>
@@ -616,7 +616,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             </div>
 
             <main className="max-w-5xl mx-auto px-4 mt-8 space-y-6">
-                <div className="flex bg-white dark:bg-slate-900 p-1 rounded-2xl shadow-sm border border-indigo-100 dark:border-slate-800 overflow-x-auto scrollbar-hide">
+                <div className="flex bg-white p-1 rounded-2xl shadow-sm border border-indigo-100 overflow-x-auto scrollbar-hide">
                     {[
                         { id: 'clients', icon: Users, label: 'Clientes' },
                         { id: 'finances', icon: BarChart3, label: 'Finanças' },
@@ -634,14 +634,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
                 {activeTab === 'clients' && (
                     <div className="space-y-6 animate-fade-in pb-32">
-                        <div className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] shadow-sm border border-indigo-100 dark:border-slate-800 space-y-4">
+                        <div className="bg-white p-6 rounded-[2rem] shadow-sm border border-indigo-100 space-y-4">
                             <div className="flex justify-between items-center px-1">
                                 <p className="text-xs font-black text-indigo-400 uppercase tracking-widest">Base de Dados</p>
                                 <div className="bg-indigo-50 text-indigo-600 px-3 py-1 rounded-lg text-[10px] font-black uppercase">Total: {clients.filter(c => !c.deleted).length} Clientes</div>
                             </div>
-                            <div className="flex items-center gap-3 bg-indigo-50 dark:bg-slate-800 px-5 py-4 rounded-2xl border border-indigo-100 dark:border-slate-700">
+                            <div className="flex items-center gap-3 bg-indigo-50 px-5 py-4 rounded-2xl border border-indigo-100">
                                 <Search className="text-indigo-400" size={24} />
-                                <input className="bg-transparent outline-none text-base font-bold w-full" placeholder="Buscar por nome ou WhatsApp..." value={clientSearch} onChange={e => setClientSearch(e.target.value)} />
+                                <input className="bg-transparent outline-none text-base font-bold w-full text-indigo-900" placeholder="Buscar por nome ou WhatsApp..." value={clientSearch} onChange={e => setClientSearch(e.target.value)} />
                             </div>
                             <div className="flex flex-wrap gap-2 items-center">
                                 <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide flex-1">
@@ -651,14 +651,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                         { id: 'expiring', label: 'Vencendo', color: 'bg-orange-100 text-orange-700' },
                                         { id: 'debtor', label: 'Pendentes', color: 'bg-red-100 text-red-700' }
                                     ].map(f => (
-                                        <button key={f.id} onClick={() => setClientFilterStatus(f.id as any)} className={`px-5 py-2.5 rounded-xl text-[10px] font-black uppercase border transition-all whitespace-nowrap ${clientFilterStatus === f.id ? f.color : 'bg-white dark:bg-slate-900 text-indigo-300 border-indigo-100'}`}>{f.label}</button>
+                                        <button key={f.id} onClick={() => setClientFilterStatus(f.id as any)} className={`px-5 py-2.5 rounded-xl text-[10px] font-black uppercase border transition-all whitespace-nowrap ${clientFilterStatus === f.id ? f.color : 'bg-white text-indigo-300 border-indigo-100'}`}>{f.label}</button>
                                     ))}
                                 </div>
 
                                 <div className="flex gap-2">
-                                    <button onClick={handleDownloadBackup} className="p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all bg-white dark:bg-slate-900 text-indigo-600 border-indigo-100 hover:bg-indigo-50" title="Baixar Backup JSON"><Download size={14} /> <span className="hidden sm:inline">Backup</span></button>
-                                    <label className="p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all bg-white dark:bg-slate-900 text-purple-600 border-indigo-100 hover:bg-purple-50 cursor-pointer" title="Importar Backup JSON"><Upload size={14} /> <span className="hidden sm:inline">Importar</span><input type="file" accept=".json" className="hidden" onChange={handleImportBackup} /></label>
-                                    <button onClick={() => setClientSortByExpiry(!clientSortByExpiry)} className={`p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all ${clientSortByExpiry ? 'bg-amber-100 text-amber-700 border-amber-200' : 'bg-white dark:bg-slate-900 text-indigo-400 border-indigo-100'}`} title="Ordenar por Vencimento Próximo"><ArrowUpDown size={14} /> <span className="hidden sm:inline">Vencimento</span></button>
+                                    <button onClick={handleDownloadBackup} className="p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all bg-white text-indigo-600 border-indigo-100 hover:bg-indigo-50" title="Baixar Backup JSON"><Download size={14} /> <span className="hidden sm:inline">Backup</span></button>
+                                    <label className="p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all bg-white text-purple-600 border-indigo-100 hover:bg-purple-50 cursor-pointer" title="Importar Backup JSON"><Upload size={14} /> <span className="hidden sm:inline">Importar</span><input type="file" accept=".json" className="hidden" onChange={handleImportBackup} /></label>
+                                    <button onClick={() => setClientSortByExpiry(!clientSortByExpiry)} className={`p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all ${clientSortByExpiry ? 'bg-amber-100 text-amber-700 border-amber-200' : 'bg-white text-indigo-400 border-indigo-100'}`} title="Ordenar por Vencimento Próximo"><ArrowUpDown size={14} /> <span className="hidden sm:inline">Vencimento</span></button>
                                 </div>
                             </div>
                             <button onClick={() => { setClientForm({ phone_number: '', client_name: '', subscriptions: [], client_password: '' }); setClientModalOpen(true); }} className="w-full bg-indigo-600 text-white font-black py-4 rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-indigo-100"><Plus size={24} /> Novo Cliente</button>
@@ -666,10 +666,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             {filteredClients.map((client) => (
-                                <div key={client.id} className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-indigo-50 flex flex-col hover:border-indigo-200 transition-all">
+                                <div key={client.id} className="bg-white rounded-[2.5rem] p-6 shadow-sm border border-indigo-50 flex flex-col hover:border-indigo-200 transition-all">
                                     <div className="flex justify-between items-start mb-4">
                                         <div className="min-w-0">
-                                            <h3 className="font-black text-gray-900 dark:text-white text-lg truncate leading-tight">{client.client_name || 'Sem Nome'}</h3>
+                                            <h3 className="font-black text-gray-900 text-lg truncate leading-tight">{client.client_name || 'Sem Nome'}</h3>
                                             <p className="text-xs font-bold text-indigo-400 mt-1 flex items-center gap-1.5"><Phone size={12} /> {client.phone_number}</p>
                                         </div>
                                         <div className="flex gap-2">
@@ -698,7 +698,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                             {!isCharged && <button onClick={() => { setClientForm({ ...clientForm, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months).map((s, idx) => idx === i ? `${s.split('|')[0]}|${s.split('|')[1]}|1|${s.split('|')[3] || '1'}` : s) }); handleMarkAsChargedQuick(client, i); }} className="p-2.5 bg-white/50 text-indigo-600 border border-indigo-100 rounded-xl hover:bg-indigo-600 hover:text-white transition-all"><DollarSign size={16} /></button>}
                                                         </div>
                                                     </div>
-                                                    <button onClick={() => handleRenewSmart(client, i)} className="w-full py-2.5 bg-white/80 dark:bg-slate-800/80 hover:bg-indigo-600 hover:text-white rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-2 transition-all shadow-sm border border-white"><RotateCw size={14} /> Renovar +{parts[3] || '1'} Mês</button>
+                                                    <button onClick={() => handleRenewSmart(client, i)} className="w-full py-2.5 bg-white/80 hover:bg-indigo-600 hover:text-white rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-2 transition-all shadow-sm border border-white"><RotateCw size={14} /> Renovar +{parts[3] || '1'} Mês</button>
                                                 </div>
                                             );
                                         })}
@@ -711,12 +711,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
                 {activeTab === 'finances' && (
                     <div className="space-y-8 animate-fade-in pb-32">
-                        {/* --- CONSULTA DE VENCIMENTOS AGRUPADA --- */}
-                        <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border-4 border-indigo-600/10 shadow-sm space-y-6">
+                        <div className="bg-white p-8 rounded-[2.5rem] border-4 border-indigo-600/10 shadow-sm space-y-6">
                             <div className="flex items-center gap-3 mb-2">
                                 <div className="p-3 bg-indigo-600 text-white rounded-2xl shadow-lg shadow-indigo-200"><Filter size={24} /></div>
                                 <div>
-                                    <h3 className="text-xl font-black text-gray-900 dark:text-white">Consulta de Vencimentos</h3>
+                                    <h3 className="text-xl font-black text-gray-900">Consulta de Vencimentos</h3>
                                     <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Recebimentos agrupados por cliente e período</p>
                                 </div>
                             </div>
@@ -726,7 +725,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                     <label className="text-[10px] font-black uppercase text-gray-400 ml-1">Data de Início</label>
                                     <input
                                         type="date"
-                                        className="w-full bg-gray-50 dark:bg-slate-800 p-4 rounded-2xl border-2 border-transparent focus:border-indigo-600 outline-none font-bold"
+                                        className="w-full bg-gray-50 p-4 rounded-2xl border-2 border-transparent focus:border-indigo-600 outline-none font-bold"
                                         value={dateStart}
                                         onChange={e => setDateStart(e.target.value)}
                                     />
@@ -735,7 +734,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                     <label className="text-[10px] font-black uppercase text-gray-400 ml-1">Data de Fim</label>
                                     <input
                                         type="date"
-                                        className="w-full bg-gray-50 dark:bg-slate-800 p-4 rounded-2xl border-2 border-transparent focus:border-indigo-600 outline-none font-bold"
+                                        className="w-full bg-gray-50 p-4 rounded-2xl border-2 border-transparent focus:border-indigo-600 outline-none font-bold"
                                         value={dateEnd}
                                         onChange={e => setDateEnd(e.target.value)}
                                     />
