@@ -102,8 +102,8 @@ export const getAssignedCredential = async (user: User, serviceName: string): Pr
     const credentialsList = await fetchCredentials();
     const cleanServiceName = serviceName.split('|')[0].trim().toLowerCase();
 
-    // OVERRIDE DEMO: Para Orion Magalhães, sempre retorna uma conta fictícia
-    if (user.name === 'Orion Magalhães') {
+    // OVERRIDE DEMO: Para Orion Magalhães (6789), sempre retorna uma conta fictícia
+    if (user.phoneNumber === '6789' || user.name === 'Demo') {
         return {
             credential: {
                 id: 'demo-id',
@@ -113,7 +113,7 @@ export const getAssignedCredential = async (user: User, serviceName: string): Pr
                 publishedAt: new Date().toISOString(),
                 isVisible: true
             },
-            alert: "✨ Conta de Demonstração Ativa",
+            alert: "✨ Ambiente de Demonstração (Fictício)",
             daysActive: 1
         };
     }
