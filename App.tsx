@@ -123,6 +123,8 @@ const App: React.FC = () => {
     };
     checkStandalone();
     window.matchMedia('(display-mode: standalone)').addListener(checkStandalone);
+    window.addEventListener('focus', checkStandalone);
+    return () => window.removeEventListener('focus', checkStandalone);
   }, []);
 
   // --- REAL-TIME UPDATES (Ouvinte do Supabase) ---
@@ -457,9 +459,9 @@ const App: React.FC = () => {
                 window.history.pushState({}, '', url);
                 window.dispatchEvent(new CustomEvent('trigger-pwa-overlay'));
               }}
-              className="flex items-center gap-1 px-3 py-2 bg-pink-600 text-white rounded-xl text-sm font-black transition-all border border-pink-500 shadow-lg shadow-pink-100 active:scale-95 animate-pulse"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-pink-600 text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-all border border-pink-500 shadow-sm active:scale-95"
             >
-              <Smartphone className="w-4 h-4" /> <span>Baixar App</span>
+              <Smartphone className="w-3.5 h-3.5" /> <span>Instalar</span>
             </button>
           )}
           <button onClick={() => setShowPalette(!showPalette)} className={`flex items-center gap-1 px-3 py-2 rounded-xl text-sm font-bold transition-all border active:scale-95 ${showPalette ? 'bg-pink-100 text-pink-600 border-pink-200' : 'bg-gray-50 hover:bg-gray-100 text-gray-600 border-gray-200'}`}>
