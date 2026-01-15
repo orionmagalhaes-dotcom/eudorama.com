@@ -1,16 +1,16 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* Custom global styles (CDN-compatible) */
 
 /* Custom styles from HTML */
 body {
   font-family: 'Inter', sans-serif;
 }
+
 /* Custom scrollbar for chat */
 .scrollbar-hide::-webkit-scrollbar {
-    display: none;
+  display: none;
 }
+
 .scrollbar-hide {
-    -ms-overflow-style: none;
-    scrollbar-width: none;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }

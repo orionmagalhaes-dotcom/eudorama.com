@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Smartphone, Download, X, Share, PlusSquare, ArrowBigDownDash } from 'lucide-react';
+import { Smartphone, Download, X, Share, PlusSquare, ArrowBigDownDash, Settings } from 'lucide-react';
 
 const PWAInstallOverlay: React.FC = () => {
     const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
