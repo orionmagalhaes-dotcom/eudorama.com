@@ -238,16 +238,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
         let grossRevenue = 0;
         let pendingRevenue = 0;
+        let newSubscriptionsSinceReset = 0;
+        let churnedSubscriptionsSinceReset = 0;
         const serviceBreakdown: Record<string, { count: number, monthlyCount: number, revenue: number, pending: number }> = {};
 
         SERVICES.forEach(s => serviceBreakdown[s] = { count: 0, monthlyCount: 0, revenue: 0, pending: 0 });
 
+        // Count active monthly subscriptions and track new ones
         activeClients.forEach(client => {
             const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
             subs.forEach(sub => {
                 const parts = sub.split('|');
                 const duration = parseInt(parts[3] || '1');
 
+                // Only count monthly subscriptions for revenue and projections
                 if (duration !== 1) return;
 
                 const sName = parts[0];
@@ -256,12 +260,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
                 const expiry = calculateExpiry(startDate, duration);
                 const daysLeft = getDaysRemaining(expiry);
+                const subscriptionStartTime = new Date(startDate).getTime();
 
                 if (serviceBreakdown[sName]) {
                     grossRevenue += price;
                     serviceBreakdown[sName].revenue += price;
                     serviceBreakdown[sName].count++;
                     serviceBreakdown[sName].monthlyCount++;
+
+                    // Track new subscriptions since reset date
+                    if (subscriptionStartTime > statsReferenceDate) {
+                        newSubscriptionsSinceReset++;
+                    }
+
+                    // Track expired and likely churned subscriptions (expired more than 7 days ago)
+                    if (daysLeft < -7) {
+                        churnedSubscriptionsSinceReset++;
+                    }
+
                     if (daysLeft < 0) {
                         pendingRevenue += price;
                         serviceBreakdown[sName].pending += price;
@@ -270,26 +286,39 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             });
         });
 
-        const totalClientsCounted = Object.values(serviceBreakdown).reduce((acc, curr) => acc + curr.count, 0);
-        const newClientsSinceReset = activeClients.filter(c => new Date(c.created_at).getTime() > statsReferenceDate).length;
-        const churnSinceReset = deletedClients.filter(c => new Date(c.created_at).getTime() > statsReferenceDate).length;
+        // Count subscriptions from deleted clients as churned
+        deletedClients.forEach(client => {
+            const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
+            subs.forEach(sub => {
+                const parts = sub.split('|');
+                const duration = parseInt(parts[3] || '1');
 
-        const churnRate = totalClientsCounted > 0 ? (churnSinceReset / (totalClientsCounted + churnSinceReset)) * 100 : 0;
-        const avgTicket = totalClientsCounted > 0 ? grossRevenue / totalClientsCounted : 0;
-        const projection = grossRevenue + (newClientsSinceReset * avgTicket * projectionMonths);
+                // Only count monthly subscriptions
+                if (duration !== 1) return;
+
+                churnedSubscriptionsSinceReset++;
+            });
+        });
+
+        const totalSubscriptionsCounted = Object.values(serviceBreakdown).reduce((acc, curr) => acc + curr.monthlyCount, 0);
+
+        const churnRate = totalSubscriptionsCounted > 0 ? (churnedSubscriptionsSinceReset / (totalSubscriptionsCounted + churnedSubscriptionsSinceReset)) * 100 : 0;
+        const avgTicket = totalSubscriptionsCounted > 0 ? grossRevenue / totalSubscriptionsCounted : 0;
+        const projection = grossRevenue + (newSubscriptionsSinceReset * avgTicket * projectionMonths);
 
         return {
             grossRevenue,
             pendingRevenue,
-            totalClients: totalClientsCounted,
-            newClientsThisMonth: newClientsSinceReset,
-            churnCount: churnSinceReset,
+            totalClients: totalSubscriptionsCounted,
+            newClientsThisMonth: newSubscriptionsSinceReset,
+            churnCount: churnedSubscriptionsSinceReset,
             churnRate,
             serviceBreakdown,
             projection,
             averageTicket: avgTicket
         };
     }, [clients, projectionMonths, statsReferenceDate]);
+
 
     const credentialUsage = useMemo<Record<string, number>>(() => {
         const usage: Record<string, number> = {};
@@ -595,12 +624,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     };
 
     return (
-        <div className={`min-h-screen font-sans transition-colors duration-300 bg-indigo-50/30 text-indigo-950`}>
-            <div className="bg-white px-6 py-5 flex justify-between items-center shadow-sm sticky top-0 z-30 border-b border-indigo-100">
+        <div className={`min-h-screen font-sans transition-colors duration-300 ${darkMode ? 'dark bg-slate-950 text-white' : 'bg-indigo-50/30 text-indigo-950'}`}>
+            <div className="bg-white dark:bg-slate-900 px-6 py-5 flex justify-between items-center shadow-sm sticky top-0 z-30 border-b border-indigo-100 dark:border-slate-800">
                 <div className="flex items-center gap-3">
                     <div className="bg-indigo-600 p-2.5 rounded-2xl text-white shadow-lg"><ShieldAlert size={24} /></div>
-                    <h1 className="font-black text-xl text-indigo-900">EuDorama Admin</h1>
-                    <div className="hidden sm:flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-600 rounded-full border border-emerald-100">
+                    <h1 className="font-black text-xl text-indigo-900 dark:text-white">EuDorama Admin</h1>
+                    <div className="hidden sm:flex items-center gap-1.5 px-3 py-1 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded-full border border-emerald-100 dark:border-emerald-800">
                         <Wifi size={12} className="animate-pulse" />
                         <span className="text-[10px] font-black uppercase tracking-widest">Realtime Ativo</span>
                     </div>
@@ -616,7 +645,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             </div>
 
             <main className="max-w-5xl mx-auto px-4 mt-8 space-y-6">
-                <div className="flex bg-white p-1 rounded-2xl shadow-sm border border-indigo-100 overflow-x-auto scrollbar-hide">
+                <div className="flex bg-white dark:bg-slate-900 p-1 rounded-2xl shadow-sm border border-indigo-100 dark:border-slate-800 overflow-x-auto scrollbar-hide">
                     {[
                         { id: 'clients', icon: Users, label: 'Clientes' },
                         { id: 'finances', icon: BarChart3, label: 'Finanças' },
@@ -626,7 +655,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         { id: 'history', icon: History, label: 'Histórico' },
                         { id: 'danger', icon: AlertTriangle, label: 'Segurança' }
                     ].map(tab => (
-                        <button key={tab.id} onClick={() => setActiveTab(tab.id as any)} className={`flex-1 min-w-fit py-3 px-5 rounded-xl text-[10px] font-black uppercase transition-all flex flex-col sm:flex-row items-center justify-center gap-1.5 ${activeTab === tab.id ? 'bg-indigo-600 text-white shadow-md' : 'text-indigo-400 hover:bg-indigo-50'}`}>
+                        <button key={tab.id} onClick={() => setActiveTab(tab.id as any)} className={`flex-1 min-w-fit py-3 px-5 rounded-xl text-[10px] font-black uppercase transition-all flex flex-col sm:flex-row items-center justify-center gap-1.5 ${activeTab === tab.id ? 'bg-indigo-600 text-white shadow-md' : 'text-indigo-400 hover:bg-indigo-50 dark:hover:bg-slate-800'}`}>
                             <tab.icon size={16} /> <span className="hidden sm:inline">{tab.label}</span>
                         </button>
                     ))}
@@ -634,14 +663,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
                 {activeTab === 'clients' && (
                     <div className="space-y-6 animate-fade-in pb-32">
-                        <div className="bg-white p-6 rounded-[2rem] shadow-sm border border-indigo-100 space-y-4">
+                        <div className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] shadow-sm border border-indigo-100 dark:border-slate-800 space-y-4">
                             <div className="flex justify-between items-center px-1">
                                 <p className="text-xs font-black text-indigo-400 uppercase tracking-widest">Base de Dados</p>
                                 <div className="bg-indigo-50 text-indigo-600 px-3 py-1 rounded-lg text-[10px] font-black uppercase">Total: {clients.filter(c => !c.deleted).length} Clientes</div>
                             </div>
-                            <div className="flex items-center gap-3 bg-indigo-50 px-5 py-4 rounded-2xl border border-indigo-100">
+                            <div className="flex items-center gap-3 bg-indigo-50 dark:bg-slate-800 px-5 py-4 rounded-2xl border border-indigo-100 dark:border-slate-700">
                                 <Search className="text-indigo-400" size={24} />
-                                <input className="bg-transparent outline-none text-base font-bold w-full text-indigo-900" placeholder="Buscar por nome ou WhatsApp..." value={clientSearch} onChange={e => setClientSearch(e.target.value)} />
+                                <input className="bg-transparent outline-none text-base font-bold w-full text-indigo-900 dark:text-white" placeholder="Buscar por nome ou WhatsApp..." value={clientSearch} onChange={e => setClientSearch(e.target.value)} />
                             </div>
                             <div className="flex flex-wrap gap-2 items-center">
                                 <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide flex-1">
@@ -651,14 +680,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                         { id: 'expiring', label: 'Vencendo', color: 'bg-orange-100 text-orange-700' },
                                         { id: 'debtor', label: 'Pendentes', color: 'bg-red-100 text-red-700' }
                                     ].map(f => (
-                                        <button key={f.id} onClick={() => setClientFilterStatus(f.id as any)} className={`px-5 py-2.5 rounded-xl text-[10px] font-black uppercase border transition-all whitespace-nowrap ${clientFilterStatus === f.id ? f.color : 'bg-white text-indigo-300 border-indigo-100'}`}>{f.label}</button>
+                                        <button key={f.id} onClick={() => setClientFilterStatus(f.id as any)} className={`px-5 py-2.5 rounded-xl text-[10px] font-black uppercase border transition-all whitespace-nowrap ${clientFilterStatus === f.id ? f.color : 'bg-white dark:bg-slate-900 text-indigo-300 border-indigo-100 dark:border-slate-800'}`}>{f.label}</button>
                                     ))}
                                 </div>
 
                                 <div className="flex gap-2">
-                                    <button onClick={handleDownloadBackup} className="p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all bg-white text-indigo-600 border-indigo-100 hover:bg-indigo-50" title="Baixar Backup JSON"><Download size={14} /> <span className="hidden sm:inline">Backup</span></button>
-                                    <label className="p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all bg-white text-purple-600 border-indigo-100 hover:bg-purple-50 cursor-pointer" title="Importar Backup JSON"><Upload size={14} /> <span className="hidden sm:inline">Importar</span><input type="file" accept=".json" className="hidden" onChange={handleImportBackup} /></label>
-                                    <button onClick={() => setClientSortByExpiry(!clientSortByExpiry)} className={`p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all ${clientSortByExpiry ? 'bg-amber-100 text-amber-700 border-amber-200' : 'bg-white text-indigo-400 border-indigo-100'}`} title="Ordenar por Vencimento Próximo"><ArrowUpDown size={14} /> <span className="hidden sm:inline">Vencimento</span></button>
+                                    <button onClick={handleDownloadBackup} className="p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all bg-white dark:bg-slate-900 text-indigo-600 border-indigo-100 dark:border-slate-800 hover:bg-indigo-50 dark:hover:bg-slate-800" title="Baixar Backup JSON"><Download size={14} /> <span className="hidden sm:inline">Backup</span></button>
+                                    <label className="p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all bg-white dark:bg-slate-900 text-purple-600 border-indigo-100 dark:border-slate-800 hover:bg-purple-50 dark:hover:bg-purple-900/20 cursor-pointer" title="Importar Backup JSON"><Upload size={14} /> <span className="hidden sm:inline">Importar</span><input type="file" accept=".json" className="hidden" onChange={handleImportBackup} /></label>
+                                    <button onClick={() => setClientSortByExpiry(!clientSortByExpiry)} className={`p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all ${clientSortByExpiry ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800' : 'bg-white dark:bg-slate-900 text-indigo-400 border-indigo-100 dark:border-slate-800'}`} title="Ordenar por Vencimento Próximo"><ArrowUpDown size={14} /> <span className="hidden sm:inline">Vencimento</span></button>
                                 </div>
                             </div>
                             <button onClick={() => { setClientForm({ phone_number: '', client_name: '', subscriptions: [], client_password: '' }); setClientModalOpen(true); }} className="w-full bg-indigo-600 text-white font-black py-4 rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-indigo-100"><Plus size={24} /> Novo Cliente</button>
@@ -666,15 +695,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             {filteredClients.map((client) => (
-                                <div key={client.id} className="bg-white rounded-[2.5rem] p-6 shadow-sm border border-indigo-50 flex flex-col hover:border-indigo-200 transition-all">
+                                <div key={client.id} className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-indigo-50 dark:border-slate-800 flex flex-col hover:border-indigo-200 dark:hover:border-slate-700 transition-all">
                                     <div className="flex justify-between items-start mb-4">
                                         <div className="min-w-0">
-                                            <h3 className="font-black text-gray-900 text-lg truncate leading-tight">{client.client_name || 'Sem Nome'}</h3>
+                                            <h3 className="font-black text-gray-900 dark:text-white text-lg truncate leading-tight">{client.client_name || 'Sem Nome'}</h3>
                                             <p className="text-xs font-bold text-indigo-400 mt-1 flex items-center gap-1.5"><Phone size={12} /> {client.phone_number}</p>
                                         </div>
                                         <div className="flex gap-2">
-                                            <button onClick={() => { setClientForm({ ...client, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months) }); setClientModalOpen(true); }} className="p-3 rounded-xl bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white transition-all"><Edit2 size={18} /></button>
-                                            <button onClick={() => handleSoftDeleteClient(client)} className="p-3 rounded-xl bg-red-50 text-red-600 hover:bg-red-600 hover:text-white transition-all"><Trash2 size={18} /></button>
+                                            <button onClick={() => { setClientForm({ ...client, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months) }); setClientModalOpen(true); }} className="p-3 rounded-xl bg-indigo-50 dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-600 hover:text-white transition-all"><Edit2 size={18} /></button>
+                                            <button onClick={() => handleSoftDeleteClient(client)} className="p-3 rounded-xl bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 hover:bg-red-600 hover:text-white transition-all"><Trash2 size={18} /></button>
                                         </div>
                                     </div>
 
@@ -685,7 +714,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                             const expiry = calculateExpiry(parts[1], parseInt(parts[3] || '1'));
                                             const daysLeft = getDaysRemaining(expiry);
                                             const isCharged = parts[2] === '1';
-                                            let statusColor = daysLeft < 0 ? "bg-red-50 text-red-600 border-red-100" : (daysLeft <= 5 ? "bg-amber-50 text-amber-600 border-amber-100" : "bg-green-50 text-green-700 border-green-100");
+                                            let statusColor = daysLeft < 0 ? "bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 border-red-100 dark:border-red-900/30" : (daysLeft <= 5 ? "bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 border-amber-100 dark:border-amber-900/30" : "bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 border-green-100 dark:border-green-900/30");
                                             return (
                                                 <div key={i} className={`p-4 rounded-2xl border flex flex-col gap-3 transition-all ${statusColor}`}>
                                                     <div className="flex justify-between items-center">
@@ -694,11 +723,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                             <span className="text-[10px] font-bold opacity-80">{daysLeft < 0 ? 'Vencido há ' + Math.abs(daysLeft) + 'd' : `Vence em ${expiry.toLocaleDateString()} (${daysLeft}d)`}</span>
                                                         </div>
                                                         <div className="flex gap-1.5">
-                                                            <button onClick={() => sendWhatsAppMessage(client.phone_number, client.client_name || 'Dorameira', serviceName, expiry)} className="p-2.5 bg-white/50 hover:bg-emerald-500 hover:text-white rounded-xl transition-all"><MessageCircle size={16} className="text-emerald-600 hover:text-inherit" /></button>
-                                                            {!isCharged && <button onClick={() => { setClientForm({ ...clientForm, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months).map((s, idx) => idx === i ? `${s.split('|')[0]}|${s.split('|')[1]}|1|${s.split('|')[3] || '1'}` : s) }); handleMarkAsChargedQuick(client, i); }} className="p-2.5 bg-white/50 text-indigo-600 border border-indigo-100 rounded-xl hover:bg-indigo-600 hover:text-white transition-all"><DollarSign size={16} /></button>}
+                                                            <button onClick={() => sendWhatsAppMessage(client.phone_number, client.client_name || 'Dorameira', serviceName, expiry)} className="p-2.5 bg-white/50 dark:bg-slate-800/50 hover:bg-emerald-500 hover:text-white rounded-xl transition-all"><MessageCircle size={16} className="text-emerald-600 dark:text-emerald-400 hover:text-inherit" /></button>
+                                                            {!isCharged && <button onClick={() => { setClientForm({ ...clientForm, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months).map((s, idx) => idx === i ? `${s.split('|')[0]}|${s.split('|')[1]}|1|${s.split('|')[3] || '1'}` : s) }); handleMarkAsChargedQuick(client, i); }} className="p-2.5 bg-white/50 dark:bg-slate-800/50 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-900/50 rounded-xl hover:bg-indigo-600 hover:text-white transition-all"><DollarSign size={16} /></button>}
                                                         </div>
                                                     </div>
-                                                    <button onClick={() => handleRenewSmart(client, i)} className="w-full py-2.5 bg-white/80 hover:bg-indigo-600 hover:text-white rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-2 transition-all shadow-sm border border-white"><RotateCw size={14} /> Renovar +{parts[3] || '1'} Mês</button>
+                                                    <button onClick={() => handleRenewSmart(client, i)} className="w-full py-2.5 bg-white/80 dark:bg-slate-800/80 hover:bg-indigo-600 hover:text-white rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-2 transition-all shadow-sm border border-white dark:border-slate-700"><RotateCw size={14} /> Renovar +{parts[3] || '1'} Mês</button>
                                                 </div>
                                             );
                                         })}
@@ -711,7 +740,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
                 {activeTab === 'finances' && (
                     <div className="space-y-8 animate-fade-in pb-32">
-                        <div className="bg-white p-8 rounded-[2.5rem] border-4 border-indigo-600/10 shadow-sm space-y-6">
+                        <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border-4 border-indigo-600/10 dark:border-indigo-500/10 shadow-sm space-y-6">
                             <div className="flex items-center gap-3 mb-2">
                                 <div className="p-3 bg-indigo-600 text-white rounded-2xl shadow-lg shadow-indigo-200"><Filter size={24} /></div>
                                 <div>
@@ -888,14 +917,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                     <div className="flex items-center justify-between p-5 bg-emerald-50 dark:bg-emerald-900/20 rounded-2xl border border-emerald-100">
                                         <div className="flex items-center gap-4">
                                             <div className="p-3 bg-white dark:bg-slate-800 rounded-xl shadow-sm text-emerald-600"><Users size={24} /></div>
-                                            <div><p className="text-[10px] font-black uppercase text-emerald-700">Novas Assinaturas (Mês)</p><h5 className="text-xl font-black text-emerald-900 dark:text-emerald-100">+{financeStats.newClientsThisMonth} Growth</h5></div>
+                                            <div><p className="text-[10px] font-black uppercase text-emerald-700">Novas Assinaturas (Mês)</p><h5 className="text-xl font-black text-emerald-900 dark:text-emerald-100">+{financeStats.newClientsThisMonth}</h5></div>
                                         </div>
                                         <div className="text-emerald-600"><TrendingUp size={28} /></div>
                                     </div>
                                     <div className="flex items-center justify-between p-5 bg-red-50 dark:bg-red-900/20 rounded-2xl border border-red-100">
                                         <div className="flex items-center gap-4">
                                             <div className="p-3 bg-white dark:bg-slate-800 rounded-xl shadow-sm text-red-600"><UsersRound size={24} /></div>
-                                            <div><p className="text-[10px] font-black uppercase text-red-700">Cancelamentos / Churn</p><h5 className="text-xl font-black text-red-900 dark:text-red-100">-{financeStats.churnCount} Clientes</h5></div>
+                                            <div><p className="text-[10px] font-black uppercase text-red-700">Assinaturas Canceladas / Churn</p><h5 className="text-xl font-black text-red-900 dark:text-red-100">-{financeStats.churnCount} Assinaturas</h5></div>
                                         </div>
                                         <div className="text-red-600 text-xs font-black uppercase">{financeStats.churnRate.toFixed(1)}% Taxa</div>
                                     </div>
@@ -985,7 +1014,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         <div className="flex justify-between items-center px-2"><h3 className="font-bold text-xl flex items-center gap-2"><Key className="text-indigo-600" /> Gestão de Contas</h3><button onClick={() => { setCredForm({ service: SERVICES[0], email: '', password: '', isVisible: true, publishedAt: new Date().toISOString() }); setCredModalOpen(true); }} className="bg-indigo-600 text-white px-5 py-3 rounded-xl text-xs font-black uppercase flex items-center gap-2 shadow-lg"><Plus size={20} /> Nova Conta</button></div>
                         <div className="space-y-8">
                             {Object.entries(groupedCredentials).map(([serviceName, creds]) => (
-                                <div key={serviceName} className="space-y-4"><h4 className="text-xs font-black text-indigo-400 uppercase tracking-widest px-2">{serviceName}</h4><div className="grid grid-cols-1 md:grid-cols-2 gap-4">{(creds as AppCredential[]).map(c => { const count = credentialUsage[c.id] || 0; const health = getCredentialHealth(c.service, c.publishedAt, count); return (<div key={c.id} className="bg-white dark:bg-slate-900 p-6 rounded-3xl shadow-sm border border-indigo-50 dark:border-slate-800"><div className="flex justify-between items-center mb-4"><div className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase border ${health.color}`}>{health.label}</div><div className="flex gap-2"><button onClick={() => { setCredForm(c); setCredModalOpen(true); }} className="text-gray-400 hover:text-indigo-600"><Edit2 size={18} /></button><button onClick={async () => { if (confirm("Excluir conta?")) { await deleteCredential(c.id); loadData(); } }} className="text-gray-300 hover:text-red-500"><Trash2 size={18} /></button></div></div><p className="font-bold text-lg text-gray-800 dark:text-white break-all">{c.email}</p><p className="font-mono text-sm text-indigo-400 mt-1 bg-indigo-50/50 p-2 rounded-lg inline-block">{c.password}</p><div className="mt-5 pt-4 border-t border-indigo-50 dark:border-slate-800 flex justify-between items-center text-xs font-bold text-gray-400"><span className="flex items-center gap-1.5"><Calendar size={14} /> {new Date(c.publishedAt).toLocaleDateString()}</span><span className="flex items-center gap-1.5"><Users size={14} /> {count} ativos</span></div></div>); })}</div></div>
+                                <div key={serviceName} className="space-y-4"><h4 className="text-xs font-black text-indigo-400 uppercase tracking-widest px-2">{serviceName}</h4><div className="grid grid-cols-1 md:grid-cols-2 gap-4">{(creds as AppCredential[]).map(c => { const count = credentialUsage[c.id] || 0; const health = getCredentialHealth(c.service, c.publishedAt, count); return (<div key={c.id} className="bg-white dark:bg-slate-900 p-6 rounded-3xl shadow-sm border border-indigo-50 dark:border-slate-800"><div className="flex justify-between items-center mb-4"><div className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase border ${health.color}`}>{health.label}</div><div className="flex gap-2"><button onClick={() => { setCredForm(c); setCredModalOpen(true); }} className="text-gray-400 hover:text-indigo-600"><Edit2 size={18} /></button><button onClick={async () => { if (confirm("Excluir conta?")) { await deleteCredential(c.id); loadData(); } }} className="text-gray-300 hover:text-red-500"><Trash2 size={18} /></button></div></div><p className="font-bold text-lg text-gray-800 dark:text-white break-all">{c.email}</p><p className="font-mono text-sm text-indigo-400 dark:text-indigo-300 mt-1 bg-indigo-50/50 dark:bg-indigo-900/30 p-2 rounded-lg inline-block">{c.password}</p><div className="mt-5 pt-4 border-t border-indigo-50 dark:border-slate-800 flex justify-between items-center text-xs font-bold text-gray-400 dark:text-gray-500"><span className="flex items-center gap-1.5"><Calendar size={14} /> {new Date(c.publishedAt).toLocaleDateString()}</span><span className="flex items-center gap-1.5"><Users size={14} /> {count} ativos</span></div></div>); })}</div></div>
                             ))}
                         </div>
                     </div>
@@ -1073,7 +1102,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             {/* MODAL CLIENTE */}
             {clientModalOpen && (
                 <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-                    <div className="bg-white dark:bg-slate-900 w-full max-w-sm rounded-[2.5rem] p-8 shadow-2xl relative max-h-[90vh] overflow-y-auto border-4 border-indigo-50">
+                    <div className="bg-white dark:bg-slate-900 w-full max-w-sm rounded-[2.5rem] p-8 shadow-2xl relative max-h-[90vh] overflow-y-auto border-4 border-indigo-50 dark:border-indigo-900/30">
                         <div className="flex justify-between items-center mb-8"><h3 className="font-black text-xl text-gray-900 dark:text-white leading-none">{clientForm.id ? 'Editar Perfil' : 'Novo Cliente'}</h3><button onClick={() => setClientModalOpen(false)} className="p-2.5 bg-indigo-50 dark:bg-slate-800 rounded-full text-indigo-400"><X size={24} /></button></div>
                         <div className="space-y-6">
                             <div className="space-y-2"><label className="text-xs font-black uppercase text-indigo-400 ml-1">WhatsApp (DDD + Número)</label><input className="w-full bg-indigo-50 dark:bg-slate-800 p-4 rounded-2xl font-bold text-lg outline-none border-2 border-transparent focus:border-indigo-300" value={clientForm.phone_number} onChange={e => setClientForm({ ...clientForm, phone_number: e.target.value })} placeholder="88999991234" /></div>

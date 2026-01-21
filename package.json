@@ -12,7 +12,6 @@
     "@capacitor/android": "^8.0.1",
     "@capacitor/cli": "^8.0.1",
     "@capacitor/core": "^8.0.1",
-    "@google/genai": "^1.31.0",
     "@supabase/supabase-js": "^2.45.0",
     "@tailwindcss/postcss": "^4.1.18",
     "lucide-react": "^0.556.0",
