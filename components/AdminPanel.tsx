@@ -142,6 +142,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
     const [projectionMonths, setProjectionMonths] = useState<number>(1);
     const [statsReferenceDate, setStatsReferenceDate] = useState<number>(() => {
+        const saved = localStorage.getItem('admin_stats_reference');
+        if (saved) return parseInt(saved);
         const d = new Date();
         return new Date(d.getFullYear(), d.getMonth(), 1).getTime();
     });
@@ -273,8 +275,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         newSubscriptionsSinceReset++;
                     }
 
-                    // Track expired and likely churned subscriptions (expired more than 7 days ago)
-                    if (daysLeft < -7) {
+                    // Track expired and likely churned subscriptions (expired more than 7 days ago AND expired after reset)
+                    if (expiry.getTime() > statsReferenceDate && daysLeft < -7) {
                         churnedSubscriptionsSinceReset++;
                     }
 
@@ -286,16 +288,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             });
         });
 
-        // Count subscriptions from deleted clients as churned
+        // Count subscriptions from recently deleted clients as churned (if they were deleted during the window)
+        // Note: Without a 'deleted_at' field, we use 'created_at' as a proxy for the window
         deletedClients.forEach(client => {
+            if (new Date(client.created_at).getTime() < statsReferenceDate) return;
+
             const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
             subs.forEach(sub => {
                 const parts = sub.split('|');
                 const duration = parseInt(parts[3] || '1');
-
-                // Only count monthly subscriptions
                 if (duration !== 1) return;
-
                 churnedSubscriptionsSinceReset++;
             });
         });
@@ -529,8 +531,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             setIsConfirmingReset(true);
             setTimeout(() => setIsConfirmingReset(false), 4000);
         } else {
+            const now = Date.now();
             setProjectionMonths(1);
-            setStatsReferenceDate(Date.now());
+            setStatsReferenceDate(now);
+            localStorage.setItem('admin_stats_reference', now.toString());
             setIsConfirmingReset(false);
         }
     };
