@@ -81,7 +81,7 @@ function normalizeSubscriptions(subs: any, defaultDuration: number = 1): string[
             if (!str) return '';
             const parts = str.split('|');
             const name = parts[0] || 'Desconhecido';
-            const date = parts[1] || new Date().toISOString();
+            const date = parts[1] || '1970-01-01T00:00:00.000Z'; // Use stable old date instead of new Date()
             const status = parts[2] || '0';
             const duration = (parts[3] && parts[3].trim() !== '') ? parts[3] : String(defaultDuration || 1);
             return `${name}|${date}|${status}|${duration}`;
@@ -271,11 +271,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                     serviceBreakdown[sName].monthlyCount++;
 
                     // Track new subscriptions since reset date
-                    if (subscriptionStartTime > statsReferenceDate) {
+                    // We only count it if its start date is explicitly after the reset
+                    if (subscriptionStartTime > statsReferenceDate + 1000) { // Add 1s buffer to avoid "exact reset" issues
                         newSubscriptionsSinceReset++;
                     }
 
                     // Track expired and likely churned subscriptions (expired more than 7 days ago AND expired after reset)
+                    // If reset was today, statsReferenceDate is "today", so expiry must be > today (future)
+                    // BUT been more than 7 days since it expired. This only triggers for resets in the past.
                     if (expiry.getTime() > statsReferenceDate && daysLeft < -7) {
                         churnedSubscriptionsSinceReset++;
                     }
