@@ -114,8 +114,8 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                 const itemIsDebtor = details ? details.isDebtor : false;
 
                 // STRICT BLOCKING: Block if expired AND not in tolerance AND not override
-                // Previously: daysLeft < -3. Now: daysLeft < 0
-                const isBlocked = ((daysLeft < 0 && !isInTolerance) || (itemIsDebtor && daysLeft < 0)) && !user.overrideExpiration;
+                // Tolerance always allows access, even for debtors
+                const isBlocked = (daysLeft < 0 && !isInTolerance && !user.overrideExpiration);
 
                 // Check for updates
                 if (result.credential) {
