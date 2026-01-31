@@ -131,32 +131,60 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!currentUser || isAdminMode) return;
 
-    // Escuta mudanças específicas para este usuário (OTIMIZADO: apenas tabela clients com filtro)
+    const channels: any[] = [];
+
+    // 1. Escuta mudanças na tabela de clientes (Status, Assinaturas, Bloqueios)
     const clientChannel = supabase
       .channel(`user-sync-${currentUser.phoneNumber}`)
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'clients', filter: `phone_number=eq.${currentUser.phoneNumber}` },
         (payload) => {
-          console.log('Mudança administrativa detectada para este usuário!', payload);
-          handleRefreshSession(true); // Atualiza dados silenciosamente
+          console.log('⚡ [REALTIME] Atualização de cliente detectada!', payload);
+          handleRefreshSession(true);
         }
       )
       .subscribe();
+    channels.push(clientChannel);
 
-    // OTIMIZAÇÃO EGRESS: Refresh com throttle de 30 segundos
-    const onFocus = () => {
+    // 2. Para conta DEMO (6789): Escuta também atualizações nas credenciais globais
+    if (currentUser.phoneNumber === '6789' || currentUser.name === 'Demo') {
+      const demoChannel = supabase
+        .channel('demo-global-sync')
+        .on(
+          'postgres_changes',
+          { event: 'UPDATE', schema: 'public', table: 'history_settings', filter: "key=eq.demo_credentials_map" },
+          () => {
+            console.log('⚡ [REALTIME] Credenciais DEMO atualizadas!');
+            handleRefreshSession(true);
+          }
+        )
+        .subscribe();
+      channels.push(demoChannel);
+    }
+
+    // 3. Estratégia Agressiva de Refresh (Foco/Visibilidade)
+    const handleAggressiveRefresh = () => {
+      // Reduzido throttle para 5s para garantir atualização rápida ao voltar pro app
       const now = Date.now();
-      if (now - lastRefreshRef.current > 30000) {
+      if (now - lastRefreshRef.current > 5000) {
+        console.log('⚡ [FOCUS] App em foco, atualizando dados...');
         lastRefreshRef.current = now;
         handleRefreshSession(true);
       }
     };
-    window.addEventListener('focus', onFocus);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') handleAggressiveRefresh();
+    };
+
+    window.addEventListener('focus', handleAggressiveRefresh);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
-      supabase.removeChannel(clientChannel);
-      window.removeEventListener('focus', onFocus);
+      channels.forEach(ch => supabase.removeChannel(ch));
+      window.removeEventListener('focus', handleAggressiveRefresh);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [currentUser?.phoneNumber, isAdminMode, handleRefreshSession]);
 
