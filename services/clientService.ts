@@ -254,7 +254,7 @@ export const saveClientToDB = async (client: Partial<ClientDBRow>): Promise<{ su
             service: parts[0].trim(),
             date: parts[1]?.trim(),
             paid: (parts[2] || '0') === '1',
-            duration: parts[3] ? parseInt(parts[3].trim()) : 0
+            duration: parts[3] ? parseInt(parts[3].trim()) || 1 : 1
           };
         };
 
@@ -293,7 +293,7 @@ export const saveClientToDB = async (client: Partial<ClientDBRow>): Promise<{ su
         // Check for Removals
         for (const [service, oldDetails] of oldMap.entries()) {
           if (!newMap.has(service)) {
-            const durationDays = oldDetails ? oldDetails.duration * 30 : 30;
+            const durationDays = (oldDetails?.duration || 1) * 30;
             await logHistory('Assinatura Removida', `Cliente ${clientName} cancelou/removeu a assinatura de ${service} (${durationDays} dias).`);
             changesLogged = true;
           }
