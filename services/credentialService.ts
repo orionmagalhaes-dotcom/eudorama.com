@@ -117,16 +117,20 @@ export const getAssignedCredential = async (user: User, serviceName: string): Pr
 
         const serviceKey = cleanServiceName.replace(/[^a-z]/g, '');
 
+        // Try to find credential by both cleanServiceName and serviceKey
+        const credentialData = storedMap[cleanServiceName] || storedMap[serviceKey];
+
         let demoEmail: string;
         let demoPassword: string;
         let publishedAt: string;
         let isCustom = false;
 
-        if (storedMap[cleanServiceName]) {
-            demoEmail = storedMap[cleanServiceName].email;
-            demoPassword = storedMap[cleanServiceName].password;
-            publishedAt = storedMap[cleanServiceName].publishedAt || new Date().toISOString();
+        if (credentialData) {
+            demoEmail = credentialData.email;
+            demoPassword = credentialData.password;
+            publishedAt = credentialData.publishedAt || new Date().toISOString();
             isCustom = !demoEmail.includes('@eudorama.com') || !demoPassword.includes('DEMO');
+            console.log(`[DEMO] Found stored credential for ${cleanServiceName}:`, { email: demoEmail, publishedAt });
         } else {
             // Generate unique fictitious credential based on service name
             const dateSuffix = Date.now().toString(36).slice(-4).toUpperCase();
@@ -134,6 +138,7 @@ export const getAssignedCredential = async (user: User, serviceName: string): Pr
             demoPassword = `PASS-${serviceKey.toUpperCase().slice(0, 4)}${dateSuffix}-DEMO`;
             // Use a stable "old" date so it doesn't trigger update for auto-generated ones
             publishedAt = '2020-01-01T00:00:00.000Z';
+            console.log(`[DEMO] No stored credential for ${cleanServiceName}, using auto-generated`, { email: demoEmail, publishedAt });
         }
 
         return {

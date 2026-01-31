@@ -494,9 +494,9 @@ const App: React.FC = () => {
           <div className="pointer-events-auto flex flex-col gap-4 items-end">
             <div className="relative group">
               <div className="absolute right-full mr-3 top-1/2 -translate-y-1/2 bg-white px-3 py-1.5 rounded-xl text-xs font-bold shadow-md text-gray-700 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
-                Caixinha de Natal
+                Apoie a Plataforma
               </div>
-              <button onClick={() => handleOpenCheckout('gift')} className="w-14 h-14 bg-gradient-to-br from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white rounded-full shadow-xl flex items-center justify-center transition-transform hover:scale-110 border-4 border-white animate-bounce">
+              <button onClick={() => handleOpenCheckout('gift')} className="w-14 h-14 bg-gradient-to-br from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 text-white rounded-full shadow-xl flex items-center justify-center transition-transform hover:scale-110 border-4 border-white animate-pulse">
                 <Gift className="w-7 h-7" />
               </button>
             </div>

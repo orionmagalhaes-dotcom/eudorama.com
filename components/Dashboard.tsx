@@ -106,7 +106,10 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                 if (result.credential) {
                     const ackDate = user.gameProgress?._credential_acks?.[name] || '1970-01-01';
                     const pubDate = result.credential.publishedAt || '1970-01-01';
-                    if (new Date(pubDate).getTime() > new Date(ackDate).getTime()) {
+                    const ackTime = new Date(ackDate).getTime();
+                    const pubTime = new Date(pubDate).getTime();
+                    console.log(`[UPDATE CHECK] ${name}: pubDate=${pubDate}, ackDate=${ackDate}, isNewer=${pubTime > ackTime}`);
+                    if (pubTime > ackTime) {
                         // We found a new update!
                         // But we can't update state inside this loop directly if we want to batch it.
                         // We'll attach a flag to the item and handle it after.
@@ -238,12 +241,12 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                             <div className="p-3 bg-amber-100 rounded-full">
                                 <Key size={24} className="animate-pulse" />
                             </div>
-                            <h3 className="text-lg font-black text-gray-800 leading-none">Credenciais Atualizadas!</h3>
+                            <h3 className="text-lg font-black text-gray-800 leading-none">Emails e Senhas Atualizados!</h3>
                         </div>
                         <div className="text-gray-600 text-sm font-medium space-y-3">
                             <p>As senhas de <strong>{credentialUpdates.map(u => u.name).join(', ')}</strong> foram alteradas recentemente.</p>
                             <p className="bg-amber-50 text-amber-800 p-3 rounded-xl border border-amber-100 font-bold text-xs">
-                                ⚠️ Importante: Atualize também o login/senha nos aplicativos (TV, Celular) para não perder o acesso.
+                                ⚠️ Importante: Atualize também o login/senha nos aplicativos (TV, Celular) para continuar assistindo seus doramas desbloqueados e sem anúncios.
                             </p>
                         </div>
                         <button
