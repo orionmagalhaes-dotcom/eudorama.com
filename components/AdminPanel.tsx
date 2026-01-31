@@ -172,7 +172,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const loadData = async () => {
         setLoading(true);
         try {
-            const [creds, allClients] = await Promise.all([fetchCredentials(), getAllClients()]);
+            const [creds, allClients, logs] = await Promise.all([fetchCredentials(), getAllClients(), getHistoryLogs()]);
 
             // --- AUTO CLEANUP LOGIC ---
             // 1. Remove subscriptions expired > 2 days ago
@@ -246,6 +246,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             }
 
             setCredentials(creds.filter(c => c.service !== 'SYSTEM_CONFIG'));
+            setHistoryLogs(logs);
         } catch (e) { console.error(e); }
         setLoading(false);
     };
@@ -308,24 +309,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
     const financeStats = useMemo(() => {
         const activeClients = clients.filter(c => !c.deleted);
-        const deletedClients = clients.filter(c => c.deleted);
 
         let grossRevenue = 0;
         let pendingRevenue = 0;
-        let newSubscriptionsSinceReset = 0;
-        let churnedSubscriptionsSinceReset = 0;
         const serviceBreakdown: Record<string, { count: number, monthlyCount: number, revenue: number, pending: number }> = {};
 
         SERVICES.forEach(s => serviceBreakdown[s] = { count: 0, monthlyCount: 0, revenue: 0, pending: 0 });
 
-        // Count active monthly subscriptions and track new ones
+        // Count active monthly subscriptions for revenue
         activeClients.forEach(client => {
             const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
             subs.forEach(sub => {
                 const parts = sub.split('|');
                 const duration = parseInt(parts[3] || '1');
 
-                // Only count monthly subscriptions for revenue and projections
+                // Only count monthly subscriptions (duration = 1 month)
                 if (duration !== 1) return;
 
                 const sName = parts[0];
@@ -334,47 +332,42 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
                 const expiry = calculateExpiry(startDate, duration);
                 const daysLeft = getDaysRemaining(expiry);
-                const subscriptionStartTime = new Date(startDate).getTime();
 
                 if (serviceBreakdown[sName]) {
-                    grossRevenue += price;
-                    serviceBreakdown[sName].revenue += price;
-                    serviceBreakdown[sName].count++;
-                    serviceBreakdown[sName].monthlyCount++;
-
-                    // Track new subscriptions since reset date
-                    // We only count it if its start date is explicitly after the reset
-                    if (subscriptionStartTime > statsReferenceDate + 1000) { // Add 1s buffer to avoid "exact reset" issues
-                        newSubscriptionsSinceReset++;
-                    }
-
-                    // Track expired and likely churned subscriptions (expired more than 7 days ago AND expired after reset)
-                    // If reset was today, statsReferenceDate is "today", so expiry must be > today (future)
-                    // BUT been more than 7 days since it expired. This only triggers for resets in the past.
-                    if (expiry.getTime() > statsReferenceDate && daysLeft < -7) {
-                        churnedSubscriptionsSinceReset++;
-                    }
-
-                    if (daysLeft < 0) {
+                    // Only count non-expired subscriptions for revenue
+                    if (daysLeft >= 0) {
+                        grossRevenue += price;
+                        serviceBreakdown[sName].revenue += price;
+                    } else {
                         pendingRevenue += price;
                         serviceBreakdown[sName].pending += price;
                     }
+                    serviceBreakdown[sName].count++;
+                    serviceBreakdown[sName].monthlyCount++;
                 }
             });
         });
 
-        // Count subscriptions from recently deleted clients as churned (if they were deleted during the window)
-        // Note: Without a 'deleted_at' field, we use 'created_at' as a proxy for the window
-        deletedClients.forEach(client => {
-            if (new Date(client.created_at).getTime() < statsReferenceDate) return;
+        // Count new and lost subscriptions from HISTORY LOGS since reset date
+        // Only count monthly subscriptions (look for "30 dias" in log details)
+        let newSubscriptionsSinceReset = 0;
+        let churnedSubscriptionsSinceReset = 0;
 
-            const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
-            subs.forEach(sub => {
-                const parts = sub.split('|');
-                const duration = parseInt(parts[3] || '1');
-                if (duration !== 1) return;
+        historyLogs.forEach(log => {
+            const logTime = new Date(log.created_at).getTime();
+            // Only count logs after the reset date
+            if (logTime <= statsReferenceDate) return;
+
+            const details = log.details || '';
+            // Only count if it's a 30-day (monthly) subscription
+            const isMonthly = details.includes('30 dias');
+            if (!isMonthly) return;
+
+            if (log.action === 'Assinatura Adicionada') {
+                newSubscriptionsSinceReset++;
+            } else if (log.action === 'Assinatura Removida' || log.action === 'Cliente Removido') {
                 churnedSubscriptionsSinceReset++;
-            });
+            }
         });
 
         const totalSubscriptionsCounted = Object.values(serviceBreakdown).reduce((acc, curr) => acc + curr.monthlyCount, 0);
@@ -394,7 +387,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             projection,
             averageTicket: avgTicket
         };
-    }, [clients, projectionMonths, statsReferenceDate]);
+    }, [clients, projectionMonths, statsReferenceDate, historyLogs]);
 
 
     const credentialUsage = useMemo<Record<string, number>>(() => {
@@ -593,12 +586,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
         const parts = subs[subIndex].split('|');
         const serviceName = parts[0];
-        const oldStartDate = parts[1];
         const months = parseInt(parts[3] || '1');
-        const currentExpiry = calculateExpiry(oldStartDate, months);
+        // ALWAYS use current date for renewals (resets subscription period)
         const today = new Date();
-        const newStartDate = currentExpiry.getTime() < today.getTime() ? today : currentExpiry;
-        subs[subIndex] = `${serviceName}|${newStartDate.toISOString()}|0|${months}`;
+        // Clear tolerance field (5th position) on renewal
+        subs[subIndex] = `${serviceName}|${today.toISOString()}|0|${months}|`;
         await saveClientToDB({ ...client, subscriptions: subs });
         loadData();
     };
@@ -608,12 +600,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         if (!currentSubs[subIndex]) return;
         const parts = currentSubs[subIndex].split('|');
         const serviceName = parts[0];
-        const oldStartDate = parts[1];
         const months = parseInt(parts[3] || '1');
-        const currentExpiry = calculateExpiry(oldStartDate, months);
+        // ALWAYS use current date for renewals (resets subscription period)
         const today = new Date();
-        const newStartDate = currentExpiry.getTime() < today.getTime() ? today : currentExpiry;
-        currentSubs[subIndex] = `${serviceName}|${newStartDate.toISOString()}|0|${months}`;
+        // Clear tolerance field (5th position) on renewal
+        currentSubs[subIndex] = `${serviceName}|${today.toISOString()}|0|${months}|`;
         setClientForm({ ...clientForm, subscriptions: currentSubs });
     };
 
