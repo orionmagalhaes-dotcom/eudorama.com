@@ -2,10 +2,10 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { User, AppCredential } from '../types';
 import { getAssignedCredential } from '../services/credentialService';
-import { updateClientName, updateClientPreferences } from '../services/clientService';
+import { updateClientName, updateClientPreferences, saveCredentialAck, saveCredentialAcks } from '../services/clientService';
 import {
     Copy, Check, CreditCard, Star, Crown, Sparkles, Loader2,
-    RotateCw, Key, Smartphone, Mail, Lock, AlertTriangle, PlusCircle, ArrowRight, Edit3, Fingerprint, ShieldAlert, Palette, Camera, X, CheckCircle2, Upload, Trash2, Clock, Zap, ShoppingBag, ArrowUpRight, Wifi, RefreshCw
+    RotateCw, Key, Smartphone, Mail, Lock, AlertTriangle, PlusCircle, ArrowRight, Edit3, Fingerprint, ShieldAlert, Palette, Camera, X, CheckCircle2, Upload, Trash2, Clock, Zap, ShoppingBag, ArrowUpRight, Wifi, RefreshCw, Bell, Calendar, Heart
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -46,6 +46,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
     const [tempName, setTempName] = useState(user.name);
     const [isSyncing, setIsSyncing] = useState(false);
     const [isRefreshing, setIsRefreshing] = useState(false);
+    const [credentialUpdates, setCredentialUpdates] = useState<{ name: string, date: string }[]>([]);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const validServices = useMemo(() => (user.services || []).filter(s => s && s.trim().length > 0), [user.services]);
@@ -101,6 +102,18 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                 const itemIsDebtor = details ? details.isDebtor : false;
                 const isBlocked = ((daysLeft < -3) || (itemIsDebtor && daysLeft < 0)) && !user.overrideExpiration;
 
+                // Check for updates
+                if (result.credential) {
+                    const ackDate = user.gameProgress?._credential_acks?.[name] || '1970-01-01';
+                    const pubDate = result.credential.publishedAt || '1970-01-01';
+                    if (new Date(pubDate).getTime() > new Date(ackDate).getTime()) {
+                        // We found a new update!
+                        // But we can't update state inside this loop directly if we want to batch it.
+                        // We'll attach a flag to the item and handle it after.
+                        (result as any).hasNewUpdate = true;
+                    }
+                }
+
                 return {
                     name,
                     daysLeft,
@@ -108,9 +121,26 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                     cred: result.credential,
                     alert: result.alert,
                     expiryDate,
-                    itemIsDebtor
+                    itemIsDebtor,
+                    hasNewUpdate: (result as any).hasNewUpdate
                 };
             }));
+
+            const updates = results.filter(r => r.hasNewUpdate && r.cred).map(r => ({ name: r.name, date: r.cred!.publishedAt }));
+            if (updates.length > 0) {
+                setCredentialUpdates(prev => {
+                    const existingNames = new Set(prev.map(p => p.name));
+                    // Only add if not already in the list AND not already acknowledged in user data (double check)
+                    const newOnes = updates.filter(u => {
+                        if (existingNames.has(u.name)) return false;
+                        const ackDate = user.gameProgress?._credential_acks?.[u.name] || '1970-01-01';
+                        return new Date(u.date).getTime() > new Date(ackDate).getTime();
+                    });
+                    if (newOnes.length === 0) return prev;
+                    return [...prev, ...newOnes];
+                });
+            }
+
             setMergedData(results);
             setLoading(false);
             setTimeout(() => setIsSyncing(false), 800);
@@ -118,7 +148,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
 
         if (validServices.length > 0) loadUnifiedData();
         else setLoading(false);
-    }, [validServices, user.phoneNumber, user.subscriptionDetails, user.isDebtor, user.name, user.purchaseDate, user.durationMonths, user.overrideExpiration, syncTrigger]);
+    }, [validServices, user.phoneNumber, user.subscriptionDetails, user.isDebtor, user.name, user.purchaseDate, user.durationMonths, user.overrideExpiration, syncTrigger, user.gameProgress]);
 
     const copyToClipboard = (text: string, id: string) => {
         navigator.clipboard.writeText(text.trim());
@@ -174,8 +204,58 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
         onOpenCheckout(hasExpired ? 'renewal' : 'early_renewal', targets);
     };
 
+    const handleDismissAllUpdates = () => {
+        if (credentialUpdates.length === 0) return;
+
+        // 1. Prepare batch update map
+        const newAcks: Record<string, string> = {};
+        credentialUpdates.forEach(u => {
+            newAcks[u.name] = u.date;
+        });
+
+        // 2. Clear local state IMMEDIATELY to close modal
+        setCredentialUpdates([]);
+
+        // 3. Update User Context (Optimistic)
+        const updatedUser = { ...user };
+        updatedUser.gameProgress = { ...user.gameProgress };
+        if (!updatedUser.gameProgress._credential_acks) updatedUser.gameProgress._credential_acks = {};
+        updatedUser.gameProgress._credential_acks = { ...updatedUser.gameProgress._credential_acks, ...newAcks };
+
+        onUpdateUser(updatedUser);
+
+        // 4. Persist to DB
+        saveCredentialAcks(user.phoneNumber, newAcks).catch(e => console.error("Failed to save acks:", e));
+    };
+
     return (
         <div className={`${getBgClass()} min-h-screen pb-32 transition-all duration-500`}>
+            {/* CREDENTIAL UPDATE MODAL */}
+            {credentialUpdates.length > 0 && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+                    <div className="bg-white rounded-[2rem] p-6 max-w-sm w-full shadow-2xl space-y-4 animate-scale-up">
+                        <div className="flex items-center gap-3 text-amber-500">
+                            <div className="p-3 bg-amber-100 rounded-full">
+                                <Key size={24} className="animate-pulse" />
+                            </div>
+                            <h3 className="text-lg font-black text-gray-800 leading-none">Credenciais Atualizadas!</h3>
+                        </div>
+                        <div className="text-gray-600 text-sm font-medium space-y-3">
+                            <p>As senhas de <strong>{credentialUpdates.map(u => u.name).join(', ')}</strong> foram alteradas recentemente.</p>
+                            <p className="bg-amber-50 text-amber-800 p-3 rounded-xl border border-amber-100 font-bold text-xs">
+                                ⚠️ Importante: Atualize também o login/senha nos aplicativos (TV, Celular) para não perder o acesso.
+                            </p>
+                        </div>
+                        <button
+                            onClick={handleDismissAllUpdates}
+                            className="w-full py-3 rounded-xl bg-amber-500 text-white font-black text-sm uppercase tracking-wide shadow-lg shadow-amber-200 active:scale-95 transition-all"
+                        >
+                            Entendido
+                        </button>
+                    </div>
+                </div>
+            )}
+
             <input
                 type="file"
                 ref={fileInputRef}
@@ -234,15 +314,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                             <button onClick={handleEditName} className="p-1 text-gray-400 hover:text-pink-600 transition-colors"><Edit3 size={16} /></button>
                         </div>
                         <div className="flex items-center gap-2 mt-2.5 flex-wrap">
-                            <div className="flex items-center gap-2 bg-white px-3.5 py-1.5 rounded-full border border-pink-100 shadow-sm w-fit">
-                                <Crown size={14} className="text-yellow-500 fill-current" />
-                                <span className="text-[11px] font-black text-pink-600 uppercase tracking-[0.15em]">Membro VIP</span>
-                            </div>
-                            {/* INDICADOR REALTIME */}
-                            <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border bg-white shadow-sm transition-all duration-500 ${isSyncing ? 'border-blue-200 text-blue-500' : 'border-emerald-100 text-emerald-500'}`}>
-                                <div className={`w-1.5 h-1.5 rounded-full ${isSyncing ? 'bg-blue-500 animate-spin' : 'bg-emerald-500 animate-pulse'}`}></div>
-                                <span className="text-[9px] font-black uppercase tracking-widest">{isSyncing ? 'Sincronizando' : 'Ao Vivo'}</span>
-                            </div>
+
                             {/* BOTÃO ATUALIZAR */}
                             <button
                                 onClick={async () => {
@@ -256,7 +328,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                                 className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full border bg-white shadow-sm transition-all active:scale-95 ${isRefreshing ? 'border-pink-200 text-pink-400' : 'border-pink-100 text-pink-600 hover:bg-pink-50 hover:border-pink-300'}`}
                             >
                                 <RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} />
-                                <span className="text-[11px] font-black uppercase tracking-wide">{isRefreshing ? 'Atualizando...' : 'Atualizar'}</span>
+                                <span className="text-[11px] font-black uppercase tracking-wide">{isRefreshing ? 'Atualizando...' : 'Atualizar informações da conta'}</span>
                             </button>
                         </div>
                     </div>
@@ -326,9 +398,17 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                                         <div className={`w-14 h-14 bg-gradient-to-br from-pink-500 to-purple-600 rounded-2xl flex items-center justify-center text-white font-black text-2xl shadow-lg ring-4 ring-pink-50`}>{item.name[0]}</div>
                                         <div>
                                             <h3 className="font-black text-gray-800 text-lg leading-none">{item.name}</h3>
-                                            <span className={`inline-block px-2 py-0.5 mt-2 rounded-lg text-[10px] font-black uppercase ${item.daysLeft < 0 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-700'}`}>
-                                                {item.daysLeft < 0 ? `Vencido há ${Math.abs(item.daysLeft)} ${Math.abs(item.daysLeft) === 1 ? 'dia' : 'dias'}` : `${item.daysLeft} dias restantes`}
-                                            </span>
+                                            <div className="flex flex-col gap-1 mt-1.5">
+                                                <span className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-black uppercase w-fit ${item.daysLeft < 0 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-700'}`}>
+                                                    {item.daysLeft < 0 ? `Vencido há ${Math.abs(item.daysLeft)} ${Math.abs(item.daysLeft) === 1 ? 'dia' : 'dias'}` : `${item.daysLeft} dias restantes`}
+                                                </span>
+                                                {item.cred?.publishedAt && (
+                                                    <span className="flex items-center gap-1 text-[9px] font-bold text-gray-400 uppercase">
+                                                        <Calendar size={10} />
+                                                        Atualizado em {new Date(item.cred.publishedAt).toLocaleDateString()}
+                                                    </span>
+                                                )}
+                                            </div>
                                         </div>
                                     </div>
                                     {item.daysLeft <= 5 && (
@@ -375,45 +455,41 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                             </div>
                         ))}
 
-                        {missingServices.length > 0 && (
-                            <div className="pt-10 pb-4 space-y-6">
-                                <div className="flex items-center gap-3 px-1">
-                                    <div className="p-2 bg-pink-100 rounded-xl text-pink-600"><ShoppingBag size={20} /></div>
-                                    <div>
-                                        <h4 className="text-lg font-black text-gray-800 leading-none">Explore Novos Horizontes</h4>
-                                        <p className="text-xs text-gray-400 font-bold uppercase mt-1">Experiências que você ainda não tem</p>
-                                    </div>
-                                </div>
-
-                                <div className="grid grid-cols-1 gap-4">
-                                    {missingServices.map((svc, idx) => (
-                                        <div key={idx} className={`relative overflow-hidden bg-gradient-to-br ${svc.color} p-6 rounded-[2.5rem] text-white shadow-xl group transition-all hover:-translate-y-1`}>
-                                            <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:scale-110 transition-transform">
-                                                <Sparkles size={120} />
-                                            </div>
-                                            <div className="relative z-10 space-y-4">
-                                                <div className="flex justify-between items-start">
-                                                    <div className="bg-white/20 backdrop-blur-md px-4 py-1 rounded-full text-[10px] font-black uppercase tracking-widest">
-                                                        VIP Access
-                                                    </div>
-                                                    <Zap size={24} className="text-yellow-300 fill-yellow-300 animate-pulse" />
-                                                </div>
-                                                <div>
-                                                    <h5 className="text-2xl font-black">{svc.name}</h5>
-                                                    <p className="text-sm font-medium text-white/80 mt-1 max-w-[220px]">{svc.desc}</p>
-                                                </div>
-                                                <button
-                                                    onClick={() => onOpenCheckout('new_sub', svc.name)}
-                                                    className="bg-white text-gray-900 px-6 py-3 rounded-2xl font-black text-xs uppercase flex items-center gap-2 shadow-lg active:scale-95 transition-all w-fit"
-                                                >
-                                                    Assinar Agora <ArrowRight size={14} />
-                                                </button>
-                                            </div>
-                                        </div>
-                                    ))}
+                        <div className="pt-10 pb-4 space-y-6">
+                            <div className="flex items-center gap-3 px-1">
+                                <div className="p-2 bg-pink-100 rounded-xl text-pink-600"><Heart size={20} /></div>
+                                <div>
+                                    <h4 className="text-lg font-black text-gray-800 leading-none">Nos Ajude</h4>
+                                    <p className="text-xs text-gray-400 font-bold uppercase mt-1">Otimização Contínua</p>
                                 </div>
                             </div>
-                        )}
+
+                            <div className="relative overflow-hidden bg-gradient-to-br from-rose-500 to-pink-600 p-6 rounded-[2.5rem] text-white shadow-xl group transition-all hover:-translate-y-1">
+                                <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:scale-110 transition-transform">
+                                    <Heart size={120} />
+                                </div>
+                                <div className="relative z-10 space-y-4">
+                                    <div className="flex justify-between items-start">
+                                        <div className="bg-white/20 backdrop-blur-md px-4 py-1 rounded-full text-[10px] font-black uppercase tracking-widest">
+                                            Contribuição
+                                        </div>
+                                        <Sparkles size={24} className="text-yellow-300 fill-yellow-300 animate-pulse" />
+                                    </div>
+                                    <div>
+                                        <h5 className="text-2xl font-black">Apoie o Projeto</h5>
+                                        <p className="text-sm font-medium text-white/80 mt-1">
+                                            Sua ajuda financeira de qualquer valor é essencial para mantermos o sistema online e com melhorias constantes.
+                                        </p>
+                                    </div>
+                                    <button
+                                        onClick={() => onOpenCheckout('gift', 'Donation')}
+                                        className="bg-white text-gray-900 px-6 py-3 rounded-2xl font-black text-xs uppercase flex items-center gap-2 shadow-lg active:scale-95 transition-all w-fit"
+                                    >
+                                        Contribuir <ArrowRight size={14} />
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 )}
             </div>

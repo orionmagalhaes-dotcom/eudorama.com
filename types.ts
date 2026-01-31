@@ -22,6 +22,7 @@ export interface ClientDBRow {
   theme_color?: string;
   background_image?: string;
   profile_image?: string;
+  observation?: string;
 }
 
 export interface AppCredential {

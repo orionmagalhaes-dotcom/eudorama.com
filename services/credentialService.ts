@@ -102,19 +102,43 @@ export const getAssignedCredential = async (user: User, serviceName: string): Pr
     const credentialsList = await fetchCredentials();
     const cleanServiceName = serviceName.split('|')[0].trim().toLowerCase();
 
-    // OVERRIDE DEMO: Para Orion Magalhães (6789), sempre retorna uma conta fictícia
+    // OVERRIDE DEMO: Para Orion Magalhães (6789), sempre retorna uma conta fictícia ou a selecionada no Admin
     if (user.phoneNumber === '6789' || user.name === 'Demo') {
+        // Check for per-service credential map
+        const storedMap = JSON.parse(localStorage.getItem('demo_credentials_map') || '{}');
+        const serviceKey = cleanServiceName.replace(/[^a-z]/g, '');
+
+        let demoEmail: string;
+        let demoPassword: string;
+        let publishedAt: string;
+        let isCustom = false;
+
+        if (storedMap[cleanServiceName]) {
+            demoEmail = storedMap[cleanServiceName].email;
+            demoPassword = storedMap[cleanServiceName].password;
+            publishedAt = storedMap[cleanServiceName].publishedAt || new Date().toISOString();
+            isCustom = !demoEmail.includes('@eudorama.com') || !demoPassword.includes('DEMO');
+        } else {
+            // Generate unique fictitious credential based on service name and current timestamp
+            const now = new Date();
+            const dateSuffix = now.getTime().toString(36).slice(-4).toUpperCase();
+            demoEmail = `demo.${serviceKey}${dateSuffix}@eudorama.com`;
+            demoPassword = `PASS-${serviceKey.toUpperCase().slice(0, 4)}${dateSuffix}-DEMO`;
+            // Use a stable "old" date so it doesn't trigger update for auto-generated ones
+            publishedAt = '2020-01-01T00:00:00.000Z';
+        }
+
         return {
             credential: {
                 id: 'demo-id',
                 service: serviceName,
-                email: 'demo@eudorama.com',
-                password: 'DEMO-PASSWORD-1337',
-                publishedAt: new Date().toISOString(),
+                email: demoEmail,
+                password: demoPassword,
+                publishedAt,
                 isVisible: true
             },
-            alert: "✨ Ambiente de Demonstração (Fictício)",
-            daysActive: 1
+            alert: isCustom ? "🔧 Demo (Credencial Real)" : "✨ Demo (Fictício)",
+            daysActive: 0
         };
     }
 

@@ -30,9 +30,9 @@ export const addLocalDorama = (phoneNumber: string, type: 'watching' | 'favorite
 
 export const getAllClients = async (retries = 2): Promise<ClientDBRow[]> => {
   try {
-    // OTIMIZAÇÃO EGRESS: Selecionar apenas campos necessários (exclui game_progress, profile_image, background_image)
+    // OTIMIZAÇÃO EGRESS: Included game_progress to fetch internal observation
     const { data, error } = await supabase.from('clients')
-      .select('id,phone_number,client_name,client_password,subscriptions,duration_months,purchase_date,is_debtor,override_expiration,deleted,created_at,theme_color,last_active_at');
+      .select('id,phone_number,client_name,client_password,subscriptions,duration_months,purchase_date,is_debtor,override_expiration,deleted,created_at,theme_color,last_active_at,game_progress');
     if (error) {
       if (retries > 0) {
         await new Promise(r => setTimeout(r, 1000));
@@ -40,7 +40,11 @@ export const getAllClients = async (retries = 2): Promise<ClientDBRow[]> => {
       }
       return [];
     }
-    return data as unknown as ClientDBRow[];
+    // Map game_progress._observation to root observation
+    return (data || []).map((c: any) => ({
+      ...c,
+      observation: c.game_progress?._observation || ''
+    })) as unknown as ClientDBRow[];
   } catch (e: any) {
     if (retries > 0 && e.message?.includes('fetch')) {
       await new Promise(r => setTimeout(r, 1000));
@@ -182,6 +186,17 @@ export const saveClientToDB = async (client: Partial<ClientDBRow>): Promise<{ su
       if (data) oldData = data as ClientDBRow;
     }
 
+    // Handle Observation -> game_progress mapping
+    // We check if 'observation' key exists in payload (it might be empty string)
+    if (payload.observation !== undefined) {
+      const currentProgress = payload.game_progress || oldData?.game_progress || (oldData as any)?.gameProgress || {};
+      // Store observation in _observation key to avoid clutter
+      const newProgress = { ...currentProgress, _observation: payload.observation };
+      payload.game_progress = newProgress;
+      // IMPORTANT: Delete the root 'observation' key because it doesn't exist in DB schema
+      delete payload.observation;
+    }
+
     if (!payload.id || payload.id === '') delete payload.id;
     if (!Array.isArray(payload.subscriptions)) payload.subscriptions = [];
     const { error } = await supabase.from('clients').upsert(payload);
@@ -199,7 +214,34 @@ export const saveClientToDB = async (client: Partial<ClientDBRow>): Promise<{ su
       if (payload.deleted && !oldData.deleted) {
         await logHistory('Cliente Removido', `Cliente ${clientName} enviado para lixeira.`);
       } else if (payload.deleted === false && oldData.deleted) {
-        await logHistory('Cliente Restaurado', `Cliente ${clientName} restaurado da lixeira.`);
+        // CLIENT RESTORED - Log individual subscriptions as "Restored" for financial tracking
+        const subs = (oldData.subscriptions || []) as string[];
+
+        // Helper to parse subscription string: Service|Date|Paid|Duration
+        const parseSub = (s: string) => {
+          if (!s) return null;
+          const parts = s.split('|');
+          return {
+            service: parts[0].trim(),
+            date: parts[1]?.trim(),
+            paid: (parts[2] || '0') === '1',
+            duration: parts[3] ? parseInt(parts[3].trim()) : 1
+          };
+        };
+
+        let restoredCount = 0;
+        subs.forEach(s => {
+          const p = parseSub(s);
+          if (p) {
+            // Log specially so it counts as "Revenue" or "New Subscription" in reports if needed
+            logHistory('Assinatura Restaurada', `Cliente ${clientName} restaurado: ${p.service} (${p.duration * 30} dias) reativado.`).catch(console.error);
+            restoredCount++;
+          }
+        });
+
+        if (restoredCount === 0) {
+          await logHistory('Cliente Restaurado', `Cliente ${clientName} restaurado da lixeira (sem assinaturas ativas).`);
+        }
       } else {
         const oldSubs = (oldData.subscriptions || []) as string[];
         const newSubs = (payload.subscriptions || []) as string[];
@@ -345,6 +387,30 @@ export const saveGameProgress = async (phoneNumber: string, gameId: string, prog
 
 export const updateLastActive = async (phoneNumber: string): Promise<void> => {
   await supabase.from('clients').update({ last_active_at: new Date().toISOString() }).eq('phone_number', phoneNumber);
+};
+
+export const saveCredentialAck = async (phoneNumber: string, serviceName: string, publishedAt: string) => {
+  const { data } = await supabase.from('clients').select('game_progress').eq('phone_number', phoneNumber).single();
+  const current = data?.game_progress || {};
+  const acks = current._credential_acks || {};
+
+  // Update ack for this service
+  acks[serviceName] = publishedAt;
+
+  const updated = { ...current, _credential_acks: acks };
+  await supabase.from('clients').update({ game_progress: updated }).eq('phone_number', phoneNumber);
+};
+
+export const saveCredentialAcks = async (phoneNumber: string, newAcks: Record<string, string>) => {
+  const { data } = await supabase.from('clients').select('game_progress').eq('phone_number', phoneNumber).single();
+  const current = data?.game_progress || {};
+  const acks = current._credential_acks || {};
+
+  // Merge new acks
+  Object.assign(acks, newAcks);
+
+  const updated = { ...current, _credential_acks: acks };
+  await supabase.from('clients').update({ game_progress: updated }).eq('phone_number', phoneNumber);
 };
 
 export const addDoramaToDB = async (phoneNumber: string, listType: 'watching' | 'favorites' | 'completed', dorama: Dorama): Promise<Dorama | null> => {

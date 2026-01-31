@@ -158,7 +158,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const [newSubPlan, setNewSubPlan] = useState('1');
 
     const [clientForm, setClientForm] = useState<Partial<ClientDBRow>>({
-        phone_number: '', client_name: '', subscriptions: [], duration_months: 1, is_debtor: false, purchase_date: toLocalInput(new Date().toISOString()), client_password: ''
+        phone_number: '', client_name: '', subscriptions: [], duration_months: 1, is_debtor: false, purchase_date: toLocalInput(new Date().toISOString()), client_password: '', observation: ''
     });
 
     // History State
@@ -367,34 +367,50 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     }, [credentials, credSortOrder]);
 
     const filteredClients = useMemo<ClientDBRow[]>(() => {
-        let list = clients.filter(c => !c.deleted);
+        const hasSearch = clientSearch && clientSearch.trim().length > 0;
 
+        // Step 1: Start with the right base list
+        // If actively searching, include ALL clients. Otherwise, hide deleted.
+        let list = hasSearch ? [...clients] : clients.filter(c => !c.deleted);
+
+        // Step 2: Apply text search filter
+        if (hasSearch) {
+            const query = clientSearch.toLowerCase().trim();
+            list = list.filter(c =>
+                (c.phone_number && c.phone_number.includes(query)) ||
+                (c.client_name && c.client_name.toLowerCase().includes(query))
+            );
+        }
+
+        // Step 3: Apply category filters (always exclude deleted from category views)
         if (clientFilterStatus === 'debtor') {
             list = list.filter(c => {
+                if (c.deleted) return false;
                 const subs = normalizeSubscriptions(c.subscriptions || [], c.duration_months);
                 return subs.some(s => getDaysRemaining(calculateExpiry(s.split('|')[1], parseInt(s.split('|')[3] || '1'))) < 0);
             });
         } else if (clientFilterStatus === 'charged') {
             list = list.filter(c => {
+                if (c.deleted) return false;
                 const subs = normalizeSubscriptions(c.subscriptions || [], c.duration_months);
                 return subs.some(s => s.split('|')[2] === '1');
             });
         } else if (clientFilterStatus === 'expiring') {
-            list = list.filter(c => normalizeSubscriptions(c.subscriptions || [], c.duration_months).some(s => {
-                const parts = s.split('|');
-                const days = getDaysRemaining(calculateExpiry(parts[1], parseInt(parts[3] || '1')));
-                return days <= 5 && days >= 0;
-            }));
+            list = list.filter(c => {
+                if (c.deleted) return false;
+                return normalizeSubscriptions(c.subscriptions || [], c.duration_months).some(s => {
+                    const parts = s.split('|');
+                    const days = getDaysRemaining(calculateExpiry(parts[1], parseInt(parts[3] || '1')));
+                    return days <= 5 && days >= 0;
+                });
+            });
         }
 
-        if (clientSearch) {
-            const lower = clientSearch.toLowerCase();
-            list = list.filter(c => c.phone_number.includes(lower) || c.client_name?.toLowerCase().includes(lower));
-        }
-
+        // Step 4: Apply sorting
         if (clientSortByExpiry) {
             list = [...list].sort((a, b) => {
                 const getMinDays = (c: ClientDBRow) => {
+                    if (c.deleted) return 99999;
                     const subs = normalizeSubscriptions(c.subscriptions, c.duration_months);
                     if (subs.length === 0) return 9999;
                     const days = subs.map(s => getDaysRemaining(calculateExpiry(s.split('|')[1], parseInt(s.split('|')[3] || '1'))));
@@ -705,11 +721,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                 <div key={client.id} className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-indigo-50 dark:border-slate-800 flex flex-col hover:border-indigo-200 dark:hover:border-slate-700 transition-all">
                                     <div className="flex justify-between items-start mb-4">
                                         <div className="min-w-0">
-                                            <h3 className="font-black text-gray-900 dark:text-white text-lg truncate leading-tight">{client.client_name || 'Sem Nome'}</h3>
-                                            <p className="text-xs font-bold text-indigo-400 mt-1 flex items-center gap-1.5"><Phone size={12} /> {client.phone_number}</p>
+                                            <h3 className={`font-black text-gray-900 dark:text-white text-lg truncate leading-tight ${client.deleted ? 'line-through opacity-50' : ''}`}>{client.client_name || 'Sem Nome'}</h3>
+                                            <p className="text-xs font-bold text-indigo-400 mt-1 flex items-center gap-1.5">
+                                                <Phone size={12} /> {client.phone_number}
+                                                {client.deleted && <span className="bg-red-600 text-white px-2 py-0.5 rounded-md text-[9px] uppercase tracking-widest ml-2">Lixeira</span>}
+                                                {client.observation && <span title={client.observation} className="text-amber-500 cursor-help"><AlertTriangle size={14} /></span>}
+                                            </p>
                                         </div>
                                         <div className="flex gap-2">
-                                            <button onClick={() => { setClientForm({ ...client, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months) }); setClientModalOpen(true); }} className="p-3 rounded-xl bg-indigo-50 dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-600 hover:text-white transition-all"><Edit2 size={18} /></button>
+                                            {client.deleted ? (
+                                                <button onClick={() => handleRestoreClient(client)} className="px-4 py-3 rounded-xl bg-orange-100 text-orange-700 font-black text-xs uppercase hover:bg-orange-200 transition-all flex items-center gap-2">
+                                                    <Undo2 size={16} /> Restaurar
+                                                </button>
+                                            ) : (
+                                                <button onClick={() => { setClientForm({ ...client, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months) }); setClientModalOpen(true); }} className="p-3 rounded-xl bg-indigo-50 dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-600 hover:text-white transition-all"><Edit2 size={18} /></button>
+                                            )}
                                             <button onClick={() => handleSoftDeleteClient(client)} className="p-3 rounded-xl bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 hover:bg-red-600 hover:text-white transition-all"><Trash2 size={18} /></button>
                                         </div>
                                     </div>
@@ -1032,6 +1058,88 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         <div className="bg-red-50 dark:bg-red-900/20 p-10 rounded-full animate-pulse"><Shield className="w-16 h-16 text-red-500" /></div>
                         <div className="w-full max-w-sm space-y-4 pb-32">
                             <h2 className="text-2xl font-black text-red-600">Zona de Segurança</h2>
+
+                            {/* Demo Credential Update Section */}
+                            <div className="bg-indigo-50 dark:bg-slate-800 p-6 rounded-3xl space-y-4 text-left border border-indigo-100">
+                                <p className="text-xs font-black uppercase text-indigo-600 tracking-widest">Credenciais Demo (6789)</p>
+
+                                {/* Update All Button */}
+                                <button
+                                    onClick={() => {
+                                        // Generate unique fictitious credentials for all services with current timestamp
+                                        const timestamp = Date.now();
+                                        const publishedAt = new Date().toISOString();
+                                        const newCreds: Record<string, { email: string, password: string, publishedAt: string }> = {};
+                                        SERVICES.forEach((service, idx) => {
+                                            const suffix = (timestamp + idx).toString(36).slice(-6).toUpperCase();
+                                            newCreds[service.toLowerCase()] = {
+                                                email: `demo.${service.toLowerCase().replace(/[^a-z]/g, '')}${suffix}@eudorama.com`,
+                                                password: `PASS-${suffix}-DEMO`,
+                                                publishedAt
+                                            };
+                                        });
+                                        localStorage.setItem('demo_credentials_map', JSON.stringify(newCreds));
+                                        alert('Todas as credenciais demo foram atualizadas! O dashboard irá mostrar a notificação de atualização.');
+                                    }}
+                                    className="w-full bg-indigo-600 text-white font-black py-3 rounded-2xl text-xs uppercase shadow-md hover:bg-indigo-700 transition-all"
+                                >
+                                    🔄 Gerar Novos Fictícios (Todas)
+                                </button>
+
+                                {/* Per-Service Selectors */}
+                                <div className="space-y-3 max-h-60 overflow-y-auto pr-2">
+                                    {SERVICES.map(service => {
+                                        const serviceCreds = credentials.filter(c => c.service.toLowerCase().includes(service.toLowerCase()));
+                                        const storedMap = JSON.parse(localStorage.getItem('demo_credentials_map') || '{}');
+                                        const currentEmail = storedMap[service.toLowerCase()]?.email || `demo.${service.toLowerCase().replace(/[^a-z]/g, '')}@eudorama.com`;
+
+                                        return (
+                                            <div key={service} className="flex items-center gap-2 bg-white dark:bg-slate-900 p-3 rounded-xl border border-indigo-50">
+                                                <span className="text-xs font-black text-indigo-600 uppercase w-20 truncate">{service}</span>
+                                                <select
+                                                    className="flex-1 bg-gray-50 dark:bg-slate-800 p-2 rounded-lg text-xs font-bold outline-none border border-indigo-50"
+                                                    defaultValue=""
+                                                    onChange={(e) => {
+                                                        const selectedId = e.target.value;
+                                                        const storedMapCurrent = JSON.parse(localStorage.getItem('demo_credentials_map') || '{}');
+
+                                                        if (selectedId === 'fictitious') {
+                                                            // Generate unique fictitious for this service with current timestamp
+                                                            const suffix = Date.now().toString(36).slice(-6).toUpperCase();
+                                                            storedMapCurrent[service.toLowerCase()] = {
+                                                                email: `demo.${service.toLowerCase().replace(/[^a-z]/g, '')}${suffix}@eudorama.com`,
+                                                                password: `PASS-${suffix}-DEMO`,
+                                                                publishedAt: new Date().toISOString()
+                                                            };
+                                                            localStorage.setItem('demo_credentials_map', JSON.stringify(storedMapCurrent));
+                                                            alert(`${service}: Nova credencial fictícia gerada!`);
+                                                        } else if (selectedId) {
+                                                            const cred = credentials.find(c => c.id === selectedId);
+                                                            if (cred) {
+                                                                storedMapCurrent[service.toLowerCase()] = {
+                                                                    email: cred.email,
+                                                                    password: cred.password,
+                                                                    publishedAt: new Date().toISOString()
+                                                                };
+                                                                localStorage.setItem('demo_credentials_map', JSON.stringify(storedMapCurrent));
+                                                                alert(`${service}: Usando credencial real - ${cred.email}`);
+                                                            }
+                                                        }
+                                                    }}
+                                                >
+                                                    <option value="">Atual: {currentEmail.substring(0, 25)}...</option>
+                                                    <option value="fictitious">🎲 Gerar Novo Fictício</option>
+                                                    {serviceCreds.map(c => (
+                                                        <option key={c.id} value={c.id}>📧 {c.email}</option>
+                                                    ))}
+                                                </select>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                                <p className="text-[10px] text-gray-400 font-bold">Selecione credenciais reais ou gere fictícias para cada serviço.</p>
+                            </div>
+
                             <button onClick={async () => { if (confirm("Deseja resetar todas as senhas de clientes?")) await resetAllClientPasswords(); loadData(); }} className="w-full bg-white dark:bg-slate-900 border-2 border-red-100 text-red-500 font-black py-5 rounded-2xl text-sm uppercase shadow-sm">Resetar Senhas Clientes</button>
                             <button onClick={async () => { if (prompt("DIGITE 1202 PARA LIMPAR") === "1202") await hardDeleteAllClients(); loadData(); }} className="w-full bg-red-600 text-white font-black py-5 rounded-2xl shadow-xl text-sm uppercase">Limpar Histórico e Contas</button>
                             <p className="text-[10px] font-bold text-gray-400 uppercase mt-4">Nota: Clientes nunca são excluídos permanentemente para preservar o histórico.</p>
@@ -1135,6 +1243,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                     })}
                                 </div>
                                 <div className="p-6 bg-indigo-50/50 dark:bg-slate-800 rounded-[2.5rem] border-2 border-dashed border-indigo-100 dark:border-slate-700 space-y-4"><p className="text-[10px] font-black uppercase text-indigo-400 text-center">Adicionar Novo Aplicativo</p><div className="grid grid-cols-2 gap-3"><select className="w-full bg-white dark:bg-slate-900 p-3 rounded-2xl font-bold text-xs outline-none border border-indigo-50" value={newSubService} onChange={e => setNewSubService(e.target.value)}>{SERVICES.map(s => <option key={s} value={s}>{s}</option>)}</select><select className="w-full bg-white dark:bg-slate-900 p-3 rounded-2xl font-bold text-xs outline-none border border-indigo-50" value={newSubPlan} onChange={e => setNewSubPlan(e.target.value)}>{PLAN_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}</select></div><button onClick={() => { setClientForm({ ...clientForm, subscriptions: [...((clientForm.subscriptions as string[] | undefined) || []), `${newSubService}|${new Date().toISOString()}|0|${newSubPlan}`] }); }} className="w-full bg-indigo-600 text-white p-4 rounded-2xl flex items-center justify-center gap-2 font-black text-xs uppercase shadow-md"><Plus size={18} /> Incluir Plano</button></div>
+                            </div>
+                            <div className="pt-4 space-y-2">
+                                <label className="text-xs font-black uppercase text-indigo-400 ml-1">Observações (Interno)</label>
+                                <textarea
+                                    className="w-full bg-indigo-50 dark:bg-slate-800 p-4 rounded-2xl font-bold text-sm outline-none border-2 border-transparent focus:border-indigo-300 resize-none h-24"
+                                    placeholder="Ex: Cliente prefere contato via WhatsApp..."
+                                    value={clientForm.observation || ''}
+                                    onChange={e => setClientForm({ ...clientForm, observation: e.target.value })}
+                                />
                             </div>
                             <button onClick={handleSaveClient} disabled={savingClient} className="w-full bg-indigo-600 text-white font-black py-5 rounded-3xl shadow-xl mt-6 active:scale-95 transition-transform">{savingClient ? <Loader2 className="w-6 h-6 animate-spin mx-auto" /> : 'Salvar Alterações'}</button>
                         </div>
