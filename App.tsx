@@ -163,7 +163,22 @@ const App: React.FC = () => {
       channels.push(demoChannel);
     }
 
-    // 3. Estratégia Agressiva de Refresh (Foco/Visibilidade)
+    // 3. Escuta mudanças na tabela de credenciais (Para quando Admin/Sistema roda credenciais)
+    // Isso garante que se a senha mudar, o cliente recebe o update na hora
+    const credentialsChannel = supabase
+      .channel('global-credentials-sync')
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'credentials' },
+        () => {
+          console.log('⚡ [REALTIME] Credencial atualizada no sistema!');
+          handleRefreshSession(true);
+        }
+      )
+      .subscribe();
+    channels.push(credentialsChannel);
+
+    // 4. Estratégia Agressiva de Refresh (Foco/Visibilidade)
     const handleAggressiveRefresh = () => {
       // Reduzido throttle para 5s para garantir atualização rápida ao voltar pro app
       const now = Date.now();
