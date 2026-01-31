@@ -106,12 +106,14 @@ export const processUserLogin = (userRows: ClientDBRow[]): { user: User | null, 
         const specificDate = parts[1] ? parts[1].trim() : null;
         const individualPaid = parts[2] !== '0';
         const individualDuration = (parts[3] && parts[3].trim() !== '') ? parseInt(parts[3]) : (row.duration_months || 1);
+        const toleranceDate = parts[4] ? parts[4].trim() : undefined;
 
         allServices.add(cleanService);
         subscriptionMap[cleanService] = {
           purchaseDate: specificDate || row.purchase_date,
           durationMonths: individualDuration,
-          isDebtor: !individualPaid
+          isDebtor: !individualPaid,
+          toleranceUntil: toleranceDate
         };
         if (!individualPaid) isDebtorAny = true;
       }

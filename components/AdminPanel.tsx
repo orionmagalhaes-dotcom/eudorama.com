@@ -84,7 +84,8 @@ function normalizeSubscriptions(subs: any, defaultDuration: number = 1): string[
             const date = parts[1] || '1970-01-01T00:00:00.000Z'; // Use stable old date instead of new Date()
             const status = parts[2] || '0';
             const duration = (parts[3] && parts[3].trim() !== '') ? parts[3] : String(defaultDuration || 1);
-            return `${name}|${date}|${status}|${duration}`;
+            const tolerance = parts[4] || '';
+            return `${name}|${date}|${status}|${duration}|${tolerance}`;
         });
 
     return result.filter((s: string): boolean => s.length > 0 && s.toLowerCase() !== 'null' && s !== '""' && !s.startsWith('|'));
@@ -172,8 +173,79 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         setLoading(true);
         try {
             const [creds, allClients] = await Promise.all([fetchCredentials(), getAllClients()]);
+
+            // --- AUTO CLEANUP LOGIC ---
+            // 1. Remove subscriptions expired > 2 days ago
+            // 2. Trash clients with no active subs (if they had some before and now act empty)
+
+            const now = new Date();
+            const twoDaysAgo = new Date();
+            twoDaysAgo.setDate(now.getDate() - 2);
+
+            const updates: Promise<any>[] = [];
+
+            allClients.forEach(client => {
+                const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
+
+                // LOGIC 1: RESTORE TRASHED CLIENTS WITH ACTIVE SUBS
+                if (client.deleted) {
+                    const hasActiveSub = subs.some(s => {
+                        const parts = s.split('|');
+                        const duration = parseInt(parts[3] || '1');
+                        const expiry = calculateExpiry(parts[1], duration);
+                        // If it expires in the future (or very recently), it's active.
+                        // Using a looser check here to be safe: Expiry > twoDaysAgo
+                        return expiry.getTime() >= twoDaysAgo.getTime();
+                    });
+
+                    if (hasActiveSub) {
+                        console.log(`[SAFETY RESTORE] Restaurando ${client.client_name} da lixeira (Assinatura Ativa).`);
+                        updates.push(saveClientToDB({ ...client, deleted: false }));
+                    }
+                    return; // Next client
+                }
+
+                // LOGIC 2: CLEANUP ACTIVE CLIENTS
+                if (subs.length === 0) return; // Already empty
+
+                let changed = false;
+                const activeSubs = subs.filter(s => {
+                    const parts = s.split('|');
+                    const duration = parseInt(parts[3] || '1');
+                    const expiry = calculateExpiry(parts[1], duration);
+
+                    // IF expiry is BEFORE twoDaysAgo, remove it.
+                    if (expiry.getTime() < twoDaysAgo.getTime()) {
+                        changed = true;
+                        return false; // Remove
+                    }
+                    return true; // Keep
+                });
+
+                if (changed) {
+                    if (activeSubs.length === 0) {
+                        // Move to trash if no subs left
+                        // KEEP the original subscriptions so admin can see history in trash
+                        console.log(`[CLEANUP] Movendo ${client.client_name} para lixeira (Sem assinaturas).`);
+                        updates.push(saveClientToDB({ ...client, deleted: true }));
+                    } else {
+                        // Just update subs
+                        console.log(`[CLEANUP] Removendo assinaturas antigas de ${client.client_name}.`);
+                        updates.push(saveClientToDB({ ...client, subscriptions: activeSubs }));
+                    }
+                }
+            });
+
+            if (updates.length > 0) {
+                await Promise.all(updates);
+                // Reload to reflect changes
+                const refreshed = await getAllClients();
+                setClients(refreshed);
+            } else {
+                setClients(allClients);
+            }
+
             setCredentials(creds.filter(c => c.service !== 'SYSTEM_CONFIG'));
-            setClients(allClients);
         } catch (e) { console.error(e); }
         setLoading(false);
     };
@@ -545,6 +617,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         setClientForm({ ...clientForm, subscriptions: currentSubs });
     };
 
+    const handleAddTolerance = async (client: ClientDBRow, subIndex: number, days: number = 3) => {
+        const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
+        const parts = subs[subIndex].split('|');
+        // parts: [0]Service, [1]Date, [2]Status, [3]Duration, [4]Tolerance
+
+        const now = new Date();
+        const newToleranceDate = new Date(now);
+        newToleranceDate.setDate(now.getDate() + days);
+
+        // Preserve other fields, update tolerance (5th index)
+        subs[subIndex] = `${parts[0]}|${parts[1]}|${parts[2]}|${parts[3] || '1'}|${newToleranceDate.toISOString()}`;
+
+        await saveClientToDB({ ...client, subscriptions: subs });
+        alert(`Tolerância de ${days} dias adicionada com sucesso!`);
+        loadData();
+    };
+
     const handleResetProjection = () => {
         if (!isConfirmingReset) {
             setIsConfirmingReset(true);
@@ -730,9 +819,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                         </div>
                                         <div className="flex gap-2">
                                             {client.deleted ? (
-                                                <button onClick={() => handleRestoreClient(client)} className="px-4 py-3 rounded-xl bg-orange-100 text-orange-700 font-black text-xs uppercase hover:bg-orange-200 transition-all flex items-center gap-2">
-                                                    <Undo2 size={16} /> Restaurar
-                                                </button>
+                                                <>
+                                                    <button onClick={() => { setClientForm({ ...client, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months) }); setClientModalOpen(true); }} className="px-4 py-3 rounded-xl bg-purple-100 text-purple-700 font-black text-xs uppercase hover:bg-purple-200 transition-all flex items-center gap-2" title="Ver Detalhes">
+                                                        <Eye size={16} /> Ver
+                                                    </button>
+                                                    <button onClick={() => handleRestoreClient(client)} className="px-4 py-3 rounded-xl bg-orange-100 text-orange-700 font-black text-xs uppercase hover:bg-orange-200 transition-all flex items-center gap-2">
+                                                        <Undo2 size={16} /> Restaurar
+                                                    </button>
+                                                </>
                                             ) : (
                                                 <button onClick={() => { setClientForm({ ...client, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months) }); setClientModalOpen(true); }} className="p-3 rounded-xl bg-indigo-50 dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-600 hover:text-white transition-all"><Edit2 size={18} /></button>
                                             )}
@@ -747,20 +841,48 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                             const expiry = calculateExpiry(parts[1], parseInt(parts[3] || '1'));
                                             const daysLeft = getDaysRemaining(expiry);
                                             const isCharged = parts[2] === '1';
-                                            let statusColor = daysLeft < 0 ? "bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 border-red-100 dark:border-red-900/30" : (daysLeft <= 5 ? "bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 border-amber-100 dark:border-amber-900/30" : "bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 border-green-100 dark:border-green-900/30");
+
+                                            // Tolerance Check
+                                            const toleranceDate = parts[4] ? new Date(parts[4]) : null;
+                                            if (toleranceDate) toleranceDate.setHours(23, 59, 59, 999);
+                                            const now = new Date();
+                                            const isInTolerance = toleranceDate && toleranceDate.getTime() >= now.getTime();
+                                            const toleranceDaysLeft = toleranceDate ? Math.ceil((toleranceDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)) : 0;
+
+                                            let statusColor = daysLeft < 0
+                                                ? (isInTolerance ? "bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400 border-indigo-100 dark:border-indigo-900/30" : "bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 border-red-100 dark:border-red-900/30")
+                                                : (daysLeft <= 5 ? "bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 border-amber-100 dark:border-amber-900/30" : "bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 border-green-100 dark:border-green-900/30");
+
                                             return (
                                                 <div key={i} className={`p-4 rounded-2xl border flex flex-col gap-3 transition-all ${statusColor}`}>
                                                     <div className="flex justify-between items-center">
                                                         <div className="flex flex-col">
                                                             <span className="font-black text-xs uppercase tracking-wider">{serviceName}</span>
-                                                            <span className="text-[10px] font-bold opacity-80">{daysLeft < 0 ? 'Vencido há ' + Math.abs(daysLeft) + 'd' : `Vence em ${expiry.toLocaleDateString()} (${daysLeft}d)`}</span>
+                                                            <span className="text-[10px] font-bold opacity-80">
+                                                                {isInTolerance
+                                                                    ? `Em Tolerância (${toleranceDaysLeft}d)`
+                                                                    : (daysLeft < 0 ? 'Vencido há ' + Math.abs(daysLeft) + 'd' : `Vence em ${expiry.toLocaleDateString()} (${daysLeft}d)`)}
+                                                            </span>
                                                         </div>
                                                         <div className="flex gap-1.5">
                                                             <button onClick={() => sendWhatsAppMessage(client.phone_number, client.client_name || 'Dorameira', serviceName, expiry)} className="p-2.5 bg-white/50 dark:bg-slate-800/50 hover:bg-emerald-500 hover:text-white rounded-xl transition-all"><MessageCircle size={16} className="text-emerald-600 dark:text-emerald-400 hover:text-inherit" /></button>
                                                             {!isCharged && <button onClick={() => { setClientForm({ ...clientForm, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months).map((s, idx) => idx === i ? `${s.split('|')[0]}|${s.split('|')[1]}|1|${s.split('|')[3] || '1'}` : s) }); handleMarkAsChargedQuick(client, i); }} className="p-2.5 bg-white/50 dark:bg-slate-800/50 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-900/50 rounded-xl hover:bg-indigo-600 hover:text-white transition-all"><DollarSign size={16} /></button>}
                                                         </div>
                                                     </div>
-                                                    <button onClick={() => handleRenewSmart(client, i)} className="w-full py-2.5 bg-white/80 dark:bg-slate-800/80 hover:bg-indigo-600 hover:text-white rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-2 transition-all shadow-sm border border-white dark:border-slate-700"><RotateCw size={14} /> Renovar +{parts[3] || '1'} Mês</button>
+                                                    <div className="flex gap-2">
+                                                        <button onClick={() => handleRenewSmart(client, i)} className="flex-1 py-2.5 bg-white/80 dark:bg-slate-800/80 hover:bg-indigo-600 hover:text-white rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-2 transition-all shadow-sm border border-white dark:border-slate-700"><RotateCw size={14} /> Renovar</button>
+                                                        {daysLeft < 0 && (
+                                                            <button onClick={() => {
+                                                                const daysStr = prompt("Quantos dias de tolerância?", "3");
+                                                                if (daysStr) {
+                                                                    const days = parseInt(daysStr);
+                                                                    if (!isNaN(days) && days > 0) handleAddTolerance(client, i, days);
+                                                                }
+                                                            }} className="px-3 py-2.5 bg-amber-100 text-amber-700 hover:bg-amber-200 rounded-xl text-[10px] font-black uppercase transition-all shadow-sm border border-amber-200" title="Adicionar dias de tolerância">
+                                                                +Dias
+                                                            </button>
+                                                        )}
+                                                    </div>
                                                 </div>
                                             );
                                         })}
@@ -998,15 +1120,59 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         ) : (
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 {deletedClientsList.map(client => (
-                                    <div key={client.id} className="bg-white dark:bg-slate-900 p-6 rounded-[2.5rem] border border-gray-200 dark:border-slate-800 opacity-80 hover:opacity-100 transition-all">
-                                        <div className="flex justify-between items-start">
-                                            <div>
-                                                <h4 className="font-black text-gray-800 dark:text-white">{client.client_name || 'Sem Nome'}</h4>
-                                                <p className="text-xs font-bold text-gray-400">{client.phone_number}</p>
+                                    <div key={client.id} className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-red-100 dark:border-red-900/30 flex flex-col hover:border-red-200 dark:hover:border-red-800 transition-all opacity-90 hover:opacity-100">
+                                        <div className="flex justify-between items-start mb-4">
+                                            <div className="min-w-0">
+                                                <h3 className="font-black text-gray-900 dark:text-white text-lg truncate leading-tight line-through opacity-60">{client.client_name || 'Sem Nome'}</h3>
+                                                <p className="text-xs font-bold text-red-400 mt-1 flex items-center gap-1.5">
+                                                    <Phone size={12} /> {client.phone_number}
+                                                    <span className="bg-red-600 text-white px-2 py-0.5 rounded-md text-[9px] uppercase tracking-widest ml-2">Removido</span>
+                                                </p>
                                             </div>
                                             <div className="flex gap-2">
-                                                <button onClick={() => handleRestoreClient(client)} className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl hover:bg-indigo-600 hover:text-white transition-all font-black uppercase flex items-center gap-2" title="Restaurar"><Undo2 size={18} /> Restaurar</button>
+                                                <button onClick={() => { setClientForm({ ...client, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months) }); setClientModalOpen(true); }} className="px-4 py-3 rounded-xl bg-purple-100 text-purple-700 font-black text-xs uppercase hover:bg-purple-200 transition-all flex items-center gap-2" title="Ver Detalhes">
+                                                    <Eye size={16} /> Ver
+                                                </button>
+                                                <button onClick={() => handleRestoreClient(client)} className="px-4 py-3 rounded-xl bg-indigo-100 text-indigo-700 font-black text-xs uppercase hover:bg-indigo-600 hover:text-white transition-all flex items-center gap-2" title="Restaurar">
+                                                    <Undo2 size={16} /> Restaurar
+                                                </button>
                                             </div>
+                                        </div>
+
+                                        <div className="space-y-3 mb-4">
+                                            {(normalizeSubscriptions(client.subscriptions || [], client.duration_months) as string[]).map((sub, i) => {
+                                                const parts = sub.split('|');
+                                                const serviceName = parts[0];
+                                                const expiry = calculateExpiry(parts[1], parseInt(parts[3] || '1'));
+                                                const daysLeft = getDaysRemaining(expiry);
+                                                const isCharged = parts[2] === '1';
+
+                                                // Tolerance Check
+                                                const toleranceDate = parts[4] ? new Date(parts[4]) : null;
+                                                const now = new Date();
+                                                if (toleranceDate) toleranceDate.setHours(23, 59, 59, 999);
+                                                const isInTolerance = toleranceDate && toleranceDate.getTime() >= now.getTime();
+                                                const toleranceDaysLeft = toleranceDate ? Math.ceil((toleranceDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)) : 0;
+
+                                                let statusColor = daysLeft < 0
+                                                    ? (isInTolerance ? "bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400 border-indigo-100 dark:border-indigo-900/30" : "bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 border-red-100 dark:border-red-900/30")
+                                                    : (daysLeft <= 5 ? "bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 border-amber-100 dark:border-amber-900/30" : "bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 border-green-100 dark:border-green-900/30");
+
+                                                return (
+                                                    <div key={i} className={`p-4 rounded-2xl border flex flex-col gap-3 transition-all ${statusColor} opacity-75`}>
+                                                        <div className="flex justify-between items-center">
+                                                            <div className="flex flex-col">
+                                                                <span className="font-black text-xs uppercase tracking-wider">{serviceName}</span>
+                                                                <span className="text-[10px] font-bold opacity-80">
+                                                                    {isInTolerance
+                                                                        ? `Em Tolerância (${toleranceDaysLeft}d)`
+                                                                        : (daysLeft < 0 ? 'Vencido há ' + Math.abs(daysLeft) + 'd' : `Vence em ${expiry.toLocaleDateString()} (${daysLeft}d)`)}
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
                                         </div>
                                     </div>
                                 ))}

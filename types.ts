@@ -67,6 +67,7 @@ export interface SubscriptionDetail {
   purchaseDate: string;
   durationMonths: number;
   isDebtor: boolean;
+  toleranceUntil?: string; // Data limite da tolerância manual
 }
 
 // --- APP STATE TYPES ---

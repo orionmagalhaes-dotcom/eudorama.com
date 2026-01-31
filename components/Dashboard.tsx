@@ -89,6 +89,9 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                 const expiryDate = new Date(purchaseDate);
                 expiryDate.setMonth(purchaseDate.getMonth() + duration);
 
+                const toleranceUntil = details?.toleranceUntil ? new Date(details.toleranceUntil) : null;
+                if (toleranceUntil) toleranceUntil.setHours(23, 59, 59, 999);
+
                 const now = new Date();
                 now.setHours(0, 0, 0, 0);
                 const target = new Date(expiryDate);
@@ -97,10 +100,22 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                 const diffTime = target.getTime() - now.getTime();
                 const daysLeft = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
+                // Tolerance Logic
+                let isInTolerance = false;
+                let toleranceDaysLeft = 0;
+                if (toleranceUntil && toleranceUntil.getTime() >= now.getTime()) {
+                    isInTolerance = true;
+                    const diffTol = toleranceUntil.getTime() - now.getTime();
+                    toleranceDaysLeft = Math.ceil(diffTol / (1000 * 60 * 60 * 24));
+                }
+
                 const result = await getAssignedCredential(user, name);
 
                 const itemIsDebtor = details ? details.isDebtor : false;
-                const isBlocked = ((daysLeft < -3) || (itemIsDebtor && daysLeft < 0)) && !user.overrideExpiration;
+
+                // STRICT BLOCKING: Block if expired AND not in tolerance AND not override
+                // Previously: daysLeft < -3. Now: daysLeft < 0
+                const isBlocked = ((daysLeft < 0 && !isInTolerance) || (itemIsDebtor && daysLeft < 0)) && !user.overrideExpiration;
 
                 // Check for updates
                 if (result.credential) {
@@ -116,9 +131,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                     console.log(`[UPDATE CHECK] ${name}: pubDate=${pubDate}, ackDate=${ackDate}, isNewer=${pubTime > ackTime}, afterCutoff=${pubTime >= CUTOFF_TIME}`);
 
                     if (pubTime > ackTime && pubTime >= CUTOFF_TIME) {
-                        // We found a new update!
-                        // But we can't update state inside this loop directly if we want to batch it.
-                        // We'll attach a flag to the item and handle it after.
                         (result as any).hasNewUpdate = true;
                     }
                 }
@@ -131,7 +143,9 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                     alert: result.alert,
                     expiryDate,
                     itemIsDebtor,
-                    hasNewUpdate: (result as any).hasNewUpdate
+                    hasNewUpdate: (result as any).hasNewUpdate,
+                    isInTolerance,
+                    toleranceDaysLeft
                 };
             }));
 
@@ -391,9 +405,14 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                                         <span className="text-[9px] font-black text-yellow-950 uppercase flex items-center justify-center gap-1"><Clock size={10} /> Vencimento Próximo!</span>
                                     </div>
                                 )}
-                                {item.daysLeft < 0 && item.daysLeft >= -3 && (
-                                    <div className="absolute top-0 right-0 left-0 bg-orange-500 py-1 text-center">
-                                        <span className="text-[9px] font-black text-white uppercase flex items-center justify-center gap-1"><AlertTriangle size={10} /> ASSINATURA VENCIDA (EM TOLERÂNCIA)</span>
+                                {item.daysLeft < 0 && !item.isInTolerance && (
+                                    <div className="absolute top-0 right-0 left-0 bg-red-600 py-1 text-center">
+                                        <span className="text-[9px] font-black text-white uppercase flex items-center justify-center gap-1"><AlertTriangle size={10} /> ASSINATURA VENCIDA</span>
+                                    </div>
+                                )}
+                                {item.isInTolerance && (
+                                    <div className="absolute top-0 right-0 left-0 bg-indigo-500 py-1 text-center animate-pulse">
+                                        <span className="text-[9px] font-black text-white uppercase flex items-center justify-center gap-1"><ShieldAlert size={10} /> EM TOLERÂNCIA (+{item.toleranceDaysLeft}d)</span>
                                     </div>
                                 )}
                                 {item.isBlocked && (
@@ -408,8 +427,8 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                                         <div>
                                             <h3 className="font-black text-gray-800 text-lg leading-none">{item.name}</h3>
                                             <div className="flex flex-col gap-1 mt-1.5">
-                                                <span className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-black uppercase w-fit ${item.daysLeft < 0 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-700'}`}>
-                                                    {item.daysLeft < 0 ? `Vencido há ${Math.abs(item.daysLeft)} ${Math.abs(item.daysLeft) === 1 ? 'dia' : 'dias'}` : `${item.daysLeft} dias restantes`}
+                                                <span className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-black uppercase w-fit ${item.isInTolerance ? 'bg-indigo-100 text-indigo-700' : (item.daysLeft < 0 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-700')}`}>
+                                                    {item.isInTolerance ? `Em Tolerância (${item.toleranceDaysLeft}d)` : (item.daysLeft < 0 ? `Vencido há ${Math.abs(item.daysLeft)} ${Math.abs(item.daysLeft) === 1 ? 'dia' : 'dias'}` : `${item.daysLeft} dias restantes`)}
                                                 </span>
                                                 {item.cred?.publishedAt && (
                                                     <span className="flex items-center gap-1 text-[9px] font-bold text-gray-400 uppercase">
@@ -448,10 +467,10 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                                     </div>
                                 </div>
 
-                                {item.daysLeft < 0 && item.daysLeft >= -3 && !item.isBlocked && (
+                                {item.daysLeft < 0 && !item.isInTolerance && !item.isBlocked && (
                                     <div className="mt-4 bg-orange-50 p-3 rounded-2xl border border-orange-100 flex items-center gap-3">
                                         <AlertTriangle className="text-orange-500 shrink-0" size={16} />
-                                        <p className="text-[9px] font-bold text-orange-800 uppercase leading-tight">Sua assinatura venceu. Renove em até {4 + item.daysLeft} dias para não perder o acesso visual às credenciais.</p>
+                                        <p className="text-[9px] font-bold text-orange-800 uppercase leading-tight">Sua assinatura venceu. Renove agora para recuperar o acesso.</p>
                                     </div>
                                 )}
 
