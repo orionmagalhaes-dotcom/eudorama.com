@@ -293,7 +293,8 @@ export const saveClientToDB = async (client: Partial<ClientDBRow>): Promise<{ su
         // Check for Removals
         for (const [service, oldDetails] of oldMap.entries()) {
           if (!newMap.has(service)) {
-            await logHistory('Assinatura Removida', `Cliente ${clientName} cancelou/removeu a assinatura de ${service}.`);
+            const durationDays = oldDetails ? oldDetails.duration * 30 : 30;
+            await logHistory('Assinatura Removida', `Cliente ${clientName} cancelou/removeu a assinatura de ${service} (${durationDays} dias).`);
             changesLogged = true;
           }
         }
