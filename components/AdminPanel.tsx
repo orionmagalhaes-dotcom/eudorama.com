@@ -1080,6 +1080,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                         });
                                         // Save to Supabase (shared across all browsers)
                                         await updateHistorySetting('demo_credentials_map', JSON.stringify(newCreds));
+                                        // TRIGGER REALTIME: Force update the clients table for demo user to ensure listeners fire
+                                        await supabase.from('clients').update({ last_active: new Date().toISOString() }).eq('phone_number', '6789');
                                         alert('✅ Todas as credenciais demo foram atualizadas no banco! A notificação aparecerá para a conta demo.');
                                     }}
                                     className="w-full bg-indigo-600 text-white font-black py-3 rounded-2xl text-xs uppercase shadow-md hover:bg-indigo-700 transition-all"
@@ -1120,6 +1122,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                                 publishedAt: new Date().toISOString()
                                                             };
                                                             await updateHistorySetting('demo_credentials_map', JSON.stringify(storedMapCurrent));
+                                                            // TRIGGER REALTIME
+                                                            await supabase.from('clients').update({ last_active: new Date().toISOString() }).eq('phone_number', '6789');
                                                             alert(`✅ ${service}: Nova credencial fictícia salva no banco!`);
                                                         } else {
                                                             const cred = credentials.find(c => c.id === selectedId);
@@ -1130,6 +1134,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                                     publishedAt: new Date().toISOString()
                                                                 };
                                                                 await updateHistorySetting('demo_credentials_map', JSON.stringify(storedMapCurrent));
+                                                                // TRIGGER REALTIME
+                                                                await supabase.from('clients').update({ last_active: new Date().toISOString() }).eq('phone_number', '6789');
                                                                 alert(`✅ ${service}: Credencial real salva - ${cred.email}`);
                                                             }
                                                         }
