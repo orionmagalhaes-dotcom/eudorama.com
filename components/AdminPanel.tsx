@@ -1065,7 +1065,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
                                 {/* Update All Button */}
                                 <button
-                                    onClick={() => {
+                                    onClick={async () => {
                                         // Generate unique fictitious credentials for all services with current timestamp
                                         const timestamp = Date.now();
                                         const publishedAt = new Date().toISOString();
@@ -1078,8 +1078,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                 publishedAt
                                             };
                                         });
-                                        localStorage.setItem('demo_credentials_map', JSON.stringify(newCreds));
-                                        alert('Todas as credenciais demo foram atualizadas! O dashboard irá mostrar a notificação de atualização.');
+                                        // Save to Supabase (shared across all browsers)
+                                        await updateHistorySetting('demo_credentials_map', JSON.stringify(newCreds));
+                                        alert('✅ Todas as credenciais demo foram atualizadas no banco! A notificação aparecerá para a conta demo.');
                                     }}
                                     className="w-full bg-indigo-600 text-white font-black py-3 rounded-2xl text-xs uppercase shadow-md hover:bg-indigo-700 transition-all"
                                 >
@@ -1090,8 +1091,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                 <div className="space-y-3 max-h-60 overflow-y-auto pr-2">
                                     {SERVICES.map(service => {
                                         const serviceCreds = credentials.filter(c => c.service.toLowerCase().includes(service.toLowerCase()));
-                                        const storedMap = JSON.parse(localStorage.getItem('demo_credentials_map') || '{}');
-                                        const currentEmail = storedMap[service.toLowerCase()]?.email || `demo.${service.toLowerCase().replace(/[^a-z]/g, '')}@eudorama.com`;
 
                                         return (
                                             <div key={service} className="flex items-center gap-2 bg-white dark:bg-slate-900 p-3 rounded-xl border border-indigo-50">
@@ -1099,9 +1098,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                 <select
                                                     className="flex-1 bg-gray-50 dark:bg-slate-800 p-2 rounded-lg text-xs font-bold outline-none border border-indigo-50"
                                                     defaultValue=""
-                                                    onChange={(e) => {
+                                                    onChange={async (e) => {
                                                         const selectedId = e.target.value;
-                                                        const storedMapCurrent = JSON.parse(localStorage.getItem('demo_credentials_map') || '{}');
+                                                        if (!selectedId) return;
+
+                                                        // Fetch current map from Supabase
+                                                        let storedMapCurrent: Record<string, any> = {};
+                                                        try {
+                                                            const settings = await getHistorySettings();
+                                                            if (settings['demo_credentials_map']) {
+                                                                storedMapCurrent = JSON.parse(settings['demo_credentials_map']);
+                                                            }
+                                                        } catch (e) { }
 
                                                         if (selectedId === 'fictitious') {
                                                             // Generate unique fictitious for this service with current timestamp
@@ -1111,9 +1119,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                                 password: `PASS-${suffix}-DEMO`,
                                                                 publishedAt: new Date().toISOString()
                                                             };
-                                                            localStorage.setItem('demo_credentials_map', JSON.stringify(storedMapCurrent));
-                                                            alert(`${service}: Nova credencial fictícia gerada!`);
-                                                        } else if (selectedId) {
+                                                            await updateHistorySetting('demo_credentials_map', JSON.stringify(storedMapCurrent));
+                                                            alert(`✅ ${service}: Nova credencial fictícia salva no banco!`);
+                                                        } else {
                                                             const cred = credentials.find(c => c.id === selectedId);
                                                             if (cred) {
                                                                 storedMapCurrent[service.toLowerCase()] = {
@@ -1121,13 +1129,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                                     password: cred.password,
                                                                     publishedAt: new Date().toISOString()
                                                                 };
-                                                                localStorage.setItem('demo_credentials_map', JSON.stringify(storedMapCurrent));
-                                                                alert(`${service}: Usando credencial real - ${cred.email}`);
+                                                                await updateHistorySetting('demo_credentials_map', JSON.stringify(storedMapCurrent));
+                                                                alert(`✅ ${service}: Credencial real salva - ${cred.email}`);
                                                             }
                                                         }
                                                     }}
                                                 >
-                                                    <option value="">Atual: {currentEmail.substring(0, 25)}...</option>
+                                                    <option value="">-- Selecionar --</option>
                                                     <option value="fictitious">🎲 Gerar Novo Fictício</option>
                                                     {serviceCreds.map(c => (
                                                         <option key={c.id} value={c.id}>📧 {c.email}</option>
@@ -1137,7 +1145,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                         );
                                     })}
                                 </div>
-                                <p className="text-[10px] text-gray-400 font-bold">Selecione credenciais reais ou gere fictícias para cada serviço.</p>
+                                <p className="text-[10px] text-gray-400 font-bold">As credenciais são salvas no banco de dados e compartilhadas entre todos os navegadores.</p>
                             </div>
 
                             <button onClick={async () => { if (confirm("Deseja resetar todas as senhas de clientes?")) await resetAllClientPasswords(); loadData(); }} className="w-full bg-white dark:bg-slate-900 border-2 border-red-100 text-red-500 font-black py-5 rounded-2xl text-sm uppercase shadow-sm">Resetar Senhas Clientes</button>

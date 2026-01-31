@@ -104,8 +104,17 @@ export const getAssignedCredential = async (user: User, serviceName: string): Pr
 
     // OVERRIDE DEMO: Para Orion Magalhães (6789), sempre retorna uma conta fictícia ou a selecionada no Admin
     if (user.phoneNumber === '6789' || user.name === 'Demo') {
-        // Check for per-service credential map
-        const storedMap = JSON.parse(localStorage.getItem('demo_credentials_map') || '{}');
+        // Fetch demo credentials from Supabase (shared across all browsers)
+        let storedMap: Record<string, { email: string, password: string, publishedAt?: string }> = {};
+        try {
+            const { data } = await supabase.from('history_settings').select('value').eq('key', 'demo_credentials_map').single();
+            if (data?.value) {
+                storedMap = JSON.parse(data.value);
+            }
+        } catch (e) {
+            // If fetch fails, use empty map (will generate default fictitious)
+        }
+
         const serviceKey = cleanServiceName.replace(/[^a-z]/g, '');
 
         let demoEmail: string;
@@ -119,9 +128,8 @@ export const getAssignedCredential = async (user: User, serviceName: string): Pr
             publishedAt = storedMap[cleanServiceName].publishedAt || new Date().toISOString();
             isCustom = !demoEmail.includes('@eudorama.com') || !demoPassword.includes('DEMO');
         } else {
-            // Generate unique fictitious credential based on service name and current timestamp
-            const now = new Date();
-            const dateSuffix = now.getTime().toString(36).slice(-4).toUpperCase();
+            // Generate unique fictitious credential based on service name
+            const dateSuffix = Date.now().toString(36).slice(-4).toUpperCase();
             demoEmail = `demo.${serviceKey}${dateSuffix}@eudorama.com`;
             demoPassword = `PASS-${serviceKey.toUpperCase().slice(0, 4)}${dateSuffix}-DEMO`;
             // Use a stable "old" date so it doesn't trigger update for auto-generated ones
