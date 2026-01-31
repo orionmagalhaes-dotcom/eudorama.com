@@ -108,8 +108,14 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                     const pubDate = result.credential.publishedAt || '1970-01-01';
                     const ackTime = new Date(ackDate).getTime();
                     const pubTime = new Date(pubDate).getTime();
-                    console.log(`[UPDATE CHECK] ${name}: pubDate=${pubDate}, ackDate=${ackDate}, isNewer=${pubTime > ackTime}`);
-                    if (pubTime > ackTime) {
+
+                    // CUTOFF: Updates before this date are ignored (to prevent spam for existing users)
+                    // Set to roughly the time of deploying this feature: Jan 31, 2026
+                    const CUTOFF_TIME = new Date('2026-01-31T03:00:00.000Z').getTime(); // 00:00 BRT
+
+                    console.log(`[UPDATE CHECK] ${name}: pubDate=${pubDate}, ackDate=${ackDate}, isNewer=${pubTime > ackTime}, afterCutoff=${pubTime >= CUTOFF_TIME}`);
+
+                    if (pubTime > ackTime && pubTime >= CUTOFF_TIME) {
                         // We found a new update!
                         // But we can't update state inside this loop directly if we want to batch it.
                         // We'll attach a flag to the item and handle it after.
