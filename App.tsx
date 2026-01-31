@@ -141,7 +141,8 @@ const App: React.FC = () => {
         { event: 'UPDATE', schema: 'public', table: 'clients', filter: `phone_number=eq.${currentUser.phoneNumber}` },
         (payload) => {
           console.log('⚡ [REALTIME] Atualização de cliente detectada!', payload);
-          handleRefreshSession(true);
+          // Pequeno delay para garantir que alterações em outras tabelas (credentials/history) tenham propagado
+          setTimeout(() => handleRefreshSession(true), 1500);
         }
       )
       .subscribe();
