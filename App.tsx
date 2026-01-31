@@ -197,10 +197,18 @@ const App: React.FC = () => {
     window.addEventListener('focus', handleAggressiveRefresh);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
+    // 5. Polling de Segurança (Fallback para PWA/Mobile onde socket pode cair)
+    // A cada 10 segundos, verifica se tem novidade. Garante consistência máxima.
+    const pollingInterval = setInterval(() => {
+      console.log('🔄 [POLLING] Verificando atualizações automáticas...');
+      handleRefreshSession(true);
+    }, 10000);
+
     return () => {
       channels.forEach(ch => supabase.removeChannel(ch));
       window.removeEventListener('focus', handleAggressiveRefresh);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      clearInterval(pollingInterval);
     };
   }, [currentUser?.phoneNumber, isAdminMode, handleRefreshSession]);
 
