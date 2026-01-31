@@ -443,7 +443,7 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen bg-gray-50 max-w-lg mx-auto shadow-2xl relative overflow-hidden flex flex-col font-sans">
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
-      <div className="bg-white/95 backdrop-blur-md p-4 shadow-sm flex justify-between items-center z-30 sticky top-0 border-b border-gray-100 shrink-0">
+      <div className="bg-white/95 backdrop-blur-md px-4 py-3 shadow-sm flex justify-between items-center z-30 sticky top-0 border-b border-gray-100 shrink-0">
         <div className="flex flex-col">
           <h1 className="text-2xl font-black text-gray-900 tracking-tight flex items-center gap-1 font-sans">
             EuDorama <Sparkles className="w-4 h-4 text-pink-500 fill-pink-500" />
@@ -472,7 +472,7 @@ const App: React.FC = () => {
           </button>
         </div>
       </div>
-      <main className={`flex-1 relative overflow-hidden pb-28`}>
+      <main className={`flex-1 relative overflow-hidden pb-36`}>
         <div className="h-full overflow-y-auto scrollbar-hide">{renderContent()}</div>
       </main>
       {isSupportOpen && (
@@ -490,7 +490,7 @@ const App: React.FC = () => {
         />
       )}
       {!isSupportOpen && !isCheckoutOpen && activeTab !== 'games' && !showNameModal && (
-        <div className="fixed bottom-28 right-4 z-40 flex flex-col gap-4 items-center pointer-events-none">
+        <div className="fixed bottom-32 right-4 z-40 flex flex-col gap-4 items-center pointer-events-none">
           <div className="pointer-events-auto flex flex-col gap-4 items-end">
             <div className="relative group">
               <div className="absolute right-full mr-3 top-1/2 -translate-y-1/2 bg-white px-3 py-1.5 rounded-xl text-xs font-bold shadow-md text-gray-700 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
