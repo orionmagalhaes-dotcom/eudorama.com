@@ -91,14 +91,14 @@ const CheckoutModal: React.FC<CheckoutModalProps> = ({ onClose, user, type = 're
                     <button onClick={onClose} className="p-2.5 bg-white shadow-sm hover:bg-gray-200 rounded-full"><X className="w-6 h-6 text-gray-500" /></button>
                 </div>
                 <div className="overflow-y-auto p-6 space-y-6">
-                    <div className="bg-gray-900 p-6 rounded-[2rem] text-white flex justify-between items-center">
+                    <div className="bg-gray-900 p-6 rounded-[2rem] text-white flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                         <div>
-                            <span className="text-[10px] font-black uppercase text-gray-400">Total a Pagar</span>
-                            <p className="font-black text-3xl">{isVoluntaryOnly ? 'Voluntário' : `R$ ${formattedPrice}`}</p>
+                            <span className="text-[10px] font-black uppercase text-gray-400 block mb-1">Total a Pagar</span>
+                            <p className="font-black text-2xl sm:text-3xl break-words">{isVoluntaryOnly ? 'Voluntário' : `R$ ${formattedPrice}`}</p>
                         </div>
-                        <div className="text-right">
-                            <span className="text-[10px] font-black uppercase text-pink-400">Assinaturas</span>
-                            <p className="font-bold text-sm truncate max-w-[150px]">{renewalList.length > 1 ? `${renewalList.length} Apps` : (renewalList[0] || 'Plano')}</p>
+                        <div className="text-left sm:text-right w-full sm:w-auto">
+                            <span className="text-[10px] font-black uppercase text-pink-400 block mb-1">Assinaturas</span>
+                            <p className="font-bold text-sm text-gray-200 leading-snug">{renewalList.length > 1 ? `${renewalList.length} Apps` : (renewalList[0] || 'Plano')}</p>
                         </div>
                     </div>
 
