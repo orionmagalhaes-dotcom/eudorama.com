@@ -38,8 +38,9 @@ const getServicePrice = (serviceName: string, duration: number): number => {
     // Regra solicitada: Se não for mensal (duração > 1), valor é 0
     if (duration > 1) return 0.00;
     const s = serviceName.toLowerCase();
-    if (s.includes('viki')) return 20.00;
-    return 15.00;
+    if (s.includes('viki')) return 25.00;
+    if (s.includes('iqiyi') || s.includes('iqyi')) return 20.00;
+    return 17.00;
 };
 
 const toLocalInput = (isoString: string) => {

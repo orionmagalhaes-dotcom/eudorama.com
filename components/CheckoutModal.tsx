@@ -46,8 +46,14 @@ const CheckoutModal: React.FC<CheckoutModalProps> = ({ onClose, user, type = 're
                 if (svc.includes('Contribuição Voluntária')) {
                     total += 0; // Valor aberto (voluntário)
                 } else {
-                    // Cálculo dinâmico: Viki custa 19.90, outros 14.90
-                    total += svc.toLowerCase().includes('viki') ? 19.90 : 14.90;
+                    // Cálculo dinâmico: Viki custa 25.00, IQIyi custa 20.00, outros 17.00
+                    if (svc.toLowerCase().includes('viki')) {
+                        total += 25.00;
+                    } else if (svc.toLowerCase().includes('iqiyi') || svc.toLowerCase().includes('iqyi')) {
+                        total += 20.00;
+                    } else {
+                        total += 17.00;
+                    }
                 }
             });
 
