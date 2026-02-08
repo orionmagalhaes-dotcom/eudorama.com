@@ -11,6 +11,8 @@ import NameModal from './components/NameModal';
 import GamesHub from './components/GamesHub';
 import Toast from './components/Toast';
 import PWAInstallOverlay from './components/PWAInstallOverlay';
+import PriceAdjustmentBanner from './components/PriceAdjustmentBanner';
+import TVStreamingBanner from './components/TVStreamingBanner';
 import { User, Dorama } from './types';
 import { addDoramaToDB, updateDoramaInDB, removeDoramaFromDB, getUserDoramasFromDB, saveGameProgress, addLocalDorama, refreshUserProfile, updateLastActive, supabase } from './services/clientService';
 import { Heart, X, CheckCircle2, MessageCircle, Gift, Gamepad2, Sparkles, Home, Tv2, Palette, RefreshCw, LogOut, AlertTriangle, Smartphone } from 'lucide-react';
@@ -631,6 +633,8 @@ const App: React.FC = () => {
         </nav>
       </div>
       <PWAInstallOverlay />
+      <PriceAdjustmentBanner />
+      {currentUser && <TVStreamingBanner />}
     </div>
   );
 };

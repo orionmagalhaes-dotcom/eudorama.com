@@ -6,15 +6,7 @@ import { supabase } from './clientService';
 let credentialsCache: { data: AppCredential[], timestamp: number } | null = null;
 const CREDENTIALS_CACHE_TTL = 2 * 60 * 1000; // 2 minutos
 
-// Limites atualizados conforme solicitado
-const CREDENTIAL_LIMITS: Record<string, number> = {
-    'viki': 6,
-    'kocowa': 7,
-    'iqiyi': 15,
-    'wetv': 9999,
-    'dramabox': 9999,
-    'default': 10
-};
+// Limites de capacidade centralizados em financeConfig.ts (getCapacityLimit)
 
 export const fetchCredentials = async (retries = 3): Promise<AppCredential[]> => {
     // OTIMIZAÇÃO: Verificar cache primeiro

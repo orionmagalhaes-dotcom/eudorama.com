@@ -25,23 +25,10 @@ const PLAN_OPTIONS: { label: string; value: string }[] = [
     { label: '12 Meses', value: '12' },
 ];
 
-const CAPACITY_LIMITS: Record<string, number> = {
-    'viki pass': 6,
-    'kocowa+': 7,
-    'iqiyi': 15,
-    'wetv': 9999,
-    'dramabox': 9999,
-    'youku': 9999
-};
+// CAPACITY_LIMITS moved to financeConfig.ts for single source of truth
 
-const getServicePrice = (serviceName: string, duration: number): number => {
-    // Regra solicitada: Se não for mensal (duração > 1), valor é 0
-    if (duration > 1) return 0.00;
-    const s = serviceName.toLowerCase();
-    if (s.includes('viki')) return 25.00;
-    if (s.includes('iqiyi') || s.includes('iqyi')) return 20.00;
-    return 17.00;
-};
+import { getServicePrice } from '../services/pricingConfig';
+import { getAccountCost, getCostSplit, getRevenueSplit, DEFAULT_AD_SPEND_PER_DAY, DAYS_IN_MONTH, formatCurrency, getCapacityLimit } from '../services/financeConfig';
 
 const toLocalInput = (isoString: string) => {
     if (!isoString) return '';
@@ -112,13 +99,14 @@ const getCredentialHealth = (service: string, publishedAt: string, currentUsers:
     const diffTime = now.getTime() - pubDate.getTime();
     const daysActive = Math.floor(diffTime / (1000 * 60 * 60 * 24));
     const serviceLower = service.toLowerCase();
-    const limit = CAPACITY_LIMITS[serviceLower] || 10;
+    const limit = getCapacityLimit(service);
     let expiryLimit = 30;
     if (serviceLower.includes('viki')) expiryLimit = 14;
     else if (serviceLower.includes('kocowa')) expiryLimit = 25;
     const daysRemaining = expiryLimit - daysActive;
     if (daysRemaining < 0) return { label: 'Vencida', color: 'text-red-600 bg-red-50 border-red-200', icon: <AlertTriangle size={14} /> };
-    if (currentUsers >= limit && limit < 9000) return { label: 'Lotada', color: 'text-purple-600 bg-purple-50 border-purple-200', icon: <UsersRound size={14} /> };
+    // Superlotada: at or above the capacity limit
+    if (currentUsers >= limit && limit < 9000) return { label: 'Superlotada', color: 'text-orange-600 bg-orange-50 border-orange-200', icon: <UsersRound size={14} /> };
     return { label: 'Saudável', color: 'text-green-600 bg-green-50 border-green-200', icon: <CheckCircle2 size={14} /> };
 };
 
@@ -141,6 +129,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const [dateEnd, setDateEnd] = useState('');
     const [groupedVencimentos, setGroupedVencimentos] = useState<any[]>([]);
     const [totalPeriod, setTotalPeriod] = useState(0);
+    const [orionPeriod, setOrionPeriod] = useState(0);
+    const [iohannaPeriod, setIohannaPeriod] = useState(0);
 
     const [projectionMonths, setProjectionMonths] = useState<number>(1);
     const [statsReferenceDate, setStatsReferenceDate] = useState<number>(() => {
@@ -168,6 +158,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const [retentionDays, setRetentionDays] = useState('7');
     const [historyLoading, setHistoryLoading] = useState(false);
 
+    // Ad Spend State (persisted in localStorage)
+    const [adSpendEnabled, setAdSpendEnabled] = useState<boolean>(() => {
+        const saved = localStorage.getItem('admin_ad_spend_enabled');
+        return saved ? saved === 'true' : true;
+    });
+    const [adSpendPerDay, setAdSpendPerDay] = useState<number>(() => {
+        const saved = localStorage.getItem('admin_ad_spend_per_day');
+        return saved ? parseFloat(saved) : DEFAULT_AD_SPEND_PER_DAY;
+    });
+
+    // Persist ad spend settings
+    useEffect(() => {
+        localStorage.setItem('admin_ad_spend_enabled', String(adSpendEnabled));
+    }, [adSpendEnabled]);
+    useEffect(() => {
+        localStorage.setItem('admin_ad_spend_per_day', String(adSpendPerDay));
+    }, [adSpendPerDay]);
+
     useEffect(() => { loadData(); }, []);
 
     const loadData = async () => {
@@ -176,12 +184,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             const [creds, allClients, logs] = await Promise.all([fetchCredentials(), getAllClients(), getHistoryLogs()]);
 
             // --- AUTO CLEANUP LOGIC ---
-            // 1. Remove subscriptions expired > 2 days ago
+            // 1. Remove subscriptions expired > 5 days ago
             // 2. Trash clients with no active subs (if they had some before and now act empty)
 
             const now = new Date();
-            const twoDaysAgo = new Date();
-            twoDaysAgo.setDate(now.getDate() - 2);
+            const fiveDaysAgo = new Date();
+            fiveDaysAgo.setDate(now.getDate() - 5);
 
             const updates: Promise<any>[] = [];
 
@@ -195,8 +203,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         const duration = parseInt(parts[3] || '1');
                         const expiry = calculateExpiry(parts[1], duration);
                         // If it expires in the future (or very recently), it's active.
-                        // Using a looser check here to be safe: Expiry > twoDaysAgo
-                        return expiry.getTime() >= twoDaysAgo.getTime();
+                        // Using a looser check here to be safe: Expiry > fiveDaysAgo
+                        return expiry.getTime() >= fiveDaysAgo.getTime();
                     });
 
                     if (hasActiveSub) {
@@ -215,8 +223,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                     const duration = parseInt(parts[3] || '1');
                     const expiry = calculateExpiry(parts[1], duration);
 
-                    // IF expiry is BEFORE twoDaysAgo, remove it.
-                    if (expiry.getTime() < twoDaysAgo.getTime()) {
+                    // IF expiry is BEFORE fiveDaysAgo, remove it.
+                    if (expiry.getTime() < fiveDaysAgo.getTime()) {
                         changed = true;
                         return false; // Remove
                     }
@@ -262,6 +270,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         const activeClients = clients.filter(c => !c.deleted);
         const clientMap: Record<string, any> = {};
         let globalSum = 0;
+        let orionPeriodRevenue = 0;
+        let iohannaPeriodRevenue = 0;
 
         activeClients.forEach(client => {
             const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
@@ -274,6 +284,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
                 if (expiry >= start && expiry <= end) {
                     const price = getServicePrice(sName, duration);
+                    const split = getRevenueSplit(sName);
 
                     if (!clientMap[client.phone_number]) {
                         clientMap[client.phone_number] = {
@@ -293,6 +304,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
                     clientMap[client.phone_number].totalUser += price;
                     globalSum += price;
+                    orionPeriodRevenue += price * split.orion;
+                    iohannaPeriodRevenue += price * split.iohanna;
                 }
             });
         });
@@ -300,6 +313,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         const finalResults = Object.values(clientMap).sort((a, b) => a.name.localeCompare(b.name));
         setGroupedVencimentos(finalResults);
         setTotalPeriod(globalSum);
+        setOrionPeriod(orionPeriodRevenue);
+        setIohannaPeriod(iohannaPeriodRevenue);
     };
 
     const copyToClipboard = (text: string, id: string) => {
@@ -316,6 +331,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         const serviceBreakdown: Record<string, { count: number, monthlyCount: number, revenue: number, pending: number }> = {};
 
         SERVICES.forEach(s => serviceBreakdown[s] = { count: 0, monthlyCount: 0, revenue: 0, pending: 0 });
+
+        // Admin revenue tracking
+        let orionRevenue = 0;
+        let iohannaRevenue = 0;
 
         // Count active monthly subscriptions for revenue
         activeClients.forEach(client => {
@@ -339,6 +358,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                     if (daysLeft >= 0) {
                         grossRevenue += price;
                         serviceBreakdown[sName].revenue += price;
+
+                        // Calculate admin revenue split
+                        const split = getRevenueSplit(sName);
+                        orionRevenue += price * split.orion;
+                        iohannaRevenue += price * split.iohanna;
                     } else {
                         pendingRevenue += price;
                         serviceBreakdown[sName].pending += price;
@@ -348,6 +372,44 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 }
             });
         });
+
+        // --- ACCOUNT COSTS ---
+        // Count credentials by service to calculate costs
+        const accountCosts: Record<string, { count: number, costPerAccount: number, totalCost: number }> = {};
+        let totalAccountCosts = 0;
+        let orionCosts = 0;
+        let iohannaCosts = 0;
+
+        credentials.forEach(cred => {
+            if (!cred.isVisible) return;
+            const serviceName = cred.service;
+            const cost = getAccountCost(serviceName);
+
+            if (cost > 0) {
+                if (!accountCosts[serviceName]) {
+                    accountCosts[serviceName] = { count: 0, costPerAccount: cost, totalCost: 0 };
+                }
+                accountCosts[serviceName].count++;
+                accountCosts[serviceName].totalCost += cost;
+                totalAccountCosts += cost;
+
+                // Calculate cost split per admin
+                const split = getCostSplit(serviceName);
+                orionCosts += cost * split.orion;
+                iohannaCosts += cost * split.iohanna;
+            }
+        });
+
+        // --- AD SPEND ---
+        const monthlyAdSpend = adSpendEnabled ? adSpendPerDay * DAYS_IN_MONTH : 0;
+        // Ad spend split: Orion 70%, Iohanna 30%
+        const orionAdSpend = monthlyAdSpend * 0.70;
+        const iohannaAdSpend = monthlyAdSpend * 0.30;
+
+        // --- NET PROFIT ---
+        const orionProfit = orionRevenue - orionCosts - orionAdSpend;
+        const iohannaProfit = iohannaRevenue - iohannaCosts - iohannaAdSpend;
+        const totalProfit = grossRevenue - totalAccountCosts - monthlyAdSpend;
 
         // Count new and lost subscriptions from HISTORY LOGS since reset date
         // Only count monthly subscriptions (look for "30 dias" in log details)
@@ -386,9 +448,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             churnRate,
             serviceBreakdown,
             projection,
-            averageTicket: avgTicket
+            averageTicket: avgTicket,
+            // NEW: Costs and Admin splits
+            accountCosts,
+            totalAccountCosts,
+            monthlyAdSpend,
+            totalProfit,
+            orion: {
+                revenue: orionRevenue,
+                costs: orionCosts,
+                adSpend: orionAdSpend,
+                profit: orionProfit
+            },
+            iohanna: {
+                revenue: iohannaRevenue,
+                costs: iohannaCosts,
+                adSpend: iohannaAdSpend,
+                profit: iohannaProfit
+            }
         };
-    }, [clients, projectionMonths, statsReferenceDate, historyLogs]);
+    }, [clients, projectionMonths, statsReferenceDate, historyLogs, credentials, adSpendEnabled, adSpendPerDay]);
 
 
     const credentialUsage = useMemo<Record<string, number>>(() => {
@@ -925,14 +1004,63 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
                             {groupedVencimentos.length > 0 && (
                                 <div className="mt-8 space-y-8 animate-slide-up">
-                                    <div className="bg-indigo-600 p-6 rounded-[2rem] text-white flex justify-between items-center shadow-xl">
-                                        <div>
-                                            <p className="text-[10px] font-black uppercase text-indigo-200">Previsão Total do Período</p>
-                                            <h4 className="text-4xl font-black">R$ {totalPeriod.toFixed(2).replace('.', ',')}</h4>
+                                    <div className="bg-indigo-600 p-6 rounded-[2rem] text-white shadow-xl">
+                                        <div className="flex justify-between items-center mb-4">
+                                            <div>
+                                                <p className="text-[10px] font-black uppercase text-indigo-200">Previsão Total do Período</p>
+                                                <h4 className="text-4xl font-black">R$ {totalPeriod.toFixed(2).replace('.', ',')}</h4>
+                                            </div>
+                                            <div className="text-right">
+                                                <p className="text-[10px] font-black uppercase text-indigo-200">Clientes Ativos</p>
+                                                <h4 className="text-2xl font-black">{groupedVencimentos.length}</h4>
+                                            </div>
                                         </div>
-                                        <div className="text-right">
-                                            <p className="text-[10px] font-black uppercase text-indigo-200">Clientes Ativos</p>
-                                            <h4 className="text-2xl font-black">{groupedVencimentos.length}</h4>
+
+                                        {/* ADMIN SPLIT - PERÍODO */}
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-4 border-t border-indigo-500">
+                                            {/* ORION */}
+                                            <div className="bg-white/10 rounded-2xl p-4 space-y-2">
+                                                <div className="flex items-center gap-2">
+                                                    <div className="w-8 h-8 bg-blue-500 rounded-xl flex items-center justify-center text-white font-black text-sm">O</div>
+                                                    <span className="font-black text-sm">Orion</span>
+                                                </div>
+                                                <div className="grid grid-cols-3 gap-2 text-center">
+                                                    <div>
+                                                        <p className="text-[8px] font-bold text-indigo-200 uppercase">Receita</p>
+                                                        <p className="font-bold text-sm">R$ {formatCurrency(orionPeriod)}</p>
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-[8px] font-bold text-indigo-200 uppercase">Custos</p>
+                                                        <p className="font-bold text-sm text-red-300">- R$ {formatCurrency(financeStats.orion.costs + financeStats.orion.adSpend)}</p>
+                                                    </div>
+                                                    <div className="bg-white/10 rounded-xl py-1">
+                                                        <p className="text-[8px] font-bold text-emerald-200 uppercase">Líquido</p>
+                                                        <p className="font-black text-sm text-emerald-300">R$ {formatCurrency(orionPeriod - financeStats.orion.costs - financeStats.orion.adSpend)}</p>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            {/* IOHANNA */}
+                                            <div className="bg-white/10 rounded-2xl p-4 space-y-2">
+                                                <div className="flex items-center gap-2">
+                                                    <div className="w-8 h-8 bg-pink-500 rounded-xl flex items-center justify-center text-white font-black text-sm">I</div>
+                                                    <span className="font-black text-sm">Iohanna</span>
+                                                </div>
+                                                <div className="grid grid-cols-3 gap-2 text-center">
+                                                    <div>
+                                                        <p className="text-[8px] font-bold text-indigo-200 uppercase">Receita</p>
+                                                        <p className="font-bold text-sm">R$ {formatCurrency(iohannaPeriod)}</p>
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-[8px] font-bold text-indigo-200 uppercase">Custos</p>
+                                                        <p className="font-bold text-sm text-red-300">- R$ {formatCurrency(financeStats.iohanna.costs + financeStats.iohanna.adSpend)}</p>
+                                                    </div>
+                                                    <div className="bg-white/10 rounded-xl py-1">
+                                                        <p className="text-[8px] font-bold text-emerald-200 uppercase">Líquido</p>
+                                                        <p className="font-black text-sm text-emerald-300">R$ {formatCurrency(iohannaPeriod - financeStats.iohanna.costs - financeStats.iohanna.adSpend)}</p>
+                                                    </div>
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
 
@@ -1085,6 +1213,172 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                         {[1, 3, 6, 12].map(m => (
                                             <button key={m} onClick={() => setProjectionMonths(m)} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase transition-all ${projectionMonths === m ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-600 shadow-sm border border-indigo-50'}`}>{m === 12 ? '1Y' : `${m}M`}</button>
                                         ))}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* CUSTOS DAS CONTAS */}
+                        {Object.keys(financeStats.accountCosts).length > 0 && (
+                            <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-red-100 dark:border-red-900/20 shadow-sm space-y-6">
+                                <div className="flex flex-col gap-1">
+                                    <h3 className="text-xl font-black text-gray-900 dark:text-white">💰 Custos das Contas</h3>
+                                    <p className="text-xs font-bold text-red-400 uppercase tracking-widest">Valor pago mensalmente pelas contas de streaming</p>
+                                </div>
+                                <div className="overflow-x-auto">
+                                    <table className="w-full text-left border-separate border-spacing-y-2">
+                                        <thead>
+                                            <tr className="text-[10px] font-black uppercase text-red-300 tracking-widest">
+                                                <th className="px-4 py-2">Serviço</th>
+                                                <th className="px-4 py-2">Qtd Contas</th>
+                                                <th className="px-4 py-2 text-right">Custo/Conta</th>
+                                                <th className="px-4 py-2 text-right">Custo Total</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {Object.entries(financeStats.accountCosts).map(([name, data]: [string, any]) => (
+                                                <tr key={name} className="group hover:bg-red-50/50 dark:hover:bg-red-900/10 transition-colors">
+                                                    <td className="px-4 py-4 rounded-l-2xl bg-red-50/50 dark:bg-red-900/10"><span className="font-black text-sm text-gray-800 dark:text-gray-200">{name}</span></td>
+                                                    <td className="px-4 py-4 bg-red-50/50 dark:bg-red-900/10"><span className="font-bold text-sm text-red-600">{data.count}</span></td>
+                                                    <td className="px-4 py-4 bg-red-50/50 dark:bg-red-900/10 text-right font-bold text-red-400 text-xs">R$ {formatCurrency(data.costPerAccount)}</td>
+                                                    <td className="px-4 py-4 rounded-r-2xl bg-red-50/50 dark:bg-red-900/10 text-right font-black text-red-600">R$ {formatCurrency(data.totalCost)}</td>
+                                                </tr>
+                                            ))}
+                                            <tr className="bg-red-100 dark:bg-red-900/30">
+                                                <td colSpan={3} className="px-4 py-4 rounded-l-2xl font-black text-red-800 dark:text-red-200 uppercase text-xs">Total Custos Contas</td>
+                                                <td className="px-4 py-4 rounded-r-2xl text-right font-black text-red-700 dark:text-red-300 text-lg">R$ {formatCurrency(financeStats.totalAccountCosts)}</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* GASTOS COM ANÚNCIOS */}
+                        <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-amber-100 dark:border-amber-900/20 shadow-sm space-y-6">
+                            <div className="flex justify-between items-center">
+                                <div className="flex flex-col gap-1">
+                                    <h3 className="text-xl font-black text-gray-900 dark:text-white">📢 Gastos com Anúncios</h3>
+                                    <p className="text-xs font-bold text-amber-400 uppercase tracking-widest">Investimento em marketing e tráfego pago</p>
+                                </div>
+                                <button
+                                    onClick={() => setAdSpendEnabled(!adSpendEnabled)}
+                                    className={`px-6 py-3 rounded-full text-xs font-black uppercase transition-all ${adSpendEnabled ? 'bg-amber-500 text-white shadow-lg shadow-amber-200' : 'bg-gray-100 text-gray-400'}`}
+                                >
+                                    {adSpendEnabled ? 'Ativado' : 'Desativado'}
+                                </button>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <div className="space-y-2">
+                                    <label className="text-[10px] font-black uppercase text-gray-400 ml-1">Valor por Dia (R$)</label>
+                                    <input
+                                        type="number"
+                                        step="0.01"
+                                        min="0"
+                                        value={adSpendPerDay}
+                                        onChange={e => setAdSpendPerDay(parseFloat(e.target.value) || 0)}
+                                        disabled={!adSpendEnabled}
+                                        className={`w-full bg-gray-50 dark:bg-slate-800 p-4 rounded-2xl border-2 border-transparent focus:border-amber-500 outline-none font-bold text-lg ${!adSpendEnabled && 'opacity-50'}`}
+                                    />
+                                </div>
+                                <div className="bg-amber-50 dark:bg-amber-900/20 p-5 rounded-2xl flex flex-col justify-center">
+                                    <p className="text-[10px] font-black uppercase text-amber-600">Gasto Mensal (30 dias)</p>
+                                    <p className="text-2xl font-black text-amber-700 dark:text-amber-300">R$ {formatCurrency(financeStats.monthlyAdSpend)}</p>
+                                </div>
+                                <div className="bg-gray-50 dark:bg-slate-800 p-5 rounded-2xl flex flex-col justify-center">
+                                    <p className="text-[10px] font-black uppercase text-gray-400">Divisão por Admin</p>
+                                    <p className="text-sm font-bold text-gray-600">Orion: R$ {formatCurrency(financeStats.orion.adSpend)}</p>
+                                    <p className="text-sm font-bold text-gray-600">Iohanna: R$ {formatCurrency(financeStats.iohanna.adSpend)}</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* DIVISÃO POR ADMINISTRADOR */}
+                        <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-emerald-100 dark:border-emerald-900/20 shadow-sm space-y-6">
+                            <div className="flex flex-col gap-1">
+                                <h3 className="text-xl font-black text-gray-900 dark:text-white">👥 Divisão por Administrador</h3>
+                                <p className="text-xs font-bold text-emerald-400 uppercase tracking-widest">Receitas, custos e lucro líquido de cada sócio</p>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                {/* ORION */}
+                                <div className="bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 p-6 rounded-3xl border border-blue-100 dark:border-blue-800 space-y-4">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-12 h-12 bg-blue-600 rounded-2xl flex items-center justify-center text-white font-black text-lg shadow-lg">O</div>
+                                        <div>
+                                            <h4 className="font-black text-blue-900 dark:text-blue-100">Orion</h4>
+                                            <p className="text-[10px] font-bold text-blue-400 uppercase">70% Viki, Kocowa, IQIYI, DramaBox</p>
+                                        </div>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <div className="flex justify-between items-center p-3 bg-white/50 dark:bg-slate-800/50 rounded-xl">
+                                            <span className="text-xs font-bold text-gray-500">Receita</span>
+                                            <span className="font-black text-emerald-600">+ R$ {formatCurrency(financeStats.orion.revenue)}</span>
+                                        </div>
+                                        <div className="flex justify-between items-center p-3 bg-white/50 dark:bg-slate-800/50 rounded-xl">
+                                            <span className="text-xs font-bold text-gray-500">Custos Contas</span>
+                                            <span className="font-black text-red-500">- R$ {formatCurrency(financeStats.orion.costs)}</span>
+                                        </div>
+                                        <div className="flex justify-between items-center p-3 bg-white/50 dark:bg-slate-800/50 rounded-xl">
+                                            <span className="text-xs font-bold text-gray-500">Anúncios</span>
+                                            <span className="font-black text-amber-500">- R$ {formatCurrency(financeStats.orion.adSpend)}</span>
+                                        </div>
+                                        <div className={`flex justify-between items-center p-4 rounded-xl ${financeStats.orion.profit >= 0 ? 'bg-emerald-100 dark:bg-emerald-900/30' : 'bg-red-100 dark:bg-red-900/30'}`}>
+                                            <span className="text-xs font-black uppercase text-gray-600">Lucro Líquido</span>
+                                            <span className={`font-black text-xl ${financeStats.orion.profit >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>R$ {formatCurrency(financeStats.orion.profit)}</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* IOHANNA */}
+                                <div className="bg-gradient-to-br from-pink-50 to-purple-50 dark:from-pink-900/20 dark:to-purple-900/20 p-6 rounded-3xl border border-pink-100 dark:border-pink-800 space-y-4">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-12 h-12 bg-pink-600 rounded-2xl flex items-center justify-center text-white font-black text-lg shadow-lg">I</div>
+                                        <div>
+                                            <h4 className="font-black text-pink-900 dark:text-pink-100">Iohanna</h4>
+                                            <p className="text-[10px] font-bold text-pink-400 uppercase">70% Youku, WeTV</p>
+                                        </div>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <div className="flex justify-between items-center p-3 bg-white/50 dark:bg-slate-800/50 rounded-xl">
+                                            <span className="text-xs font-bold text-gray-500">Receita</span>
+                                            <span className="font-black text-emerald-600">+ R$ {formatCurrency(financeStats.iohanna.revenue)}</span>
+                                        </div>
+                                        <div className="flex justify-between items-center p-3 bg-white/50 dark:bg-slate-800/50 rounded-xl">
+                                            <span className="text-xs font-bold text-gray-500">Custos Contas</span>
+                                            <span className="font-black text-red-500">- R$ {formatCurrency(financeStats.iohanna.costs)}</span>
+                                        </div>
+                                        <div className="flex justify-between items-center p-3 bg-white/50 dark:bg-slate-800/50 rounded-xl">
+                                            <span className="text-xs font-bold text-gray-500">Anúncios</span>
+                                            <span className="font-black text-amber-500">- R$ {formatCurrency(financeStats.iohanna.adSpend)}</span>
+                                        </div>
+                                        <div className={`flex justify-between items-center p-4 rounded-xl ${financeStats.iohanna.profit >= 0 ? 'bg-emerald-100 dark:bg-emerald-900/30' : 'bg-red-100 dark:bg-red-900/30'}`}>
+                                            <span className="text-xs font-black uppercase text-gray-600">Lucro Líquido</span>
+                                            <span className={`font-black text-xl ${financeStats.iohanna.profit >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>R$ {formatCurrency(financeStats.iohanna.profit)}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* RESUMO GERAL */}
+                            <div className="bg-gradient-to-r from-emerald-500 to-teal-600 p-6 rounded-3xl text-white shadow-xl">
+                                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-center">
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase text-emerald-100">Receita Total</p>
+                                        <p className="text-2xl font-black">R$ {formatCurrency(financeStats.grossRevenue)}</p>
+                                    </div>
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase text-emerald-100">Custos Contas</p>
+                                        <p className="text-2xl font-black">- R$ {formatCurrency(financeStats.totalAccountCosts)}</p>
+                                    </div>
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase text-emerald-100">Anúncios</p>
+                                        <p className="text-2xl font-black">- R$ {formatCurrency(financeStats.monthlyAdSpend)}</p>
+                                    </div>
+                                    <div className="bg-white/20 rounded-2xl p-3">
+                                        <p className="text-[10px] font-black uppercase text-white">Lucro Líquido Total</p>
+                                        <p className="text-3xl font-black">R$ {formatCurrency(financeStats.totalProfit)}</p>
                                     </div>
                                 </div>
                             </div>

@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Check, Copy, Receipt, Gift, Rocket, Calendar, Sparkles, MessageCircle } from 'lucide-react';
 import { User } from '../types';
+import { getServicePrice } from '../services/pricingConfig';
 
 interface CheckoutModalProps {
     onClose: () => void;
@@ -46,14 +47,8 @@ const CheckoutModal: React.FC<CheckoutModalProps> = ({ onClose, user, type = 're
                 if (svc.includes('Contribuição Voluntária')) {
                     total += 0; // Valor aberto (voluntário)
                 } else {
-                    // Cálculo dinâmico: Viki custa 25.00, IQIyi custa 20.00, outros 17.00
-                    if (svc.toLowerCase().includes('viki')) {
-                        total += 25.00;
-                    } else if (svc.toLowerCase().includes('iqiyi') || svc.toLowerCase().includes('iqyi')) {
-                        total += 20.00;
-                    } else {
-                        total += 17.00;
-                    }
+                    // Usa preço dinâmico baseado na data (pricingConfig)
+                    total += getServicePrice(svc, 1);
                 }
             });
 
