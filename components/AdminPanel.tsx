@@ -73,7 +73,10 @@ function normalizeSubscriptions(subs: any, defaultDuration: number = 1): string[
             const status = parts[2] || '0';
             const duration = (parts[3] && parts[3].trim() !== '') ? parts[3] : String(defaultDuration || 1);
             const tolerance = parts[4] || '';
-            return `${name}|${date}|${status}|${duration}|${tolerance}`;
+            // 6th field: original payment date (for renewal calculations)
+            // If not present, use the current date as original payment date
+            const originalPaymentDate = parts[5] || date;
+            return `${name}|${date}|${status}|${duration}|${tolerance}|${originalPaymentDate}`;
         });
 
     return result.filter((s: string): boolean => s.length > 0 && s.toLowerCase() !== 'null' && s !== '""' && !s.startsWith('|'));
@@ -148,6 +151,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
     const [newSubService, setNewSubService] = useState(SERVICES[0]);
     const [newSubPlan, setNewSubPlan] = useState('1');
+    const [daysToAddInputs, setDaysToAddInputs] = useState<Record<number, number>>({});
 
     const [clientForm, setClientForm] = useState<Partial<ClientDBRow>>({
         phone_number: '', client_name: '', subscriptions: [], duration_months: 1, is_debtor: false, purchase_date: toLocalInput(new Date().toISOString()), client_password: '', observation: ''
@@ -667,10 +671,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         const parts = subs[subIndex].split('|');
         const serviceName = parts[0];
         const months = parseInt(parts[3] || '1');
-        // ALWAYS use current date for renewals (resets subscription period)
+        // Use current date as new payment date for renewals
         const today = new Date();
         // Clear tolerance field (5th position) on renewal
-        subs[subIndex] = `${serviceName}|${today.toISOString()}|0|${months}|`;
+        // Set both start date and original payment date to today
+        subs[subIndex] = `${serviceName}|${today.toISOString()}|0|${months}||${today.toISOString()}`;
         await saveClientToDB({ ...client, subscriptions: subs });
         loadData();
     };
@@ -681,24 +686,45 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         const parts = currentSubs[subIndex].split('|');
         const serviceName = parts[0];
         const months = parseInt(parts[3] || '1');
-        // ALWAYS use current date for renewals (resets subscription period)
+        // Use current date as new payment date for renewals  
         const today = new Date();
         // Clear tolerance field (5th position) on renewal
-        currentSubs[subIndex] = `${serviceName}|${today.toISOString()}|0|${months}|`;
+        // Set both start date and original payment date to today
+        currentSubs[subIndex] = `${serviceName}|${today.toISOString()}|0|${months}||${today.toISOString()}`;
+        setClientForm({ ...clientForm, subscriptions: currentSubs });
+    };
+
+    // Add days to a subscription in the modal form (works for any subscription, not just expired)
+    const handleModalAddDays = (subIndex: number, daysToAdd: number) => {
+        if (!daysToAdd || daysToAdd <= 0) return;
+        const currentSubs = [...((clientForm.subscriptions as string[] | undefined) || [])];
+        if (!currentSubs[subIndex]) return;
+
+        const parts = currentSubs[subIndex].split('|');
+        const currentStartDate = new Date(parts[1]);
+
+        // Add days to the expiry by adjusting the start date forward
+        // This effectively extends the subscription period
+        const newStartDate = new Date(currentStartDate);
+        newStartDate.setDate(newStartDate.getDate() + daysToAdd);
+
+        // Preserve original payment date (6th field) - this is the key for renewal calculations
+        const originalPaymentDate = parts[5] || parts[1];
+        currentSubs[subIndex] = `${parts[0]}|${newStartDate.toISOString()}|${parts[2]}|${parts[3] || '1'}|${parts[4] || ''}|${originalPaymentDate}`;
         setClientForm({ ...clientForm, subscriptions: currentSubs });
     };
 
     const handleAddTolerance = async (client: ClientDBRow, subIndex: number, days: number = 3) => {
         const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
         const parts = subs[subIndex].split('|');
-        // parts: [0]Service, [1]Date, [2]Status, [3]Duration, [4]Tolerance
+        // parts: [0]Service, [1]Date, [2]Status, [3]Duration, [4]Tolerance, [5]OriginalPaymentDate
 
         const now = new Date();
         const newToleranceDate = new Date(now);
         newToleranceDate.setDate(now.getDate() + days);
 
-        // Preserve other fields, update tolerance (5th index)
-        subs[subIndex] = `${parts[0]}|${parts[1]}|${parts[2]}|${parts[3] || '1'}|${newToleranceDate.toISOString()}`;
+        // Preserve other fields including original payment date, update tolerance (5th index)
+        subs[subIndex] = `${parts[0]}|${parts[1]}|${parts[2]}|${parts[3] || '1'}|${newToleranceDate.toISOString()}|${parts[5] || parts[1]}`;
 
         await saveClientToDB({ ...client, subscriptions: subs });
         alert(`Tolerância de ${days} dias adicionada com sucesso!`);
@@ -1703,12 +1729,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                         return (
                                             <div key={i} className="flex flex-col p-5 bg-gray-50 dark:bg-slate-800 rounded-3xl border border-indigo-50 dark:border-slate-700 gap-4 shadow-sm">
                                                 <div className="flex justify-between items-center"><p className="font-black text-gray-800 dark:text-white uppercase">{serviceName}</p><div className="flex gap-2"><button onClick={() => sendWhatsAppMessage(clientForm.phone_number || '', clientForm.client_name || 'Dorameira', serviceName, expiryDate)} className="p-2 text-emerald-500 hover:bg-emerald-50 rounded-xl" title="Mandar cobrança WhatsApp"><MessageCircle size={20} /></button><button onClick={() => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; n.splice(i, 1); setClientForm({ ...clientForm, subscriptions: n }); }} className="p-2 text-red-400 hover:bg-red-50 rounded-xl" title="Remover Assinatura"><Trash2 size={20} /></button></div></div>
-                                                <div className="space-y-3"><div className="grid grid-cols-2 gap-3"><div className="space-y-1"><label className="text-[9px] font-black uppercase text-indigo-400 ml-1">Data de Início</label><input type="date" className="w-full bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-bold outline-none border border-indigo-50" value={toDateInput(startDate)} onChange={(e) => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; if (n[i]) { const p = n[i].split('|'); n[i] = `${p[0]}|${new Date(e.target.value).toISOString()}|${p[2]}|${p[3] || '1'}`; setClientForm({ ...clientForm, subscriptions: n }); } }} /></div><div className="space-y-1"><label className="text-[9px] font-black uppercase text-indigo-400 ml-1">Plano</label><div className="flex gap-1.5"><select className="flex-1 bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-black outline-none border border-indigo-50 h-[34px]" value={durationStr} onChange={(e) => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; if (n[i]) { const p = n[i].split('|'); n[i] = `${p[0]}|${p[1]}|${p[2]}|${e.target.value}`; setClientForm({ ...clientForm, subscriptions: n }); } }}>{PLAN_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}</select><button onClick={() => handleModalSmartRenew(i)} className="p-1.5 bg-indigo-600 text-white rounded-xl shadow-sm hover:bg-indigo-700 transition-all active:scale-90" title="Renovação Inteligente"><Zap size={16} /></button></div></div></div><div className="grid grid-cols-2 gap-2"><div className="bg-indigo-50/50 dark:bg-slate-900/50 p-2.5 rounded-xl border border-indigo-100/50 flex justify-between items-center"><span className="text-[9px] font-black text-indigo-400 uppercase">Fim</span><span className="text-xs font-black text-indigo-600">{expiryDate.toLocaleDateString()}</span></div><button onClick={() => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; if (n[i]) { const p = n[i].split('|'); n[i] = `${p[0]}|${p[1]}|${isCharged ? '0' : '1'}|${p[3] || '1'}`; setClientForm({ ...clientForm, subscriptions: n }); } }} className={`rounded-xl text-[9px] font-black uppercase border transition-all ${isCharged ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-indigo-600 border-indigo-100'}`}>{isCharged ? 'Cobrado ✓' : 'Marcar Cobrado'}</button></div></div>
+                                                <div className="space-y-3"><div className="grid grid-cols-2 gap-3"><div className="space-y-1"><label className="text-[9px] font-black uppercase text-indigo-400 ml-1">Data de Início</label><input type="date" className="w-full bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-bold outline-none border border-indigo-50" value={toDateInput(startDate)} onChange={(e) => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; if (n[i]) { const p = n[i].split('|'); n[i] = `${p[0]}|${new Date(e.target.value).toISOString()}|${p[2]}|${p[3] || '1'}|${p[4] || ''}|${p[5] || p[1]}`; setClientForm({ ...clientForm, subscriptions: n }); } }} /></div><div className="space-y-1"><label className="text-[9px] font-black uppercase text-indigo-400 ml-1">Plano</label><div className="flex gap-1.5"><select className="flex-1 bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-black outline-none border border-indigo-50 h-[34px]" value={durationStr} onChange={(e) => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; if (n[i]) { const p = n[i].split('|'); n[i] = `${p[0]}|${p[1]}|${p[2]}|${e.target.value}|${p[4] || ''}|${p[5] || p[1]}`; setClientForm({ ...clientForm, subscriptions: n }); } }}>{PLAN_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}</select><button onClick={() => handleModalSmartRenew(i)} className="p-1.5 bg-indigo-600 text-white rounded-xl shadow-sm hover:bg-indigo-700 transition-all active:scale-90" title="Renovação Inteligente"><Zap size={16} /></button></div></div></div><div className="grid grid-cols-2 gap-2"><div className="bg-indigo-50/50 dark:bg-slate-900/50 p-2.5 rounded-xl border border-indigo-100/50 flex justify-between items-center"><span className="text-[9px] font-black text-indigo-400 uppercase">Fim</span><span className="text-xs font-black text-indigo-600">{expiryDate.toLocaleDateString()}</span></div><button onClick={() => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; if (n[i]) { const p = n[i].split('|'); n[i] = `${p[0]}|${p[1]}|${isCharged ? '0' : '1'}|${p[3] || '1'}|${p[4] || ''}|${p[5] || p[1]}`; setClientForm({ ...clientForm, subscriptions: n }); } }} className={`rounded-xl text-[9px] font-black uppercase border transition-all ${isCharged ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-indigo-600 border-indigo-100'}`}>{isCharged ? 'Cobrado ✓' : 'Marcar Cobrado'}</button></div><div className="flex gap-2 items-center mt-2"><input type="number" min="1" max="365" placeholder="Dias" className="w-20 bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-bold outline-none border border-emerald-200 focus:border-emerald-400 text-center" value={daysToAddInputs[i] || ''} onChange={(e) => setDaysToAddInputs({ ...daysToAddInputs, [i]: parseInt(e.target.value) || 0 })} /><button onClick={() => { handleModalAddDays(i, daysToAddInputs[i] || 0); setDaysToAddInputs({ ...daysToAddInputs, [i]: 0 }); }} className="flex-1 bg-emerald-500 text-white p-2 rounded-xl text-[10px] font-black uppercase hover:bg-emerald-600 transition-all flex items-center justify-center gap-1" title="Adicionar dias manualmente à assinatura"><Plus size={14} /> Adicionar Dias</button></div></div>
                                             </div>
                                         );
                                     })}
                                 </div>
-                                <div className="p-6 bg-indigo-50/50 dark:bg-slate-800 rounded-[2.5rem] border-2 border-dashed border-indigo-100 dark:border-slate-700 space-y-4"><p className="text-[10px] font-black uppercase text-indigo-400 text-center">Adicionar Novo Aplicativo</p><div className="grid grid-cols-2 gap-3"><select className="w-full bg-white dark:bg-slate-900 p-3 rounded-2xl font-bold text-xs outline-none border border-indigo-50" value={newSubService} onChange={e => setNewSubService(e.target.value)}>{SERVICES.map(s => <option key={s} value={s}>{s}</option>)}</select><select className="w-full bg-white dark:bg-slate-900 p-3 rounded-2xl font-bold text-xs outline-none border border-indigo-50" value={newSubPlan} onChange={e => setNewSubPlan(e.target.value)}>{PLAN_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}</select></div><button onClick={() => { setClientForm({ ...clientForm, subscriptions: [...((clientForm.subscriptions as string[] | undefined) || []), `${newSubService}|${new Date().toISOString()}|0|${newSubPlan}`] }); }} className="w-full bg-indigo-600 text-white p-4 rounded-2xl flex items-center justify-center gap-2 font-black text-xs uppercase shadow-md"><Plus size={18} /> Incluir Plano</button></div>
+                                <div className="p-6 bg-indigo-50/50 dark:bg-slate-800 rounded-[2.5rem] border-2 border-dashed border-indigo-100 dark:border-slate-700 space-y-4"><p className="text-[10px] font-black uppercase text-indigo-400 text-center">Adicionar Novo Aplicativo</p><div className="grid grid-cols-2 gap-3"><select className="w-full bg-white dark:bg-slate-900 p-3 rounded-2xl font-bold text-xs outline-none border border-indigo-50" value={newSubService} onChange={e => setNewSubService(e.target.value)}>{SERVICES.map(s => <option key={s} value={s}>{s}</option>)}</select><select className="w-full bg-white dark:bg-slate-900 p-3 rounded-2xl font-bold text-xs outline-none border border-indigo-50" value={newSubPlan} onChange={e => setNewSubPlan(e.target.value)}>{PLAN_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}</select></div><button onClick={() => { const now = new Date().toISOString(); setClientForm({ ...clientForm, subscriptions: [...((clientForm.subscriptions as string[] | undefined) || []), `${newSubService}|${now}|0|${newSubPlan}||${now}`] }); }} className="w-full bg-indigo-600 text-white p-4 rounded-2xl flex items-center justify-center gap-2 font-black text-xs uppercase shadow-md"><Plus size={18} /> Incluir Plano</button></div>
                             </div>
                             <div className="pt-4 space-y-2">
                                 <label className="text-xs font-black uppercase text-indigo-400 ml-1">Observações (Interno)</label>
