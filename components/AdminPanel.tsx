@@ -149,6 +149,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
   const [credForm, setCredForm] = useState<Partial<AppCredential>>({ service: SERVICES[0], email: '', password: '', isVisible: true, publishedAt: new Date().toISOString() });
   const [credSortOrder, setCredSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [expandedCreds, setExpandedCreds] = useState<Record<string, boolean>>({});
   const [clientModalOpen, setClientModalOpen] = useState(false);
   const [credModalOpen, setCredModalOpen] = useState(false);
   
@@ -326,6 +327,89 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     });
     return groups;
   }, [credentials, credSortOrder]);
+
+  const formatDate = (dateStr?: string) => {
+    if (!dateStr) return 'Sem data';
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return 'Sem data';
+    return d.toLocaleDateString();
+  };
+
+  const credentialClientDetails = useMemo(() => {
+    const result: Record<string, { entries: Array<{ clientId: string; name: string; phoneNumber: string; startDate: string; expiryDate: Date; daysLeft: number; reason: string; serviceName: string }>; lastExpired: boolean; lastClient?: { name: string; phoneNumber: string; expiryDate: Date; daysLeft: number } }> = {};
+    if (credentials.length === 0 || clients.length === 0) return result;
+
+    const activeClients = clients.filter(c => !c.deleted);
+    const serviceKeys = new Set<string>();
+    activeClients.forEach(client => {
+        const subs = normalizeSubscriptions(client.subscriptions || [], client.duration_months);
+        subs.forEach(sub => {
+            const parts = sub.split('|');
+            const name = (parts[0] || '').trim();
+            if (name) serviceKeys.add(name.toLowerCase());
+        });
+    });
+
+    const getSubscriptionDetail = (client: ClientDBRow, serviceLower: string) => {
+        const subs = normalizeSubscriptions(client.subscriptions || [], client.duration_months);
+        for (const sub of subs) {
+            const parts = sub.split('|');
+            const name = (parts[0] || '').trim();
+            if (!name) continue;
+            const nameLower = name.toLowerCase();
+            if (nameLower.includes(serviceLower)) {
+                const startDate = parts[1] || client.purchase_date;
+                const duration = parseInt(parts[3] || String(client.duration_months || 1));
+                return { serviceName: name, startDate, duration };
+            }
+        }
+        return null;
+    };
+
+    serviceKeys.forEach(serviceLower => {
+        const serviceCreds = credentials
+            .filter(c => c.isVisible && c.service.toLowerCase().includes(serviceLower))
+            .sort((a, b) => new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime());
+        if (serviceCreds.length === 0) return;
+
+        const clientsForService = activeClients
+            .filter(c => normalizeSubscriptions(c.subscriptions || [], c.duration_months).some(s => s.toLowerCase().includes(serviceLower)))
+            .sort((a, b) => a.phone_number.localeCompare(b.phone_number));
+
+        clientsForService.forEach((client, idx) => {
+            const detail = getSubscriptionDetail(client, serviceLower);
+            if (!detail) return;
+            const credIndex = idx % serviceCreds.length;
+            const assigned = serviceCreds[credIndex];
+            if (!assigned) return;
+            const expiryDate = calculateExpiry(detail.startDate, detail.duration);
+            const daysLeft = getDaysRemaining(expiryDate);
+            const entry = {
+                clientId: client.id,
+                name: client.client_name || 'Sem Nome',
+                phoneNumber: client.phone_number,
+                startDate: detail.startDate,
+                expiryDate,
+                daysLeft,
+                reason: `Distribuição automática (posição ${idx + 1} de ${clientsForService.length})`,
+                serviceName: detail.serviceName
+            };
+            if (!result[assigned.id]) result[assigned.id] = { entries: [], lastExpired: false };
+            result[assigned.id].entries.push(entry);
+        });
+    });
+
+    Object.values(result).forEach(block => {
+        const sorted = [...block.entries].sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
+        const last = sorted[0];
+        if (last && last.daysLeft < 0) {
+            block.lastExpired = true;
+            block.lastClient = { name: last.name, phoneNumber: last.phoneNumber, expiryDate: last.expiryDate, daysLeft: last.daysLeft };
+        }
+    });
+
+    return result;
+  }, [clients, credentials]);
 
   const filteredClients = useMemo<ClientDBRow[]>(() => {
     let list = clients.filter(c => !c.deleted);
@@ -937,7 +1021,77 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                   <div className="flex justify-between items-center px-2"><h3 className="font-bold text-xl flex items-center gap-2"><Key className="text-indigo-600"/> Gestão de Contas</h3><button onClick={() => { setCredForm({ service: SERVICES[0], email: '', password: '', isVisible: true, publishedAt: new Date().toISOString() }); setCredModalOpen(true); }} className="bg-indigo-600 text-white px-5 py-3 rounded-xl text-xs font-black uppercase flex items-center gap-2 shadow-lg"><Plus size={20}/> Nova Conta</button></div>
                   <div className="space-y-8">
                     {Object.entries(groupedCredentials).map(([serviceName, creds]) => (
-                        <div key={serviceName} className="space-y-4"><h4 className="text-xs font-black text-indigo-400 uppercase tracking-widest px-2">{serviceName}</h4><div className="grid grid-cols-1 md:grid-cols-2 gap-4">{(creds as AppCredential[]).map(c => { const count = credentialUsage[c.id] || 0; const health = getCredentialHealth(c.service, c.publishedAt, count); return (<div key={c.id} className="bg-white dark:bg-slate-900 p-6 rounded-3xl shadow-sm border border-indigo-50 dark:border-slate-800"><div className="flex justify-between items-center mb-4"><div className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase border ${health.color}`}>{health.label}</div><div className="flex gap-2"><button onClick={() => { setCredForm(c); setCredModalOpen(true); }} className="text-gray-400 hover:text-indigo-600"><Edit2 size={18}/></button><button onClick={async () => { if(confirm("Excluir conta?")) {await deleteCredential(c.id); loadData();} }} className="text-gray-300 hover:text-red-500"><Trash2 size={18}/></button></div></div><p className="font-bold text-lg text-gray-800 dark:text-white break-all">{c.email}</p><p className="font-mono text-sm text-indigo-400 mt-1 bg-indigo-50/50 p-2 rounded-lg inline-block">{c.password}</p><div className="mt-5 pt-4 border-t border-indigo-50 dark:border-slate-800 flex justify-between items-center text-xs font-bold text-gray-400"><span className="flex items-center gap-1.5"><Calendar size={14}/> {new Date(c.publishedAt).toLocaleDateString()}</span><span className="flex items-center gap-1.5"><Users size={14}/> {count} ativos</span></div></div>); })}</div></div>
+                        <div key={serviceName} className="space-y-4">
+                          <h4 className="text-xs font-black text-indigo-400 uppercase tracking-widest px-2">{serviceName}</h4>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {(creds as AppCredential[]).map(c => {
+                              const count = credentialUsage[c.id] || 0;
+                              const health = getCredentialHealth(c.service, c.publishedAt, count);
+                              const details = credentialClientDetails[c.id];
+                              const isExpanded = !!expandedCreds[c.id];
+                              const lastExpired = details?.lastExpired;
+                              const lastClient = details?.lastClient;
+                              const entries = details?.entries || [];
+                              const sortedEntries = [...entries].sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
+                              return (
+                                <div key={c.id} className="bg-white dark:bg-slate-900 p-6 rounded-3xl shadow-sm border border-indigo-50 dark:border-slate-800">
+                                  <div className="flex justify-between items-center mb-4">
+                                    <div className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase border ${health.color}`}>{health.label}</div>
+                                    <div className="flex gap-2 items-center">
+                                      <button onClick={() => setExpandedCreds(prev => ({ ...prev, [c.id]: !prev[c.id] }))} className="text-indigo-400 hover:text-indigo-600 p-1.5 rounded-lg bg-indigo-50/60">
+                                        <ChevronRight size={18} className={`transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                                      </button>
+                                      <button onClick={() => { setCredForm(c); setCredModalOpen(true); }} className="text-gray-400 hover:text-indigo-600"><Edit2 size={18}/></button>
+                                      <button onClick={async () => { if(confirm("Excluir conta?")) {await deleteCredential(c.id); loadData();} }} className="text-gray-300 hover:text-red-500"><Trash2 size={18}/></button>
+                                    </div>
+                                  </div>
+                                  {lastExpired && lastClient && (
+                                    <div className="mb-4 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-200 rounded-2xl p-3 text-[10px] font-black uppercase flex items-center gap-2 border border-red-100">
+                                      <AlertTriangle size={14} />
+                                      <span>Último cliente sem renovação: {lastClient.name} • venceu em {lastClient.expiryDate.toLocaleDateString()}</span>
+                                    </div>
+                                  )}
+                                  <p className="font-bold text-lg text-gray-800 dark:text-white break-all">{c.email}</p>
+                                  <p className="font-mono text-sm text-indigo-400 mt-1 bg-indigo-50/50 p-2 rounded-lg inline-block">{c.password}</p>
+                                  <div className="mt-5 pt-4 border-t border-indigo-50 dark:border-slate-800 flex justify-between items-center text-xs font-bold text-gray-400">
+                                    <span className="flex items-center gap-1.5"><Calendar size={14}/> {new Date(c.publishedAt).toLocaleDateString()}</span>
+                                    <span className="flex items-center gap-1.5"><Users size={14}/> {count} ativos</span>
+                                  </div>
+                                  {isExpanded && (
+                                    <div className="mt-4 bg-indigo-50/60 dark:bg-slate-800/60 rounded-2xl p-4 border border-indigo-100">
+                                      <div className="flex justify-between items-center mb-3">
+                                        <span className="text-[10px] font-black uppercase text-indigo-400">Clientes conectados</span>
+                                        <span className="text-[10px] font-black uppercase text-indigo-600">{entries.length} clientes</span>
+                                      </div>
+                                      <div className="space-y-3">
+                                        {sortedEntries.length === 0 ? (
+                                          <div className="text-[10px] font-black uppercase text-indigo-300">Nenhum cliente conectado</div>
+                                        ) : (
+                                          sortedEntries.map((entry, idx) => (
+                                            <div key={`${entry.clientId}-${idx}`} className="bg-white/80 dark:bg-slate-900/70 rounded-xl p-3 border border-indigo-100 flex flex-col gap-1.5">
+                                              <div className="flex justify-between items-center">
+                                                <div className="text-xs font-black text-gray-900 dark:text-white">{entry.name}</div>
+                                                <div className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-lg border ${entry.daysLeft < 0 ? 'bg-red-50 text-red-600 border-red-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>
+                                                  {entry.daysLeft < 0 ? 'Vencida' : 'Ativa'}
+                                                </div>
+                                              </div>
+                                              <div className="text-[10px] font-bold text-indigo-400 flex items-center gap-1.5"><Phone size={12}/> {entry.phoneNumber}</div>
+                                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[9px] font-black uppercase text-indigo-400">
+                                                <div className="flex items-center gap-1.5"><Calendar size={12}/> Enviada: {formatDate(entry.startDate)}</div>
+                                                <div className="flex items-center gap-1.5"><Clock size={12}/> Vence: {entry.expiryDate.toLocaleDateString()}</div>
+                                                <div className="flex items-center gap-1.5"><Users size={12}/> {entry.reason}</div>
+                                              </div>
+                                            </div>
+                                          ))
+                                        )}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
                     ))}
                   </div>
               </div>
