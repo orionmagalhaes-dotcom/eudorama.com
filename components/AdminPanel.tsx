@@ -336,7 +336,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   };
 
   const credentialClientDetails = useMemo(() => {
-    const result: Record<string, { entries: Array<{ clientId: string; name: string; phoneNumber: string; startDate: string; expiryDate: Date; daysLeft: number; reason: string; serviceName: string }>; lastExpired: boolean; lastClient?: { name: string; phoneNumber: string; expiryDate: Date; daysLeft: number } }> = {};
+    const result: Record<string, { entries: Array<{ clientId: string; name: string; phoneNumber: string; startDate: string; expiryDate: Date; daysLeft: number; reason: string; serviceName: string }>; hasExpired: boolean; expiredClient?: { name: string; phoneNumber: string; expiryDate: Date; daysLeft: number } }> = {};
     if (credentials.length === 0 || clients.length === 0) return result;
 
     const activeClients = clients.filter(c => !c.deleted);
@@ -394,17 +394,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 reason: `Distribuição automática (posição ${idx + 1} de ${clientsForService.length})`,
                 serviceName: detail.serviceName
             };
-            if (!result[assigned.id]) result[assigned.id] = { entries: [], lastExpired: false };
+            if (!result[assigned.id]) result[assigned.id] = { entries: [], hasExpired: false };
             result[assigned.id].entries.push(entry);
         });
     });
 
     Object.values(result).forEach(block => {
-        const sorted = [...block.entries].sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
-        const last = sorted[0];
-        if (last && last.daysLeft < 0) {
-            block.lastExpired = true;
-            block.lastClient = { name: last.name, phoneNumber: last.phoneNumber, expiryDate: last.expiryDate, daysLeft: last.daysLeft };
+        const expired = block.entries.find(entry => entry.daysLeft < 0);
+        if (expired) {
+            block.hasExpired = true;
+            block.expiredClient = { name: expired.name, phoneNumber: expired.phoneNumber, expiryDate: expired.expiryDate, daysLeft: expired.daysLeft };
         }
     });
 
@@ -1029,8 +1028,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                               const health = getCredentialHealth(c.service, c.publishedAt, count);
                               const details = credentialClientDetails[c.id];
                               const isExpanded = !!expandedCreds[c.id];
-                              const lastExpired = details?.lastExpired;
-                              const lastClient = details?.lastClient;
+                              const hasExpired = details?.hasExpired;
+                              const expiredClient = details?.expiredClient;
                               const entries = details?.entries || [];
                               const sortedEntries = [...entries].sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
                               return (
@@ -1045,10 +1044,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                       <button onClick={async () => { if(confirm("Excluir conta?")) {await deleteCredential(c.id); loadData();} }} className="text-gray-300 hover:text-red-500"><Trash2 size={18}/></button>
                                     </div>
                                   </div>
-                                  {lastExpired && lastClient && (
+                                  {hasExpired && expiredClient && (
                                     <div className="mb-4 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-200 rounded-2xl p-3 text-[10px] font-black uppercase flex items-center gap-2 border border-red-100">
                                       <AlertTriangle size={14} />
-                                      <span>Último cliente sem renovação: {lastClient.name} • venceu em {lastClient.expiryDate.toLocaleDateString()}</span>
+                                      <span>Cliente vencido nesta credencial: {expiredClient.name} • venceu em {expiredClient.expiryDate.toLocaleDateString()}</span>
                                     </div>
                                   )}
                                   <p className="font-bold text-lg text-gray-800 dark:text-white break-all">{c.email}</p>
