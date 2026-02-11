@@ -85,7 +85,8 @@ function normalizeSubscriptions(subs: any, defaultDuration: number = 1): string[
 const calculateExpiry = (dateStr: string, months: number) => {
     const d = new Date(dateStr);
     if (isNaN(d.getTime())) return new Date();
-    d.setMonth(d.getMonth() + (months || 1));
+    const daysToAdd = (months || 1) * 30;
+    d.setDate(d.getDate() + daysToAdd);
     return d;
 };
 
@@ -527,9 +528,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         const result: Record<string, { entries: Array<{ clientId: string; name: string; phoneNumber: string; startDate: string; expiryDate: Date; daysLeft: number; reason: string; serviceName: string }>; hasExpired: boolean; expiredClient?: { name: string; phoneNumber: string; expiryDate: Date; daysLeft: number } }> = {};
         if (credentials.length === 0 || clients.length === 0) return result;
 
-        const activeClients = clients.filter(c => !c.deleted);
         const serviceKeys = new Set<string>();
-        activeClients.forEach(client => {
+        clients.forEach(client => {
             const subs = normalizeSubscriptions(client.subscriptions || [], client.duration_months);
             subs.forEach(sub => {
                 const parts = sub.split('|');
@@ -554,45 +554,44 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             return null;
         };
 
+        const getAssignedCredential = (client: ClientDBRow, serviceCreds: AppCredential[]) => {
+            const phoneHash = client.phone_number.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+            const credIndex = phoneHash % serviceCreds.length;
+            return serviceCreds[credIndex];
+        };
+
         serviceKeys.forEach(serviceLower => {
             const serviceCreds = credentials
-                .filter(c => c.isVisible && c.service.toLowerCase().includes(serviceLower))
+                .filter(c => c.isVisible && !(c.email || '').toLowerCase().includes('demo') && c.service.toLowerCase().includes(serviceLower))
                 .sort((a, b) => new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime());
             if (serviceCreds.length === 0) return;
 
-            const clientsForService = activeClients
-                .filter(c => normalizeSubscriptions(c.subscriptions || [], c.duration_months).some(s => s.toLowerCase().includes(serviceLower)))
-                .sort((a, b) => a.phone_number.localeCompare(b.phone_number));
-
-            clientsForService.forEach((client, idx) => {
+            clients.forEach(client => {
                 const detail = getSubscriptionDetail(client, serviceLower);
                 if (!detail) return;
-                const credIndex = idx % serviceCreds.length;
-                const assigned = serviceCreds[credIndex];
+                const assigned = getAssignedCredential(client, serviceCreds);
                 if (!assigned) return;
                 const expiryDate = calculateExpiry(detail.startDate, detail.duration);
                 const daysLeft = getDaysRemaining(expiryDate);
-                const entry = {
-                    clientId: client.id,
-                    name: client.client_name || 'Sem Nome',
-                    phoneNumber: client.phone_number,
-                    startDate: detail.startDate,
-                    expiryDate,
-                    daysLeft,
-                    reason: `Distribuição automática (posição ${idx + 1} de ${clientsForService.length})`,
-                    serviceName: detail.serviceName
-                };
+                if (daysLeft < 0 && new Date(assigned.publishedAt).getTime() > expiryDate.getTime()) return;
                 if (!result[assigned.id]) result[assigned.id] = { entries: [], hasExpired: false };
-                result[assigned.id].entries.push(entry);
+                if (!client.deleted) {
+                    result[assigned.id].entries.push({
+                        clientId: client.id,
+                        name: client.client_name || 'Sem Nome',
+                        phoneNumber: client.phone_number,
+                        startDate: detail.startDate,
+                        expiryDate,
+                        daysLeft,
+                        reason: 'Distribuição automática (hash do telefone)',
+                        serviceName: detail.serviceName
+                    });
+                }
+                if (daysLeft < 0 && !result[assigned.id].hasExpired) {
+                    result[assigned.id].hasExpired = true;
+                    result[assigned.id].expiredClient = { name: client.client_name || 'Sem Nome', phoneNumber: client.phone_number, expiryDate, daysLeft };
+                }
             });
-        });
-
-        Object.values(result).forEach(block => {
-            const expired = block.entries.find(entry => entry.daysLeft < 0);
-            if (expired) {
-                block.hasExpired = true;
-                block.expiredClient = { name: expired.name, phoneNumber: expired.phoneNumber, expiryDate: expired.expiryDate, daysLeft: expired.daysLeft };
-            }
         });
 
         return result;
@@ -735,7 +734,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const handleSaveCred = async () => {
         if (!credForm.email || !credForm.password) return;
         setLoading(true);
-        await saveCredential(credForm as AppCredential);
+        const existing = credForm.id ? credentials.find(c => c.id === credForm.id) : null;
+        let publishedAt = credForm.publishedAt || new Date().toISOString();
+        if (existing) {
+            const emailChanged = existing.email !== credForm.email;
+            const passwordChanged = existing.password !== credForm.password;
+            if (emailChanged || passwordChanged) {
+                publishedAt = new Date().toISOString();
+            } else if (!credForm.publishedAt) {
+                publishedAt = existing.publishedAt;
+            }
+        }
+        await saveCredential({ ...(credForm as AppCredential), publishedAt });
         setCredModalOpen(false);
         loadData();
         setLoading(false);
@@ -754,11 +764,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         const parts = subs[subIndex].split('|');
         const serviceName = parts[0];
         const months = parseInt(parts[3] || '1');
-        // Use current date as new payment date for renewals
-        const today = new Date();
-        // Clear tolerance field (5th position) on renewal
-        // Set both start date and original payment date to today
-        subs[subIndex] = `${serviceName}|${today.toISOString()}|0|${months}||${today.toISOString()}`;
+        const nextStartDate = calculateExpiry(parts[1], months);
+        const nextIso = nextStartDate.toISOString();
+        subs[subIndex] = `${serviceName}|${nextIso}|0|${months}||${nextIso}`;
         await saveClientToDB({ ...client, subscriptions: subs });
         loadData();
     };
@@ -769,11 +777,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         const parts = currentSubs[subIndex].split('|');
         const serviceName = parts[0];
         const months = parseInt(parts[3] || '1');
-        // Use current date as new payment date for renewals  
-        const today = new Date();
-        // Clear tolerance field (5th position) on renewal
-        // Set both start date and original payment date to today
-        currentSubs[subIndex] = `${serviceName}|${today.toISOString()}|0|${months}||${today.toISOString()}`;
+        const nextStartDate = calculateExpiry(parts[1], months);
+        const nextIso = nextStartDate.toISOString();
+        currentSubs[subIndex] = `${serviceName}|${nextIso}|0|${months}||${nextIso}`;
         setClientForm({ ...clientForm, subscriptions: currentSubs });
     };
 

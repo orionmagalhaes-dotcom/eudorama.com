@@ -87,7 +87,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                 let duration = details ? (details.durationMonths || 1) : (user.durationMonths || 1);
 
                 const expiryDate = new Date(purchaseDate);
-                expiryDate.setMonth(purchaseDate.getMonth() + duration);
+                expiryDate.setDate(purchaseDate.getDate() + (duration * 30));
 
                 const toleranceUntil = details?.toleranceUntil ? new Date(details.toleranceUntil) : null;
                 if (toleranceUntil) toleranceUntil.setHours(23, 59, 59, 999);

@@ -142,7 +142,7 @@ export const processUserLogin = (userRows: ClientDBRow[]): { user: User | null, 
 
     const purchase = new Date(row.purchase_date);
     const expiry = new Date(purchase);
-    expiry.setMonth(purchase.getMonth() + (row.duration_months || 1));
+    expiry.setDate(purchase.getDate() + ((row.duration_months || 1) * 30));
     if (expiry.getTime() > maxExpiryTime) {
       maxExpiryTime = expiry.getTime();
       bestRow = row;
