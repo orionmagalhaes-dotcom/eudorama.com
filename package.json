@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "viki-server": "node server/vikiServer.js"
   },
   "dependencies": {
     "@capacitor/android": "^8.0.1",
@@ -14,7 +15,11 @@
     "@capacitor/core": "^8.0.1",
     "@supabase/supabase-js": "^2.45.0",
     "@tailwindcss/postcss": "^4.1.18",
+    "express": "^4.21.2",
     "lucide-react": "^0.556.0",
+    "puppeteer": "^24.37.3",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
     "react": "^19.2.1",
     "react-dom": "^19.2.1"
   },
