@@ -29,3 +29,6 @@ dist-ssr
 /blob-report/
 /playwright/.cache/
 /playwright/.auth/
+
+# Puppeteer cache (Render-friendly)
+/.puppeteer-cache/

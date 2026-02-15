@@ -1,10 +1,6 @@
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import puppeteer from 'puppeteer-extra';
-import StealthPlugin from 'puppeteer-extra-plugin-stealth';
-
-puppeteer.use(StealthPlugin());
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,7 +22,7 @@ const ACTION_TIMEOUT_MS = 10000;
 const NETWORK_IDLE_TIMEOUT_MS = 8000;
 const RESULT_TIMEOUT_MS = 12000;
 
-const SERVER_VERSION = 'viki-pair-2026-02-14-tvcode-lower-alnum';
+const SERVER_VERSION = 'viki-pair-2026-02-15-render-chrome-cache';
 const TV_CODE_REGEX = '^[a-z0-9]{6}$';
 
 const EMAIL_SELECTORS = ['input[type="email"]', 'input[name="email"]', 'input#email'];
@@ -41,6 +37,29 @@ const CODE_SELECTORS = [
   'input[autocomplete="one-time-code"]',
   'input[maxlength="6"]'
 ];
+
+let puppeteerPromise;
+const getPuppeteer = async () => {
+  if (puppeteerPromise) return puppeteerPromise;
+
+  puppeteerPromise = (async () => {
+    // On Render, the default Puppeteer cache dir (/opt/render/.cache/puppeteer) isn't included in the deploy artifact,
+    // so Chrome can be missing at runtime. Keep the cache inside the project by default.
+    if (!process.env.PUPPETEER_CACHE_DIR) {
+      process.env.PUPPETEER_CACHE_DIR = path.resolve(__dirname, '..', '.puppeteer-cache');
+    }
+
+    const [{ default: puppeteer }, { default: StealthPlugin }] = await Promise.all([
+      import('puppeteer-extra'),
+      import('puppeteer-extra-plugin-stealth')
+    ]);
+
+    puppeteer.use(StealthPlugin());
+    return puppeteer;
+  })();
+
+  return puppeteerPromise;
+};
 
 class VikiAutomationError extends Error {
   constructor(message, { statusCode = 500, stage = 'unknown', detail = '' } = {}) {
@@ -655,6 +674,7 @@ const linkVikiTv = async ({ brand, vikiEmail, vikiPassword, tvCode }) => {
   let browser;
 
   try {
+    const puppeteer = await getPuppeteer();
     browser = await puppeteer.launch({
       headless: process.env.VIKI_HEADLESS === 'false' ? false : true,
       // Container-friendly flags (Render/Docker). Keep minimal to reduce side-effects.
@@ -761,7 +781,12 @@ const linkVikiTv = async ({ brand, vikiEmail, vikiPassword, tvCode }) => {
 };
 
 app.get('/api/viki/health', (_req, res) => {
-  return res.status(200).json({ ok: true, version: SERVER_VERSION, tv_code_regex: TV_CODE_REGEX });
+  return res.status(200).json({
+    ok: true,
+    version: SERVER_VERSION,
+    tv_code_regex: TV_CODE_REGEX,
+    puppeteer_cache_dir: process.env.PUPPETEER_CACHE_DIR || null
+  });
 });
 
 app.post('/api/viki/pair', async (req, res) => {
