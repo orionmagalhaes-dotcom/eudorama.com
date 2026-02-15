@@ -14,3 +14,7 @@ Sistema de gerenciamento de assinaturas de streaming para doramas com painel adm
    `npm install`
 2. Run the app:
    `npm run dev`
+# Deploy / Viki Pairing
+
+- Backend (Render): `https://eudorama-com.onrender.com`
+- Frontend (Cloudflare Pages): usa `VITE_VIKI_SERVER_URL` em `.env.production`
