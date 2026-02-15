@@ -569,6 +569,20 @@ const acceptCookiesIfPresent = async (page, deadlineMs) => {
   await clickButtonByTextAnywhere(page, ['accept all', 'accept', 'agree', 'aceitar tudo', 'aceitar'], deadlineMs, 2500).catch(() => {});
 };
 
+const ensureEmailLoginFormVisible = async (page, deadlineMs) => {
+  // Some flows show provider selection first (Google/Apple/etc). Prefer Email.
+  const hasEmail = await isAnySelectorVisibleAnywhere(page, EMAIL_SELECTORS).catch(() => false);
+  const hasPass = await isAnySelectorVisibleAnywhere(page, PASSWORD_SELECTORS).catch(() => false);
+  if (hasEmail && hasPass) return;
+
+  await clickButtonByTextAnywhere(
+    page,
+    ['continue with email', 'continue via email', 'email', 'continuar com email', 'entrar com email', 'e-mail'],
+    deadlineMs,
+    4500
+  ).catch(() => {});
+};
+
 const normalizeBrand = (value) => {
   const b = String(value || '').toLowerCase().trim();
   if (b === 'lg') return 'lg';
@@ -886,8 +900,9 @@ const getLoginFormSummary = async (page) => {
   return summary;
 };
 
-const waitForCodeOrLoginFailure = async (page, deadlineMs) => {
+const waitForCodeOrLoginFailure = async (page, deadlineMs, brand) => {
   const start = Date.now();
+  let didTvNavigate = false;
 
   while (Date.now() < deadlineMs) {
     if (await isAnySelectorVisibleAnywhere(page, CODE_SELECTORS)) {
@@ -930,6 +945,15 @@ const waitForCodeOrLoginFailure = async (page, deadlineMs) => {
     const onSignInPage = /\/web-sign-in|\/login/i.test(url);
     const emailStillVisible = await isAnySelectorVisibleAnywhere(page, EMAIL_SELECTORS);
     const passwordStillVisible = await isAnySelectorVisibleAnywhere(page, PASSWORD_SELECTORS);
+
+    // If login likely succeeded but the SPA didn't redirect, try opening the TV page once.
+    // IMPORTANT: do not do this while the login form is still visible, otherwise we may mask a login failure.
+    if (!didTvNavigate && brand && onSignInPage && !emailStillVisible && !passwordStillVisible && Date.now() - start > 5000) {
+      didTvNavigate = true;
+      await page.goto(tvPageUrlForBrand(brand), { waitUntil: 'domcontentloaded', timeout: clampTimeout(deadlineMs, NAV_TIMEOUT_MS) }).catch(() => {});
+      await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS) }).catch(() => {});
+      await acceptCookiesIfPresent(page, deadlineMs);
+    }
 
     // If we still see the login form after some time, assume login didn't complete.
     if (Date.now() - start > 15000 && emailStillVisible && passwordStillVisible) {
@@ -1038,39 +1062,17 @@ const linkVikiTv = async ({ brand, vikiEmail, vikiPassword, tvCode }) => {
   const deadlineMs = Date.now() + OVERALL_TIMEOUT_MS;
   let stage = 'launch';
   let browser;
+  let page;
 
-  try {
-    const puppeteer = await getPuppeteer();
-    browser = await puppeteer.launch({
-      headless: process.env.VIKI_HEADLESS === 'false' ? false : true,
-      // Container-friendly flags (Render/Docker). Keep minimal to reduce side-effects.
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-    });
-
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1366, height: 768 });
-    await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-    );
-
-    page.setDefaultTimeout(ACTION_TIMEOUT_MS);
-
-    stage = 'open_signin';
-    await page.goto(signInUrlForBrand(brand), {
-      waitUntil: 'domcontentloaded',
-      timeout: clampTimeout(deadlineMs, NAV_TIMEOUT_MS)
-    });
-
-    await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS) }).catch(() => {});
+  const doLoginFromCurrentPage = async () => {
     await acceptCookiesIfPresent(page, deadlineMs);
+    await ensureEmailLoginFormVisible(page, deadlineMs);
 
     stage = 'fill_credentials';
     await fillFirstAnywhere(page, EMAIL_SELECTORS, vikiEmail, deadlineMs, ACTION_TIMEOUT_MS, 'Campo de email nao encontrado no login.', stage);
     await fillFirstAnywhere(page, PASSWORD_SELECTORS, vikiPassword, deadlineMs, ACTION_TIMEOUT_MS, 'Campo de senha nao encontrado no login.', stage);
 
     stage = 'submit_login';
-
-    // Some regions/accounts require confirming age/terms before continuing.
     const beforeLoginDebug = await getLoginFormSummary(page).catch(() => null);
     await clickRequiredConsentCheckboxesAnywhere(page).catch(() => {});
     const afterConsentDebug = await getLoginFormSummary(page).catch(() => null);
@@ -1095,30 +1097,68 @@ const linkVikiTv = async ({ brand, vikiEmail, vikiPassword, tvCode }) => {
       .catch(() => null);
 
     const clickedContinue = (await submitLoginByFormAnywhere(page)) || (await clickVikiLoginContinueAnywhere(page, deadlineMs));
-
     if (!clickedContinue) {
       throw new VikiAutomationError('Botao de continuar/login nao encontrado.', { statusCode: 500, stage });
     }
 
-    // Fallback: Enter key on the password field can submit some forms even when the button click is intercepted.
     await clickFirstSelectorAnywhere(page, PASSWORD_SELECTORS, deadlineMs, 1500).catch(() => {});
     await page.keyboard.press('Enter').catch(() => {});
 
     await loginNavigation;
     await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS) }).catch(() => {});
     await sleep(1500);
+  };
+
+  try {
+    const puppeteer = await getPuppeteer();
+    browser = await puppeteer.launch({
+      headless: process.env.VIKI_HEADLESS === 'false' ? false : true,
+      // Container-friendly flags (Render/Docker). Keep minimal to reduce side-effects.
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+    });
+
+    page = await browser.newPage();
+    await page.setViewport({ width: 1366, height: 768 });
+    await page.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+    );
+
+    page.setDefaultTimeout(ACTION_TIMEOUT_MS);
+
+    stage = 'open_signin';
+    await page.goto(signInUrlForBrand(brand), {
+      waitUntil: 'domcontentloaded',
+      timeout: clampTimeout(deadlineMs, NAV_TIMEOUT_MS)
+    });
+
+    await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS) }).catch(() => {});
+    await doLoginFromCurrentPage();
 
     stage = 'wait_code';
+    try {
+      await waitForCodeOrLoginFailure(page, deadlineMs, brand);
+    } catch (e) {
+      // Fallback: some accounts only complete login when starting from the TV page (clicking its Log In button).
+      if (e instanceof VikiAutomationError && e.stage === 'login') {
+        stage = 'open_tv';
+        await page.goto(tvPageUrlForBrand(brand), { waitUntil: 'domcontentloaded', timeout: clampTimeout(deadlineMs, NAV_TIMEOUT_MS) });
+        await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS) }).catch(() => {});
+        await acceptCookiesIfPresent(page, deadlineMs);
 
-    // If login succeeded but the SPA didn't redirect, force-open the TV page once.
-    if (/\/web-sign-in|\/login/i.test(page.url())) {
-      await page
-        .goto(tvPageUrlForBrand(brand), { waitUntil: 'domcontentloaded', timeout: clampTimeout(deadlineMs, NAV_TIMEOUT_MS) })
-        .catch(() => {});
-      await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS) }).catch(() => {});
+        // If the code is already visible, proceed.
+        const hasCode = await isAnySelectorVisibleAnywhere(page, CODE_SELECTORS).catch(() => false);
+        if (!hasCode) {
+          stage = 'tv_click_login';
+          await clickButtonByTextAnywhere(page, ['log in', 'login', 'sign in', 'entrar'], deadlineMs, 6500).catch(() => {});
+          await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS) }).catch(() => {});
+          await doLoginFromCurrentPage();
+          stage = 'wait_code';
+          await waitForCodeOrLoginFailure(page, deadlineMs, brand);
+        }
+      } else {
+        throw e;
+      }
     }
-
-    await waitForCodeOrLoginFailure(page, deadlineMs);
 
     stage = 'fill_tv_code';
     await fillFirstAnywhere(page, CODE_SELECTORS, tvCode, deadlineMs, ACTION_TIMEOUT_MS, 'Campo do codigo da TV nao foi encontrado.', stage);
