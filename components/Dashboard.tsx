@@ -3,9 +3,10 @@ import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { User, AppCredential } from '../types';
 import { getAssignedCredential } from '../services/credentialService';
 import { updateClientName, updateClientPreferences } from '../services/clientService';
+import TVPairingSection from './TVPairingSection';
 import {
     Copy, Check, CreditCard, Star, Crown, Sparkles, Loader2,
-    RotateCw, Key, Smartphone, Mail, Lock, AlertTriangle, PlusCircle, ArrowRight, Edit3, Fingerprint, ShieldAlert, Palette, Camera, X, CheckCircle2, Upload, Trash2, Clock, Zap, ShoppingBag, ArrowUpRight, Wifi, RefreshCw
+    RotateCw, Key, Smartphone, Mail, Lock, AlertTriangle, PlusCircle, ArrowRight, Edit3, Fingerprint, ShieldAlert, Palette, Camera, X, Upload, Trash2, Clock, Zap, ShoppingBag, ArrowUpRight, Wifi, RefreshCw
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -47,6 +48,8 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
     const [isSyncing, setIsSyncing] = useState(false);
     const [isRefreshing, setIsRefreshing] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const [vikiModalOpen, setVikiModalOpen] = useState(false);
+    const [selectedVikiCredential, setSelectedVikiCredential] = useState<{ email: string; password: string } | null>(null);
 
     const validServices = useMemo(() => (user.services || []).filter(s => s && s.trim().length > 0), [user.services]);
 
@@ -55,6 +58,12 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
             !validServices.some(vs => vs.toLowerCase().includes(s.name.toLowerCase()))
         );
     }, [validServices]);
+
+    const openVikiModal = (email?: string, password?: string) => {
+        if (!email || !password) return;
+        setSelectedVikiCredential({ email, password });
+        setVikiModalOpen(true);
+    };
 
     const expiringServices = useMemo(() => {
         return mergedData.filter(item => item.daysLeft <= 5);
@@ -86,7 +95,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                 let duration = details ? (details.durationMonths || 1) : (user.durationMonths || 1);
 
                 const expiryDate = new Date(purchaseDate);
-                expiryDate.setMonth(purchaseDate.getMonth() + duration);
+                expiryDate.setDate(purchaseDate.getDate() + (duration * 30));
 
                 const now = new Date();
                 now.setHours(0, 0, 0, 0);
@@ -355,6 +364,18 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                                     </div>
                                 </div>
 
+                                {item.name.toLowerCase().includes('viki') && !item.isBlocked && (
+                                    <div className="mt-4">
+                                        <button
+                                            onClick={() => openVikiModal(item.cred?.email, item.cred?.password)}
+                                            disabled={!item.cred?.email || !item.cred?.password}
+                                            className="w-full bg-indigo-600 text-white py-3 rounded-2xl font-black text-xs uppercase tracking-widest shadow-md active:scale-95 transition-transform flex items-center justify-center gap-2 disabled:opacity-60"
+                                        >
+                                            <Wifi size={14} /> Vincular TV
+                                        </button>
+                                    </div>
+                                )}
+
                                 {item.daysLeft < 0 && item.daysLeft >= -3 && !item.isBlocked && (
                                     <div className="mt-4 bg-orange-50 p-3 rounded-2xl border border-orange-100 flex items-center gap-3">
                                         <AlertTriangle className="text-orange-500 shrink-0" size={16} />
@@ -413,6 +434,18 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                     </div>
                 )}
             </div>
+            {vikiModalOpen && (
+                <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+                    <TVPairingSection
+                        vikiEmail={selectedVikiCredential?.email || ''}
+                        vikiPassword={selectedVikiCredential?.password || ''}
+                        onClose={() => {
+                            setVikiModalOpen(false);
+                            setSelectedVikiCredential(null);
+                        }}
+                    />
+                </div>
+            )}
         </div>
     );
 };
