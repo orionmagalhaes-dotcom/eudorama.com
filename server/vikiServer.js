@@ -5,6 +5,11 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+if (!process.env.PUPPETEER_CACHE_DIR) {
+  // Keep the cache inside the project so the Chrome download is available at runtime on Render.
+  process.env.PUPPETEER_CACHE_DIR = path.resolve(__dirname, '..', '.puppeteer-cache');
+}
+
 const app = express();
 
 app.use(express.json({ limit: '1mb' }));
@@ -18,15 +23,38 @@ app.use((req, res, next) => {
 
 const OVERALL_TIMEOUT_MS = 90000;
 const NAV_TIMEOUT_MS = 25000;
-const ACTION_TIMEOUT_MS = 10000;
+const ACTION_TIMEOUT_MS = 20000;
 const NETWORK_IDLE_TIMEOUT_MS = 8000;
 const RESULT_TIMEOUT_MS = 12000;
 
-const SERVER_VERSION = 'viki-pair-2026-02-15-render-chrome-cache';
+const SERVER_VERSION = 'viki-pair-2026-02-15-render-cache-concurrency';
 const TV_CODE_REGEX = '^[a-z0-9]{6}$';
 
-const EMAIL_SELECTORS = ['input[type="email"]', 'input[name="email"]', 'input#email'];
-const PASSWORD_SELECTORS = ['input[type="password"]', 'input[name="password"]', 'input#password'];
+const EMAIL_SELECTORS = [
+  'input[type="email"]',
+  'input[name="email"]',
+  'input[name*="email" i]',
+  'input#email',
+  'input[id*="email" i]',
+  'input[aria-label*="email" i]',
+  'input[placeholder*="email" i]',
+  'input[placeholder*="e-mail" i]',
+  'input[autocomplete="email"]',
+  'input[autocomplete="username"]',
+  'input[name="username"]',
+  'input[id*="username" i]'
+];
+const PASSWORD_SELECTORS = [
+  'input[type="password"]',
+  'input[name="password"]',
+  'input[name*="password" i]',
+  'input#password',
+  'input[id*="password" i]',
+  'input[aria-label*="password" i]',
+  'input[placeholder*="password" i]',
+  'input[placeholder*="senha" i]',
+  'input[autocomplete="current-password"]'
+];
 const CODE_SELECTORS = [
   'input[name="code"]',
   'input[name*="code" i]',
@@ -43,12 +71,6 @@ const getPuppeteer = async () => {
   if (puppeteerPromise) return puppeteerPromise;
 
   puppeteerPromise = (async () => {
-    // On Render, the default Puppeteer cache dir (/opt/render/.cache/puppeteer) isn't included in the deploy artifact,
-    // so Chrome can be missing at runtime. Keep the cache inside the project by default.
-    if (!process.env.PUPPETEER_CACHE_DIR) {
-      process.env.PUPPETEER_CACHE_DIR = path.resolve(__dirname, '..', '.puppeteer-cache');
-    }
-
     const [{ default: puppeteer }, { default: StealthPlugin }] = await Promise.all([
       import('puppeteer-extra'),
       import('puppeteer-extra-plugin-stealth')
@@ -60,6 +82,11 @@ const getPuppeteer = async () => {
 
   return puppeteerPromise;
 };
+
+const MAX_CONCURRENT_PAIRS = Number(
+  process.env.VIKI_MAX_CONCURRENT || (process.env.NODE_ENV === 'production' ? 1 : 2)
+);
+let activePairs = 0;
 
 class VikiAutomationError extends Error {
   constructor(message, { statusCode = 500, stage = 'unknown', detail = '' } = {}) {
@@ -785,11 +812,14 @@ app.get('/api/viki/health', (_req, res) => {
     ok: true,
     version: SERVER_VERSION,
     tv_code_regex: TV_CODE_REGEX,
-    puppeteer_cache_dir: process.env.PUPPETEER_CACHE_DIR || null
+    puppeteer_cache_dir: process.env.PUPPETEER_CACHE_DIR || null,
+    max_concurrent_pairs: MAX_CONCURRENT_PAIRS,
+    active_pairs: activePairs
   });
 });
 
 app.post('/api/viki/pair', async (req, res) => {
+  let acquiredSlot = false;
   try {
     const vikiEmail = String(req.body?.viki_email || req.body?.email || '').trim();
     const vikiPassword = String(req.body?.viki_password || req.body?.password || '').trim();
@@ -804,6 +834,18 @@ app.post('/api/viki/pair', async (req, res) => {
       return res.status(400).json({ error: 'tv_code deve conter exatamente 6 caracteres: letras minusculas (a-z) e numeros (0-9).' });
     }
 
+    if (activePairs >= MAX_CONCURRENT_PAIRS) {
+      res.setHeader('Retry-After', '10');
+      return res.status(429).json({
+        error: 'Servidor ocupado. Tente novamente em alguns segundos.',
+        stage: 'busy',
+        detail: `active=${activePairs} max=${MAX_CONCURRENT_PAIRS}`
+      });
+    }
+
+    activePairs += 1;
+    acquiredSlot = true;
+
     const result = await linkVikiTv({ brand, vikiEmail, vikiPassword, tvCode });
     return res.status(200).json(result);
   } catch (error) {
@@ -812,6 +854,10 @@ app.post('/api/viki/pair', async (req, res) => {
     const stage = String(error?.stage || 'unknown');
     const detail = error?.detail ? String(error.detail) : undefined;
     return res.status(statusCode).json({ error: message, stage, detail });
+  } finally {
+    if (acquiredSlot) {
+      activePairs = Math.max(0, activePairs - 1);
+    }
   }
 });
 
