@@ -27,7 +27,7 @@ const ACTION_TIMEOUT_MS = 20000;
 const NETWORK_IDLE_TIMEOUT_MS = 8000;
 const RESULT_TIMEOUT_MS = 12000;
 
-const SERVER_VERSION = 'viki-pair-2026-02-15-render-cache-concurrency';
+const SERVER_VERSION = 'viki-pair-2026-02-15-render-cache-concurrency-debug1';
 const TV_CODE_REGEX = '^[a-z0-9]{6}$';
 
 const EMAIL_SELECTORS = [
@@ -141,6 +141,58 @@ const isAnySelectorVisibleAnywhere = async (page, selectors) => {
   }
 
   return false;
+};
+
+const getVisibleInputsSnapshot = async (page, limit = 12) => {
+  const contexts = getContexts(page);
+  const collected = [];
+
+  for (const ctx of contexts) {
+    try {
+      const items = await ctx.evaluate((lim) => {
+        const isVisible = (el) => {
+          if (!el) return false;
+          const rect = el.getBoundingClientRect?.();
+          if (!rect || rect.width < 2 || rect.height < 2) return false;
+          const style = window.getComputedStyle?.(el);
+          if (!style) return false;
+          if (style.display === 'none' || style.visibility === 'hidden') return false;
+          const opacity = Number(style.opacity || '1');
+          if (Number.isFinite(opacity) && opacity <= 0.05) return false;
+          return true;
+        };
+
+        const pick = (el) => ({
+          type: el.getAttribute('type'),
+          name: el.getAttribute('name'),
+          id: el.getAttribute('id'),
+          placeholder: el.getAttribute('placeholder'),
+          ariaLabel: el.getAttribute('aria-label'),
+          autocomplete: el.getAttribute('autocomplete')
+        });
+
+        return Array.from(document.querySelectorAll('input'))
+          .filter(isVisible)
+          .slice(0, lim)
+          .map(pick);
+      }, limit);
+
+      if (Array.isArray(items) && items.length) collected.push(...items);
+    } catch {
+      // ignore
+    }
+  }
+
+  const seen = new Set();
+  const unique = [];
+  for (const item of collected) {
+    const key = JSON.stringify(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(item);
+    if (unique.length >= limit) break;
+  }
+  return unique;
 };
 
 const clickButtonByTextAnywhere = async (page, texts, deadlineMs, timeoutMs = 3000) => {
@@ -260,7 +312,17 @@ const fillFirstAnywhere = async (page, selectors, value, deadlineMs, timeoutMs, 
     await sleep(200);
   }
 
-  throw new VikiAutomationError(errorMessage, { statusCode: 500, stage });
+  const url = page.url();
+  const text = await getCombinedText(page).catch(() => '');
+  const snippet = sanitizeForLogs(text).slice(0, 260);
+  const inputs = await getVisibleInputsSnapshot(page).catch(() => []);
+  const inputsJson = inputs.length ? JSON.stringify(inputs).slice(0, 900) : '[]';
+
+  throw new VikiAutomationError(errorMessage, {
+    statusCode: 500,
+    stage,
+    detail: `url=${url} snippet=${snippet} inputs=${inputsJson}`
+  });
 };
 
 const acceptCookiesIfPresent = async (page, deadlineMs) => {
