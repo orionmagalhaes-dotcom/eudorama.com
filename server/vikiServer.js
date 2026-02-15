@@ -27,7 +27,7 @@ const ACTION_TIMEOUT_MS = 20000;
 const NETWORK_IDLE_TIMEOUT_MS = 8000;
 const RESULT_TIMEOUT_MS = 12000;
 
-const SERVER_VERSION = 'viki-pair-2026-02-15-render-cache-concurrency-debug1';
+const SERVER_VERSION = 'viki-pair-2026-02-15-render-cache-concurrency-debug2';
 const TV_CODE_REGEX = '^[a-z0-9]{6}$';
 
 const EMAIL_SELECTORS = [
@@ -671,7 +671,22 @@ const waitForCodeOrLoginFailure = async (page, deadlineMs) => {
     }
 
     const onSignInPage = /\/web-sign-in|\/login/i.test(url);
+    const emailStillVisible = await isAnySelectorVisibleAnywhere(page, EMAIL_SELECTORS);
     const passwordStillVisible = await isAnySelectorVisibleAnywhere(page, PASSWORD_SELECTORS);
+
+    // If we still see the login form after some time, assume login didn't complete.
+    if (Date.now() - start > 15000 && emailStillVisible && passwordStillVisible) {
+      const snippet = sanitizeForLogs(text).slice(0, 260);
+      const debug = await getLoginFormSummary(page).catch(() => null);
+      const dbg = debug
+        ? ` emailLen=${debug.emailLen} passLen=${debug.passwordLen} submitVisible=${debug.submitVisible} submitDisabled=${debug.submitDisabled} loginBtns=${debug.loginButtonsDisabled}/${debug.loginButtonsVisible} consent=${debug.consentChecked}/${debug.consentCheckboxes}`
+        : '';
+      throw new VikiAutomationError('Nao foi possivel concluir o login no Viki.', {
+        statusCode: 401,
+        stage: 'login',
+        detail: `url=${page.url()} snippet=${snippet}${dbg}`
+      });
+    }
 
     if (Date.now() - start > 12000 && onSignInPage && passwordStillVisible) {
       // Sem mensagem clara, mas nao saiu do login.
@@ -690,10 +705,15 @@ const waitForCodeOrLoginFailure = async (page, deadlineMs) => {
     await sleep(450);
   }
 
+  const finalText = await getCombinedText(page).catch(() => '');
+  const finalSnippet = sanitizeForLogs(finalText).slice(0, 260);
+  const finalInputs = await getVisibleInputsSnapshot(page).catch(() => []);
+  const finalInputsJson = finalInputs.length ? JSON.stringify(finalInputs).slice(0, 900) : '[]';
+
   throw new VikiAutomationError('Tempo limite ao aguardar a pagina do codigo.', {
     statusCode: 504,
     stage: 'login_wait',
-    detail: `url=${page.url()}`
+    detail: `url=${page.url()} snippet=${finalSnippet} inputs=${finalInputsJson}`
   });
 };
 
