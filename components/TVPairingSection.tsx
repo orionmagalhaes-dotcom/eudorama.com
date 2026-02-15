@@ -8,7 +8,7 @@ interface TVPairingSectionProps {
 }
 
 const TVPairingSection: React.FC<TVPairingSectionProps> = ({ vikiEmail, vikiPassword, onClose }) => {
-  const [brand, setBrand] = useState<'samsung' | 'lg'>('samsung');
+  const [brand, setBrand] = useState<'samsung' | 'lg' | 'androidtv'>('samsung');
   const [tvCode, setTvCode] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -17,6 +17,18 @@ const TVPairingSection: React.FC<TVPairingSectionProps> = ({ vikiEmail, vikiPass
   const baseUrl =
     import.meta.env.VITE_VIKI_SERVER_URL ||
     (import.meta.env.DEV ? `http://${window.location.hostname}:4010` : window.location.origin);
+
+  const manualSignInUrl = useMemo(() => {
+    if (brand === 'lg') return 'https://www.viki.com/web-sign-in?return_to=%2Flgtv';
+    if (brand === 'androidtv') return 'https://www.viki.com/web-sign-in?return_to=%2Fandroidtv';
+    return 'https://www.viki.com/web-sign-in?return_to=%2Fsamsungtv';
+  }, [brand]);
+
+  const brandLabel = useMemo(() => {
+    if (brand === 'lg') return 'LG TV';
+    if (brand === 'androidtv') return 'Android TV';
+    return 'Samsung TV';
+  }, [brand]);
 
   const canSubmit = useMemo(() => {
     return Boolean(vikiEmail && vikiPassword && tvCode.length === 6 && !loading);
@@ -46,13 +58,13 @@ const TVPairingSection: React.FC<TVPairingSectionProps> = ({ vikiEmail, vikiPass
         })
       });
 
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        const stage = data?.stage ? ` [${data.stage}]` : '';
-        const detail = data?.detail ? ` (${data.detail})` : '';
-        setError(`${data?.error || 'Nao foi possivel vincular a TV agora.'}${stage}${detail}`);
-        return;
-      }
+       const data = await response.json().catch(() => ({}));
+       if (!response.ok) {
+         const stage = data?.stage ? ` [${data.stage}]` : '';
+         const detail = import.meta.env.DEV && data?.detail ? ` (${data.detail})` : '';
+         setError(`${data?.error || 'Nao foi possivel vincular a TV agora.'}${stage}${detail}`);
+         return;
+       }
 
       setDone(true);
       setTvCode('');
@@ -77,11 +89,11 @@ const TVPairingSection: React.FC<TVPairingSectionProps> = ({ vikiEmail, vikiPass
 
       <div className="space-y-5">
         <div>
-          <h3 className="text-xl font-black text-gray-900">Vincular Rakuten Viki na {brand === 'lg' ? 'LG TV' : 'Samsung TV'}</h3>
+          <h3 className="text-xl font-black text-gray-900">Vincular Rakuten Viki na {brandLabel}</h3>
           <p className="text-sm text-gray-500 font-medium mt-1">Digite o codigo de 6 caracteres (letras minusculas e numeros) exibido na TV e clique em Vincular TV.</p>
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-3 gap-2">
           <button
             onClick={() => setBrand('samsung')}
             disabled={loading}
@@ -99,6 +111,15 @@ const TVPairingSection: React.FC<TVPairingSectionProps> = ({ vikiEmail, vikiPass
             } disabled:opacity-60`}
           >
             LG
+          </button>
+          <button
+            onClick={() => setBrand('androidtv')}
+            disabled={loading}
+            className={`py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest border ${
+              brand === 'androidtv' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-700 border-gray-200'
+            } disabled:opacity-60`}
+          >
+            Android TV
           </button>
         </div>
 
@@ -135,6 +156,24 @@ const TVPairingSection: React.FC<TVPairingSectionProps> = ({ vikiEmail, vikiPass
             {error}
           </div>
         )}
+
+        <div className="bg-gray-50 border border-gray-100 rounded-2xl px-4 py-3">
+          <div className="text-[11px] font-black text-gray-900 uppercase tracking-widest">Modo manual (fallback)</div>
+          <div className="text-xs font-medium text-gray-600 mt-1">
+            Se o servidor falhar por verificacao anti-bot/captcha, use o fluxo oficial do Viki no navegador:
+          </div>
+          <a
+            href={manualSignInUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-2 inline-flex items-center justify-center w-full bg-white border border-gray-200 text-gray-900 py-2 rounded-xl font-black text-[11px] uppercase tracking-widest active:scale-95 transition-transform"
+          >
+            Abrir login do Viki para {brandLabel}
+          </a>
+          <div className="text-[11px] font-medium text-gray-600 mt-2">
+            Entre com o email/senha do Viki e digite o codigo exibido na TV.
+          </div>
+        </div>
       </div>
     </div>
   );

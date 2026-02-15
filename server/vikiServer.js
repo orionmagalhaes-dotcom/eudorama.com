@@ -27,7 +27,7 @@ const ACTION_TIMEOUT_MS = Number(process.env.VIKI_ACTION_TIMEOUT_MS || 20000);
 const NETWORK_IDLE_TIMEOUT_MS = Number(process.env.VIKI_NETWORK_IDLE_TIMEOUT_MS || 12000);
 const RESULT_TIMEOUT_MS = Number(process.env.VIKI_RESULT_TIMEOUT_MS || 15000);
 
-const SERVER_VERSION = 'viki-pair-2026-02-15-render-loginfix1';
+const SERVER_VERSION = 'viki-pair-2026-02-15-render-loginfix3';
 const TV_CODE_REGEX = '^[a-z0-9]{6}$';
 
 const EMAIL_SELECTORS = [
@@ -193,6 +193,73 @@ const getVisibleInputsSnapshot = async (page, limit = 12) => {
     if (unique.length >= limit) break;
   }
   return unique;
+};
+
+const getPrimaryContinueStateAnywhere = async (page) => {
+  const contexts = getContexts(page);
+
+  for (const ctx of contexts) {
+    try {
+      const result = await ctx.evaluate(() => {
+        const normalize = (value) =>
+          String(value || '')
+            .toLowerCase()
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        const isVisible = (el) => {
+          if (!el) return false;
+          const rect = el.getBoundingClientRect?.();
+          if (!rect || rect.width < 2 || rect.height < 2) return false;
+          const style = window.getComputedStyle?.(el);
+          if (!style) return false;
+          if (style.display === 'none' || style.visibility === 'hidden') return false;
+          const opacity = Number(style.opacity || '1');
+          if (Number.isFinite(opacity) && opacity <= 0.05) return false;
+          return true;
+        };
+
+        const candidates = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]')).filter(isVisible);
+        for (const el of candidates) {
+          const tag = el.tagName.toLowerCase();
+          const rawText =
+            tag === 'input'
+              ? el.getAttribute('value') || el.getAttribute('aria-label') || ''
+              : el.textContent || el.getAttribute('aria-label') || '';
+          const label = normalize(rawText);
+
+          // Primary continue only.
+          if (label !== 'continue') continue;
+
+          const disabled =
+            (tag === 'button' && el.disabled) ||
+            el.getAttribute('aria-disabled') === 'true' ||
+            el.classList?.contains('disabled');
+
+          return { found: true, disabled: Boolean(disabled), label };
+        }
+
+        return { found: false, disabled: false, label: '' };
+      });
+
+      if (result) return result;
+    } catch {
+      // ignore
+    }
+  }
+
+  return { found: false, disabled: false, label: '' };
+};
+
+const getCookieNames = async (page) => {
+  try {
+    const cookies = await page.cookies();
+    const names = cookies.map((c) => c.name).filter(Boolean);
+    names.sort();
+    return names.slice(0, 25);
+  } catch {
+    return [];
+  }
 };
 
 const clickButtonByTextAnywhere = async (page, texts, deadlineMs, timeoutMs = 3000) => {
@@ -504,16 +571,20 @@ const acceptCookiesIfPresent = async (page, deadlineMs) => {
 
 const normalizeBrand = (value) => {
   const b = String(value || '').toLowerCase().trim();
-  return b === 'lg' ? 'lg' : 'samsung';
+  if (b === 'lg') return 'lg';
+  if (b === 'androidtv' || b === 'android' || b === 'android_tv' || b === 'android tv' || b === 'google') return 'androidtv';
+  return 'samsung';
 };
 
 const signInUrlForBrand = (brand) => {
   if (brand === 'lg') return 'https://www.viki.com/web-sign-in?return_to=%2Flgtv';
+  if (brand === 'androidtv') return 'https://www.viki.com/web-sign-in?return_to=%2Fandroidtv';
   return 'https://www.viki.com/web-sign-in?return_to=%2Fsamsungtv';
 };
 
 const tvPageUrlForBrand = (brand) => {
   if (brand === 'lg') return 'https://www.viki.com/lgtv';
+  if (brand === 'androidtv') return 'https://www.viki.com/androidtv';
   return 'https://www.viki.com/samsungtv';
 };
 
@@ -827,12 +898,13 @@ const waitForCodeOrLoginFailure = async (page, deadlineMs) => {
     const url = page.url().toLowerCase();
 
     // If we're on the TV page but still being asked to login, login didn't stick.
-    if ((url.includes('/samsungtv') || url.includes('/lgtv')) && LOGIN_REQUIRED_ON_TV_REGEX.test(text)) {
+    if ((url.includes('/samsungtv') || url.includes('/lgtv') || url.includes('/androidtv')) && LOGIN_REQUIRED_ON_TV_REGEX.test(text)) {
       const snippet = sanitizeForLogs(text).slice(0, 260);
+      const cookieNames = await getCookieNames(page);
       throw new VikiAutomationError('Nao foi possivel manter o login no Viki a partir do servidor. Tente novamente.', {
         statusCode: 401,
         stage: 'login',
-        detail: `url=${page.url()} snippet=${snippet}`
+        detail: `url=${page.url()} snippet=${snippet} cookies=${JSON.stringify(cookieNames)}`
       });
     }
 
@@ -999,7 +1071,24 @@ const linkVikiTv = async ({ brand, vikiEmail, vikiPassword, tvCode }) => {
     stage = 'submit_login';
 
     // Some regions/accounts require confirming age/terms before continuing.
+    const beforeLoginDebug = await getLoginFormSummary(page).catch(() => null);
     await clickRequiredConsentCheckboxesAnywhere(page).catch(() => {});
+    const afterConsentDebug = await getLoginFormSummary(page).catch(() => null);
+
+    const continueState = await getPrimaryContinueStateAnywhere(page).catch(() => ({ found: false, disabled: false }));
+    if (continueState?.found && continueState?.disabled) {
+      const dbg1 = beforeLoginDebug
+        ? ` emailLen=${beforeLoginDebug.emailLen} passLen=${beforeLoginDebug.passwordLen} submitVisible=${beforeLoginDebug.submitVisible} submitDisabled=${beforeLoginDebug.submitDisabled} consent=${beforeLoginDebug.consentChecked}/${beforeLoginDebug.consentCheckboxes}`
+        : '';
+      const dbg2 = afterConsentDebug
+        ? ` emailLen=${afterConsentDebug.emailLen} passLen=${afterConsentDebug.passwordLen} submitVisible=${afterConsentDebug.submitVisible} submitDisabled=${afterConsentDebug.submitDisabled} consent=${afterConsentDebug.consentChecked}/${afterConsentDebug.consentCheckboxes}`
+        : '';
+      throw new VikiAutomationError('O Viki exigiu confirmacao de termos/idade antes de continuar. Tente novamente.', {
+        statusCode: 400,
+        stage: 'login',
+        detail: `url=${page.url()} before=[${dbg1}] after=[${dbg2}]`
+      });
+    }
 
     const loginNavigation = page
       .waitForNavigation({ waitUntil: 'domcontentloaded', timeout: clampTimeout(deadlineMs, NAV_TIMEOUT_MS) })
@@ -1020,6 +1109,7 @@ const linkVikiTv = async ({ brand, vikiEmail, vikiPassword, tvCode }) => {
     await sleep(1500);
 
     stage = 'wait_code';
+
     // If login succeeded but the SPA didn't redirect, force-open the TV page once.
     if (/\/web-sign-in|\/login/i.test(page.url())) {
       await page
@@ -1027,6 +1117,7 @@ const linkVikiTv = async ({ brand, vikiEmail, vikiPassword, tvCode }) => {
         .catch(() => {});
       await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS) }).catch(() => {});
     }
+
     await waitForCodeOrLoginFailure(page, deadlineMs);
 
     stage = 'fill_tv_code';
