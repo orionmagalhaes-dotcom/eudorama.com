@@ -14,7 +14,9 @@ const TVPairingSection: React.FC<TVPairingSectionProps> = ({ vikiEmail, vikiPass
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
 
-  const baseUrl = import.meta.env.VITE_VIKI_SERVER_URL || `http://${window.location.hostname}:4010`;
+  const baseUrl =
+    import.meta.env.VITE_VIKI_SERVER_URL ||
+    (import.meta.env.DEV ? `http://${window.location.hostname}:4010` : window.location.origin);
 
   const canSubmit = useMemo(() => {
     return Boolean(vikiEmail && vikiPassword && tvCode.length === 6 && !loading);

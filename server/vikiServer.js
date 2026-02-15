@@ -1,8 +1,13 @@
 import express from 'express';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 
 puppeteer.use(StealthPlugin());
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 
@@ -652,7 +657,8 @@ const linkVikiTv = async ({ brand, vikiEmail, vikiPassword, tvCode }) => {
   try {
     browser = await puppeteer.launch({
       headless: process.env.VIKI_HEADLESS === 'false' ? false : true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
+      // Container-friendly flags (Render/Docker). Keep minimal to reduce side-effects.
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
     });
 
     const page = await browser.newPage();
@@ -783,6 +789,19 @@ app.post('/api/viki/pair', async (req, res) => {
     return res.status(statusCode).json({ error: message, stage, detail });
   }
 });
+
+// In production (Render), serve the built SPA from dist/ on the same origin,
+// so the frontend can call /api/viki/* without CORS issues.
+if (process.env.NODE_ENV === 'production') {
+  const distDir = path.resolve(__dirname, '..', 'dist');
+  app.use(express.static(distDir));
+
+  // SPA fallback (do not swallow API routes).
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api/')) return next();
+    return res.sendFile(path.join(distDir, 'index.html'));
+  });
+}
 
 const port = Number(process.env.PORT || process.env.VIKI_SERVER_PORT || 4010);
 app.listen(port, '0.0.0.0', () => {
