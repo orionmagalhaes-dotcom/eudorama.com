@@ -27,7 +27,7 @@ const ACTION_TIMEOUT_MS = Number(process.env.VIKI_ACTION_TIMEOUT_MS || 20000);
 const NETWORK_IDLE_TIMEOUT_MS = Number(process.env.VIKI_NETWORK_IDLE_TIMEOUT_MS || 12000);
 const RESULT_TIMEOUT_MS = Number(process.env.VIKI_RESULT_TIMEOUT_MS || 15000);
 
-const SERVER_VERSION = 'viki-pair-2026-02-15-render-fillfix1';
+const SERVER_VERSION = 'viki-pair-2026-02-15-render-loginfix1';
 const TV_CODE_REGEX = '^[a-z0-9]{6}$';
 
 const EMAIL_SELECTORS = [
@@ -265,6 +265,143 @@ const clickButtonByTextAnywhere = async (page, texts, deadlineMs, timeoutMs = 30
   return false;
 };
 
+const clickButtonByExactTextAnywhere = async (page, exactTexts, deadlineMs, timeoutMs = 3000) => {
+  const deadline = Math.min(deadlineMs, Date.now() + timeoutMs);
+
+  while (Date.now() < deadline) {
+    const contexts = getContexts(page);
+
+    for (const ctx of contexts) {
+      try {
+        const clicked = await ctx.evaluate((phrases) => {
+          const normalize = (value) =>
+            String(value || '')
+              .toLowerCase()
+              .replace(/\s+/g, ' ')
+              .trim();
+
+          const isVisible = (el) => {
+            if (!el) return false;
+            const rect = el.getBoundingClientRect?.();
+            if (!rect || rect.width < 2 || rect.height < 2) return false;
+            const style = window.getComputedStyle?.(el);
+            if (!style) return false;
+            if (style.display === 'none' || style.visibility === 'hidden') return false;
+            const opacity = Number(style.opacity || '1');
+            if (Number.isFinite(opacity) && opacity <= 0.05) return false;
+            return true;
+          };
+
+          const dialogRoots = Array.from(
+            document.querySelectorAll('[role="dialog"], [aria-modal="true"], [data-testid*="modal" i]')
+          ).filter(isVisible);
+
+          const scopes = dialogRoots.length ? dialogRoots : [document];
+
+          for (const scope of scopes) {
+            const candidates = Array.from(
+              scope.querySelectorAll('button, a, [role="button"], input[type="submit"], input[type="button"]')
+            ).filter(isVisible);
+
+            for (const candidate of candidates) {
+              const tag = candidate.tagName.toLowerCase();
+              const rawText =
+                tag === 'input'
+                  ? candidate.getAttribute('value') || candidate.getAttribute('aria-label') || ''
+                  : candidate.textContent || candidate.getAttribute('aria-label') || '';
+
+              const label = normalize(rawText);
+              if (!label) continue;
+
+              if (phrases.includes(label)) {
+                candidate.click();
+                return true;
+              }
+            }
+          }
+
+          return false;
+        }, exactTexts.map((t) => String(t).toLowerCase().trim()));
+
+        if (clicked) return true;
+      } catch {
+        // ignore
+      }
+    }
+
+    await sleep(200);
+  }
+
+  return false;
+};
+
+const clickVikiLoginContinueAnywhere = async (page, deadlineMs) => {
+  // Prefer the primary Continue button (not "Continue with ...").
+  const exactFirst = await clickButtonByExactTextAnywhere(page, ['continue', 'log in', 'login', 'sign in', 'entrar'], deadlineMs, 4500);
+  if (exactFirst) return true;
+
+  // Next best: submit button.
+  const submit = await clickFirstSelectorAnywhere(page, ['button[type="submit"]', 'input[type="submit"]'], deadlineMs, 2500);
+  if (submit) return true;
+
+  // Last resort: contains match but exclude social-login buttons.
+  const clicked = await (async () => {
+    const contexts = getContexts(page);
+    for (const ctx of contexts) {
+      try {
+        const did = await ctx.evaluate(() => {
+          const normalize = (value) =>
+            String(value || '')
+              .toLowerCase()
+              .replace(/\s+/g, ' ')
+              .trim();
+
+          const isVisible = (el) => {
+            if (!el) return false;
+            const rect = el.getBoundingClientRect?.();
+            if (!rect || rect.width < 2 || rect.height < 2) return false;
+            const style = window.getComputedStyle?.(el);
+            if (!style) return false;
+            if (style.display === 'none' || style.visibility === 'hidden') return false;
+            const opacity = Number(style.opacity || '1');
+            if (Number.isFinite(opacity) && opacity <= 0.05) return false;
+            return true;
+          };
+
+          const bad = /(continue with|facebook|apple|google|rakuten)/i;
+          const candidates = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]')).filter(isVisible);
+
+          for (const candidate of candidates) {
+            const tag = candidate.tagName.toLowerCase();
+            const rawText =
+              tag === 'input'
+                ? candidate.getAttribute('value') || candidate.getAttribute('aria-label') || ''
+                : candidate.textContent || candidate.getAttribute('aria-label') || '';
+            const label = normalize(rawText);
+            if (!label) continue;
+            if (bad.test(label)) continue;
+
+            if (label.includes('continue') || label.includes('login') || label.includes('log in') || label.includes('sign in') || label.includes('entrar')) {
+              candidate.click();
+              return true;
+            }
+          }
+
+          return false;
+        });
+
+        if (did) return true;
+      } catch {
+        // ignore
+      }
+    }
+
+    return false;
+  })();
+
+  return clicked;
+};
+
 const clickFirstSelectorAnywhere = async (page, selectors, deadlineMs, timeoutMs = 3000) => {
   const deadline = Math.min(deadlineMs, Date.now() + timeoutMs);
 
@@ -384,6 +521,8 @@ const tvPageUrlForBrand = (brand) => {
 const LOGIN_ERROR_REGEX = /(invalid|incorrect|wrong password|email or password|unable to sign in|couldn't sign in|senha incorreta|credenciais)/i;
 // Avoid false-positives from the common \"protected by reCAPTCHA\" notice shown on many login forms.
 const BOT_CHALLENGE_REGEX = /(verify you are human|checking your browser|unusual traffic|access denied|cloudflare|cf-challenge)/i;
+const LOGIN_REQUIRED_ON_TV_REGEX =
+  /(to proceed, please login|please login to your viki account|log in to your viki account|you are almost done setting up viki on your)/i;
 
 const getVisibleUiErrorsAnywhere = async (page) => {
   const contexts = getContexts(page);
@@ -687,6 +826,16 @@ const waitForCodeOrLoginFailure = async (page, deadlineMs) => {
     const text = await getCombinedText(page);
     const url = page.url().toLowerCase();
 
+    // If we're on the TV page but still being asked to login, login didn't stick.
+    if ((url.includes('/samsungtv') || url.includes('/lgtv')) && LOGIN_REQUIRED_ON_TV_REGEX.test(text)) {
+      const snippet = sanitizeForLogs(text).slice(0, 260);
+      throw new VikiAutomationError('Nao foi possivel manter o login no Viki a partir do servidor. Tente novamente.', {
+        statusCode: 401,
+        stage: 'login',
+        detail: `url=${page.url()} snippet=${snippet}`
+      });
+    }
+
     if (BOT_CHALLENGE_REGEX.test(text) || url.includes('/cdn-cgi/') || url.includes('cf_chl') || url.includes('cf-challenge')) {
       const snippet = sanitizeForLogs(text).slice(0, 260);
       throw new VikiAutomationError('Viki solicitou verificacao anti-bot (captcha). Tente novamente ou use modo manual.', {
@@ -856,10 +1005,7 @@ const linkVikiTv = async ({ brand, vikiEmail, vikiPassword, tvCode }) => {
       .waitForNavigation({ waitUntil: 'domcontentloaded', timeout: clampTimeout(deadlineMs, NAV_TIMEOUT_MS) })
       .catch(() => null);
 
-    const clickedContinue =
-      (await submitLoginByFormAnywhere(page)) ||
-      (await clickFirstSelectorAnywhere(page, ['button[type="submit"]', 'input[type="submit"]'], deadlineMs, 3000)) ||
-      (await clickButtonByTextAnywhere(page, ['continue', 'log in', 'login', 'sign in', 'entrar'], deadlineMs, 4500));
+    const clickedContinue = (await submitLoginByFormAnywhere(page)) || (await clickVikiLoginContinueAnywhere(page, deadlineMs));
 
     if (!clickedContinue) {
       throw new VikiAutomationError('Botao de continuar/login nao encontrado.', { statusCode: 500, stage });
@@ -871,6 +1017,7 @@ const linkVikiTv = async ({ brand, vikiEmail, vikiPassword, tvCode }) => {
 
     await loginNavigation;
     await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS) }).catch(() => {});
+    await sleep(1500);
 
     stage = 'wait_code';
     // If login succeeded but the SPA didn't redirect, force-open the TV page once.
