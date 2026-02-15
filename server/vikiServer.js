@@ -21,13 +21,13 @@ app.use((req, res, next) => {
   next();
 });
 
-const OVERALL_TIMEOUT_MS = 90000;
-const NAV_TIMEOUT_MS = 25000;
-const ACTION_TIMEOUT_MS = 20000;
-const NETWORK_IDLE_TIMEOUT_MS = 8000;
-const RESULT_TIMEOUT_MS = 12000;
+const OVERALL_TIMEOUT_MS = Number(process.env.VIKI_OVERALL_TIMEOUT_MS || 140000);
+const NAV_TIMEOUT_MS = Number(process.env.VIKI_NAV_TIMEOUT_MS || 35000);
+const ACTION_TIMEOUT_MS = Number(process.env.VIKI_ACTION_TIMEOUT_MS || 20000);
+const NETWORK_IDLE_TIMEOUT_MS = Number(process.env.VIKI_NETWORK_IDLE_TIMEOUT_MS || 12000);
+const RESULT_TIMEOUT_MS = Number(process.env.VIKI_RESULT_TIMEOUT_MS || 15000);
 
-const SERVER_VERSION = 'viki-pair-2026-02-15-render-cache-concurrency-debug2';
+const SERVER_VERSION = 'viki-pair-2026-02-15-render-fillfix1';
 const TV_CODE_REGEX = '^[a-z0-9]{6}$';
 
 const EMAIL_SELECTORS = [
@@ -298,11 +298,47 @@ const fillFirstAnywhere = async (page, selectors, value, deadlineMs, timeoutMs, 
     for (const ctx of contexts) {
       for (const selector of selectors) {
         try {
-          const el = await ctx.waitForSelector(selector, { visible: true, timeout: 900 });
-          await el.click({ clickCount: 3 });
-          await el.press('Backspace');
-          await el.type(value, { delay: 18 });
-          return true;
+          const el = await ctx.waitForSelector(selector, { timeout: 1200 });
+          if (!el) continue;
+
+          const box = await el.boundingBox().catch(() => null);
+          if (!box || box.width < 2 || box.height < 2) continue;
+
+          // Try the "human" way first, but on some environments (Render) clicks/types can be flaky.
+          try {
+            await ctx.evaluate((node) => node.scrollIntoView?.({ block: 'center', inline: 'center' }), el);
+            await el.click({ clickCount: 3, delay: 20 });
+            await el.press('Backspace').catch(() => {});
+            await el.type(value, { delay: 22 });
+          } catch {
+            // ignore and try JS set below
+          }
+
+          // JS-set value as a reliable fallback for controlled inputs.
+          await ctx.evaluate(
+            (node, nextValue) => {
+              const el = node;
+              const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+              const prev = el.value;
+              if (setter) setter.call(el, String(nextValue));
+              else el.value = String(nextValue);
+
+              // Trigger React/Vue listeners.
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+
+              // Some forms validate on blur.
+              if (prev !== el.value) el.dispatchEvent(new Event('blur', { bubbles: true }));
+            },
+            el,
+            value
+          );
+
+          const ok = await ctx
+            .evaluate((node, expected) => String(node.value || '') === String(expected), el, value)
+            .catch(() => false);
+
+          if (ok) return true;
         } catch {
           // ignore
         }
