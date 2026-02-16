@@ -22,7 +22,7 @@ app.use((req, res, next) => {
   next();
 });
 
-const OVERALL_TIMEOUT_MS = Number(process.env.VIKI_OVERALL_TIMEOUT_MS || 140000);
+const OVERALL_TIMEOUT_MS = Number(process.env.VIKI_OVERALL_TIMEOUT_MS || 220000);
 const NAV_TIMEOUT_MS = Number(process.env.VIKI_NAV_TIMEOUT_MS || 35000);
 const ACTION_TIMEOUT_MS = Number(process.env.VIKI_ACTION_TIMEOUT_MS || 20000);
 const NETWORK_IDLE_TIMEOUT_MS = Number(process.env.VIKI_NETWORK_IDLE_TIMEOUT_MS || 12000);
@@ -113,7 +113,11 @@ class VikiAutomationError extends Error {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const msLeft = (deadlineMs) => deadlineMs - Date.now();
-const clampTimeout = (deadlineMs, timeoutMs) => Math.max(1, Math.min(timeoutMs, msLeft(deadlineMs)));
+const clampTimeout = (deadlineMs, timeoutMs, minTimeoutMs = 1200) => {
+  const left = msLeft(deadlineMs);
+  const boundedLeft = Number.isFinite(left) ? Math.max(0, left) : timeoutMs;
+  return Math.max(minTimeoutMs, Math.min(timeoutMs, boundedLeft));
+};
 
 const getContexts = (page) => {
   const frames = page.frames().filter((frame) => frame !== page.mainFrame());
@@ -144,8 +148,20 @@ const isAnySelectorVisibleAnywhere = async (page, selectors) => {
       try {
         const handle = await ctx.$(selector);
         if (!handle) continue;
-        const box = await handle.boundingBox();
-        if (box && box.width > 1 && box.height > 1) return true;
+        const isVisible = await handle
+          .evaluate((el) => {
+            if (!el) return false;
+            const rect = el.getBoundingClientRect?.();
+            if (!rect || rect.width < 2 || rect.height < 2) return false;
+            const style = window.getComputedStyle?.(el);
+            if (!style) return false;
+            if (style.display === 'none' || style.visibility === 'hidden') return false;
+            const opacity = Number(style.opacity || '1');
+            if (Number.isFinite(opacity) && opacity <= 0.05) return false;
+            return true;
+          })
+          .catch(() => false);
+        if (isVisible) return true;
       } catch {
         // ignore
       }
@@ -647,6 +663,47 @@ const hasTvCodeUiAnywhere = async (page) => {
   return false;
 };
 
+const hasAnyCodeInputAnywhere = async (page) => {
+  const contexts = getContexts(page);
+
+  for (const ctx of contexts) {
+    try {
+      const found = await ctx.evaluate(() => {
+        const normalize = (value) =>
+          String(value || '')
+            .toLowerCase()
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        const inputs = Array.from(document.querySelectorAll('input, textarea, [role="textbox"], [contenteditable="true"]'));
+        for (const el of inputs) {
+          const attrs = normalize(
+            [
+              el.getAttribute?.('name'),
+              el.getAttribute?.('id'),
+              el.getAttribute?.('placeholder'),
+              el.getAttribute?.('aria-label'),
+              el.getAttribute?.('type'),
+              el.getAttribute?.('autocomplete')
+            ]
+              .filter(Boolean)
+              .join(' ')
+          );
+          const maxLen = Number(el.getAttribute?.('maxlength') || '0');
+          if (/(code|codigo|código|digitar|activation|linkingcode)/i.test(attrs)) return true;
+          if (maxLen === 6) return true;
+        }
+        return false;
+      });
+      if (found) return true;
+    } catch {
+      // ignore
+    }
+  }
+
+  return false;
+};
+
 const fillTvCodeSmart = async (page, tvCode, deadlineMs, timeoutMs, stage) => {
   const deadline = Math.min(deadlineMs, Date.now() + timeoutMs);
 
@@ -784,6 +841,99 @@ const fillTvCodeSmart = async (page, tvCode, deadlineMs, timeoutMs, stage) => {
   });
 };
 
+const clickTvConnectButtonSmart = async (page, deadlineMs) => {
+  const byText = await clickButtonByTextAnywhere(
+    page,
+    ['connect now', 'conectar agora', 'link now', 'connect', 'link', 'conectar', 'vincular', 'activate', 'ativar', 'continuar', 'continue'],
+    deadlineMs,
+    6500
+  );
+  if (byText) return true;
+
+  const bySubmit = await clickFirstSelectorAnywhere(page, ['button[type="submit"]', 'input[type="submit"]'], deadlineMs, 3000);
+  if (bySubmit) return true;
+
+  const contexts = getContexts(page);
+  for (const ctx of contexts) {
+    try {
+      const clicked = await ctx.evaluate(() => {
+        const normalize = (value) =>
+          String(value || '')
+            .toLowerCase()
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        const isVisible = (el) => {
+          if (!el) return false;
+          const rect = el.getBoundingClientRect?.();
+          if (!rect || rect.width < 2 || rect.height < 2) return false;
+          const style = window.getComputedStyle?.(el);
+          if (!style) return false;
+          if (style.display === 'none' || style.visibility === 'hidden') return false;
+          const opacity = Number(style.opacity || '1');
+          if (Number.isFinite(opacity) && opacity <= 0.05) return false;
+          return true;
+        };
+
+        const scoreText = (text) => {
+          let score = 0;
+          if (/(connect now|conectar agora|link now)/i.test(text)) score += 10;
+          if (/(connect|conectar|link|vincular|activate|ativar)/i.test(text)) score += 7;
+          if (/(continue|continuar)/i.test(text)) score += 3;
+          if (/(google|facebook|apple|kakao|line|create account|sign up)/i.test(text)) score -= 10;
+          return score;
+        };
+
+        const codeLikeInputs = Array.from(document.querySelectorAll('input, textarea, [role="textbox"], [contenteditable="true"]')).filter(isVisible);
+        const likelyCodeInput = codeLikeInputs.find((el) => {
+          const attrs = normalize(
+            [
+              el.getAttribute?.('name'),
+              el.getAttribute?.('id'),
+              el.getAttribute?.('placeholder'),
+              el.getAttribute?.('aria-label'),
+              el.getAttribute?.('type')
+            ]
+              .filter(Boolean)
+              .join(' ')
+          );
+          const maxLen = Number(el.getAttribute?.('maxlength') || '0');
+          return /(code|codigo|código|linkingcode|digitar|activation)/i.test(attrs) || maxLen === 6;
+        });
+
+        const scope = likelyCodeInput?.closest('form, section, main, div') || document;
+        const candidates = Array.from(scope.querySelectorAll('button, a, [role="button"], input[type="submit"], input[type="button"]')).filter(isVisible);
+        if (!candidates.length) return false;
+
+        let best = null;
+        let bestScore = -999;
+        for (const el of candidates) {
+          const tag = el.tagName.toLowerCase();
+          const raw = tag === 'input' ? el.getAttribute('value') || el.getAttribute('aria-label') || '' : el.textContent || el.getAttribute('aria-label') || '';
+          const text = normalize(raw);
+          const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true' || el.classList?.contains('disabled');
+          if (disabled) continue;
+          const score = scoreText(text);
+          if (score > bestScore) {
+            best = el;
+            bestScore = score;
+          }
+        }
+
+        if (!best || bestScore < 2) return false;
+        best.click();
+        return true;
+      });
+
+      if (clicked) return true;
+    } catch {
+      // ignore
+    }
+  }
+
+  return false;
+};
+
 const acceptCookiesIfPresent = async (page, deadlineMs) => {
   await clickButtonByTextAnywhere(page, ['accept all', 'accept', 'agree', 'aceitar tudo', 'aceitar'], deadlineMs, 2500).catch(() => {});
 };
@@ -872,7 +1022,7 @@ const LOGIN_ERROR_REGEX = /(invalid|incorrect|wrong password|email or password|u
 // Avoid false-positives from the common \"protected by reCAPTCHA\" notice shown on many login forms.
 const BOT_CHALLENGE_REGEX = /(verify you are human|checking your browser|unusual traffic|access denied|cloudflare|cf-challenge)/i;
 const LOGIN_REQUIRED_ON_TV_REGEX =
-  /(to proceed, please login|please login to your viki account|log in to your viki account|you are almost done setting up viki on your)/i;
+  /(to proceed, please login|please login to your viki account|log in to your viki account|you are almost done setting up viki on your|log in by continuing|don't have an account|forgot password|esqueceu a senha)/i;
 
 const getVisibleUiErrorsAnywhere = async (page) => {
   const contexts = getContexts(page);
@@ -1168,17 +1318,38 @@ const getLoginFormSummary = async (page) => {
 const waitForCodeOrLoginFailure = async (page, deadlineMs, brand) => {
   const start = Date.now();
   let didTvNavigate = false;
+  let retriedTvLoginPrompt = false;
 
   while (Date.now() < deadlineMs) {
-    if ((await isAnySelectorVisibleAnywhere(page, CODE_SELECTORS)) || (await hasTvCodeUiAnywhere(page))) {
+    if (
+      (await isAnySelectorVisibleAnywhere(page, CODE_SELECTORS)) ||
+      (await hasTvCodeUiAnywhere(page)) ||
+      (await hasAnyCodeInputAnywhere(page))
+    ) {
       return;
     }
 
     const text = await getCombinedText(page);
     const url = page.url().toLowerCase();
+    const onTvPage = url.includes('/samsungtv') || url.includes('/lgtv') || url.includes('/androidtv');
 
     // If we're on the TV page but still being asked to login, login didn't stick.
-    if ((url.includes('/samsungtv') || url.includes('/lgtv') || url.includes('/androidtv')) && LOGIN_REQUIRED_ON_TV_REGEX.test(text)) {
+    if (onTvPage && LOGIN_REQUIRED_ON_TV_REGEX.test(text)) {
+      // One controlled refresh often restores session state after cross-domain redirect.
+      if (!retriedTvLoginPrompt && msLeft(deadlineMs) > 9000) {
+        retriedTvLoginPrompt = true;
+        await sleep(600);
+        await page
+          .reload({
+            waitUntil: 'domcontentloaded',
+            timeout: clampTimeout(deadlineMs, NAV_TIMEOUT_MS, 5000)
+          })
+          .catch(() => null);
+        await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS, 3500) }).catch(() => {});
+        await acceptCookiesIfPresent(page, deadlineMs);
+        continue;
+      }
+
       const snippet = sanitizeForLogs(text).slice(0, 260);
       const cookieNames = await getCookieNames(page);
       throw new VikiAutomationError('Nao foi possivel manter o login no Viki a partir do servidor. Tente novamente.', {
@@ -1538,9 +1709,13 @@ const linkVikiTv = async ({ brand, vikiEmail, vikiPassword, tvCode }) => {
     await fillTvCodeSmart(page, tvCode, deadlineMs, ACTION_TIMEOUT_MS, stage);
 
     stage = 'submit_tv_code';
-    const clickedConnect =
-      (await clickButtonByTextAnywhere(page, ['connect', 'link now', 'link', 'conectar', 'vincular', 'activate', 'ativar'], deadlineMs, 5000)) ||
-      (await clickFirstSelectorAnywhere(page, ['button[type="submit"]', 'input[type="submit"]'], deadlineMs, 3000));
+    let clickedConnect = await clickTvConnectButtonSmart(page, deadlineMs);
+    if (!clickedConnect) {
+      // Last-resort submit via keyboard.
+      await page.keyboard.press('Enter').catch(() => {});
+      await sleep(350);
+      clickedConnect = true;
+    }
 
     if (!clickedConnect) {
       throw new VikiAutomationError('Botao de conectar/vincular nao encontrado.', { statusCode: 500, stage, detail: `url=${page.url()}` });

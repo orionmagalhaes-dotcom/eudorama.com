@@ -27,7 +27,7 @@ Sistema de gerenciamento de assinaturas de streaming para doramas com painel adm
 3. Variáveis recomendadas no serviço:
    - `NODE_ENV=production`
    - `VIKI_MAX_CONCURRENT=2`
-   - `VIKI_OVERALL_TIMEOUT_MS=140000`
+   - `VIKI_OVERALL_TIMEOUT_MS=220000`
    - `VIKI_NAV_TIMEOUT_MS=35000`
    - `VIKI_ACTION_TIMEOUT_MS=20000`
    - `VIKI_NETWORK_IDLE_TIMEOUT_MS=12000`
