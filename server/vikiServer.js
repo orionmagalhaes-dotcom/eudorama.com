@@ -582,11 +582,24 @@ const waitForEmailAndPasswordInputs = async (page, deadlineMs, timeoutMs = 5500)
   return false;
 };
 
-const ensureEmailLoginFormVisible = async (page, deadlineMs) => {
+const ensureEmailLoginFormVisible = async (page, deadlineMs, brand) => {
   // Some flows show provider selection first (Google/Apple/etc). Prefer Email.
   if (await waitForEmailAndPasswordInputs(page, deadlineMs, 1800)) return;
 
-  // Samsung TV landing often starts with a "Log in" CTA and no form fields yet.
+  // Always re-open the brand sign-in URL if we are on a TV landing page without form fields.
+  const pageText = await getCombinedText(page).catch(() => '');
+  const onWebSignIn = /\/web-sign-in/i.test(page.url());
+  const looksLikeTvLanding = LOGIN_REQUIRED_ON_TV_REGEX.test(pageText);
+  if (!onWebSignIn || looksLikeTvLanding) {
+    await page.goto(signInUrlForBrand(brand), {
+      waitUntil: 'domcontentloaded',
+      timeout: clampTimeout(deadlineMs, NAV_TIMEOUT_MS)
+    }).catch(() => {});
+    await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS) }).catch(() => {});
+    if (await waitForEmailAndPasswordInputs(page, deadlineMs, 2600)) return;
+  }
+
+  // Web-sign-in can still require an explicit login/email action depending on A/B variant.
   await clickButtonByTextAnywhere(page, ['log in', 'login', 'sign in', 'entrar'], deadlineMs, 5500).catch(() => {});
   if (await waitForEmailAndPasswordInputs(page, deadlineMs, 2600)) return;
 
@@ -606,6 +619,14 @@ const ensureEmailLoginFormVisible = async (page, deadlineMs) => {
     deadlineMs,
     2500
   ).catch(() => {});
+
+  // Hard retry on the canonical login URL for this TV brand.
+  if (await waitForEmailAndPasswordInputs(page, deadlineMs, 1800)) return;
+  await page.goto(signInUrlForBrand(brand), {
+    waitUntil: 'domcontentloaded',
+    timeout: clampTimeout(deadlineMs, NAV_TIMEOUT_MS)
+  }).catch(() => {});
+  await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS) }).catch(() => {});
 };
 
 const normalizeBrand = (value) => {
@@ -1090,8 +1111,16 @@ const linkVikiTv = async ({ brand, vikiEmail, vikiPassword, tvCode }) => {
   let page;
 
   const doLoginFromCurrentPage = async () => {
+    // Force the canonical web-sign-in route before filling credentials.
+    stage = 'open_signin';
+    await page.goto(signInUrlForBrand(brand), {
+      waitUntil: 'domcontentloaded',
+      timeout: clampTimeout(deadlineMs, NAV_TIMEOUT_MS)
+    }).catch(() => {});
+    await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS) }).catch(() => {});
+
     await acceptCookiesIfPresent(page, deadlineMs);
-    await ensureEmailLoginFormVisible(page, deadlineMs);
+    await ensureEmailLoginFormVisible(page, deadlineMs, brand);
 
     stage = 'fill_credentials';
     await fillFirstAnywhere(page, EMAIL_SELECTORS, vikiEmail, deadlineMs, ACTION_TIMEOUT_MS, 'Campo de email nao encontrado no login.', stage);
