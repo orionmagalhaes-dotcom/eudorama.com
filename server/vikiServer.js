@@ -1,4 +1,5 @@
 import express from 'express';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -1545,13 +1546,17 @@ app.post('/api/viki/pair', async (req, res) => {
 // so the frontend can call /api/viki/* without CORS issues.
 if (process.env.NODE_ENV === 'production') {
   const distDir = path.resolve(__dirname, '..', 'dist');
-  app.use(express.static(distDir));
+  if (fs.existsSync(distDir)) {
+    app.use(express.static(distDir));
 
-  // SPA fallback (do not swallow API routes).
-  app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api/')) return next();
-    return res.sendFile(path.join(distDir, 'index.html'));
-  });
+    // SPA fallback (do not swallow API routes).
+    app.get('*', (req, res, next) => {
+      if (req.path.startsWith('/api/')) return next();
+      return res.sendFile(path.join(distDir, 'index.html'));
+    });
+  } else {
+    console.warn(`[viki-server] dist directory not found at ${distDir}; serving API only.`);
+  }
 }
 
 const port = Number(process.env.PORT || process.env.VIKI_SERVER_PORT || 4010);

@@ -47,7 +47,6 @@ COPY scripts ./scripts
 RUN npm ci --omit=dev
 
 COPY server ./server
-COPY dist ./dist
 
 EXPOSE 4010
 

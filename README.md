@@ -23,6 +23,7 @@ Sistema de gerenciamento de assinaturas de streaming para doramas com painel adm
 
 1. No Railway, crie um novo projeto e conecte este repositório.
 2. Garanta que o deploy use o `Dockerfile` da raiz.
+   - Esse container sobe somente a API (`/api/viki/*`), sem depender de `dist/`.
 3. Variáveis recomendadas no serviço:
    - `NODE_ENV=production`
    - `VIKI_MAX_CONCURRENT=2`
