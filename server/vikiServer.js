@@ -1555,7 +1555,10 @@ if (process.env.NODE_ENV === 'production') {
       return res.sendFile(path.join(distDir, 'index.html'));
     });
   } else {
-    console.warn(`[viki-server] dist directory not found at ${distDir}; serving API only.`);
+    console.log(`[viki-server] dist directory not found at ${distDir}; serving API only.`);
+    app.get('/', (_req, res) => {
+      return res.status(200).json({ ok: true, mode: 'api-only', version: SERVER_VERSION });
+    });
   }
 }
 
