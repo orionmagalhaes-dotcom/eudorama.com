@@ -1394,6 +1394,85 @@ const linkVikiTv = async ({ brand, vikiEmail, vikiPassword, tvCode }) => {
     }
   };
 
+  // Fallback aligned with the legacy flow that worked on LAN (:3001):
+  // open viki.com -> open login -> continue with email -> login -> open TV page.
+  const doLoginFromHomeFlow = async () => {
+    stage = 'open_home';
+    await page.goto('https://www.viki.com', {
+      waitUntil: 'domcontentloaded',
+      timeout: clampTimeout(deadlineMs, NAV_TIMEOUT_MS)
+    }).catch(() => {});
+    await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS) }).catch(() => {});
+    await acceptCookiesIfPresent(page, deadlineMs);
+
+    stage = 'home_open_login';
+    const openedLogin =
+      (await clickFirstSelectorAnywhere(
+        page,
+        [
+          'a[href*="login" i]',
+          'a[href*="/login" i]',
+          'button[aria-label*="profile" i]',
+          'button[aria-label*="account" i]',
+          'button[aria-label*="perfil" i]'
+        ],
+        deadlineMs,
+        5500
+      )) ||
+      (await clickButtonByTextAnywhere(page, ['log in', 'login', 'sign in', 'entrar'], deadlineMs, 5500));
+
+    if (openedLogin) {
+      await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS) }).catch(() => {});
+    }
+
+    stage = 'home_pick_email';
+    await clickButtonByTextAnywhere(
+      page,
+      ['continue with email', 'continue via email', 'continuar com email', 'entrar com email', 'email', 'e-mail'],
+      deadlineMs,
+      5500
+    ).catch(() => {});
+
+    const hasForm = await waitForEmailAndPasswordInputs(page, deadlineMs, 3500);
+    if (!hasForm) {
+      stage = 'home_open_signin_direct';
+      await page.goto(signInUrlForBrand(brand), {
+        waitUntil: 'domcontentloaded',
+        timeout: clampTimeout(deadlineMs, NAV_TIMEOUT_MS)
+      }).catch(() => {});
+      await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS) }).catch(() => {});
+    }
+
+    stage = 'home_fill_credentials';
+    await fillFirstAnywhere(page, EMAIL_SELECTORS, vikiEmail, deadlineMs, ACTION_TIMEOUT_MS, 'Campo de email nao encontrado no login.', stage);
+    await fillFirstAnywhere(page, PASSWORD_SELECTORS, vikiPassword, deadlineMs, ACTION_TIMEOUT_MS, 'Campo de senha nao encontrado no login.', stage);
+
+    stage = 'home_submit_login';
+    await clickRequiredConsentCheckboxesAnywhere(page).catch(() => {});
+    const loginNavigation = page
+      .waitForNavigation({ waitUntil: 'domcontentloaded', timeout: clampTimeout(deadlineMs, NAV_TIMEOUT_MS) })
+      .catch(() => null);
+
+    const clickedContinue = (await submitLoginByFormAnywhere(page)) || (await clickVikiLoginContinueAnywhere(page, deadlineMs));
+    if (!clickedContinue) {
+      throw new VikiAutomationError('Botao de continuar/login nao encontrado.', { statusCode: 500, stage });
+    }
+
+    await clickFirstSelectorAnywhere(page, PASSWORD_SELECTORS, deadlineMs, 1200).catch(() => {});
+    await page.keyboard.press('Enter').catch(() => {});
+    await loginNavigation;
+    await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS) }).catch(() => {});
+    await sleep(1200);
+
+    stage = 'home_open_tv';
+    await page.goto(tvPageUrlForBrand(brand), {
+      waitUntil: 'domcontentloaded',
+      timeout: clampTimeout(deadlineMs, NAV_TIMEOUT_MS)
+    }).catch(() => {});
+    await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS) }).catch(() => {});
+    await acceptCookiesIfPresent(page, deadlineMs);
+  };
+
   try {
     const puppeteer = await getPuppeteer();
     browser = await puppeteer.launch({
@@ -1423,22 +1502,32 @@ const linkVikiTv = async ({ brand, vikiEmail, vikiPassword, tvCode }) => {
     try {
       await waitForCodeOrLoginFailure(page, deadlineMs, brand);
     } catch (e) {
-      // Fallback: some accounts only complete login when starting from the TV page (clicking its Log In button).
+      // Fallback #1: mimic the legacy LAN flow that starts from viki.com homepage login.
       if (e instanceof VikiAutomationError && e.stage === 'login') {
-        stage = 'open_tv';
-        await page.goto(tvPageUrlForBrand(brand), { waitUntil: 'domcontentloaded', timeout: clampTimeout(deadlineMs, NAV_TIMEOUT_MS) });
-        await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS) }).catch(() => {});
-        await acceptCookiesIfPresent(page, deadlineMs);
-
-        // If the code is already visible, proceed.
-        const hasCode = await isAnySelectorVisibleAnywhere(page, CODE_SELECTORS).catch(() => false);
-        if (!hasCode) {
-          stage = 'tv_click_login';
-          await clickButtonByTextAnywhere(page, ['log in', 'login', 'sign in', 'entrar'], deadlineMs, 6500).catch(() => {});
-          await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS) }).catch(() => {});
-          await doLoginFromCurrentPage();
+        try {
+          stage = 'fallback_home_login';
+          await doLoginFromHomeFlow();
           stage = 'wait_code';
           await waitForCodeOrLoginFailure(page, deadlineMs, brand);
+        } catch (homeFlowError) {
+          // Fallback #2: some accounts only complete login when starting from the TV page (clicking its Log In button).
+          stage = 'open_tv';
+          await page.goto(tvPageUrlForBrand(brand), { waitUntil: 'domcontentloaded', timeout: clampTimeout(deadlineMs, NAV_TIMEOUT_MS) });
+          await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS) }).catch(() => {});
+          await acceptCookiesIfPresent(page, deadlineMs);
+
+          // If the code is already visible, proceed.
+          const hasCode =
+            (await isAnySelectorVisibleAnywhere(page, CODE_SELECTORS).catch(() => false)) ||
+            (await hasTvCodeUiAnywhere(page).catch(() => false));
+          if (!hasCode) {
+            stage = 'tv_click_login';
+            await clickButtonByTextAnywhere(page, ['log in', 'login', 'sign in', 'entrar'], deadlineMs, 6500).catch(() => {});
+            await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS) }).catch(() => {});
+            await doLoginFromCurrentPage();
+            stage = 'wait_code';
+            await waitForCodeOrLoginFailure(page, deadlineMs, brand);
+          }
         }
       } else {
         throw e;
