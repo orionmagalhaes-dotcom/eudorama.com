@@ -58,12 +58,23 @@ const PASSWORD_SELECTORS = [
 const CODE_SELECTORS = [
   'input[name="code"]',
   'input[name*="code" i]',
+  'input[name*="codigo" i]',
+  'input[name*="código" i]',
   'input#code',
   'input[id*="code" i]',
+  'input[id*="codigo" i]',
+  'input[id*="código" i]',
   'input[aria-label*="code" i]',
+  'input[aria-label*="codigo" i]',
+  'input[aria-label*="código" i]',
   'input[placeholder*="code" i]',
+  'input[placeholder*="codigo" i]',
+  'input[placeholder*="código" i]',
+  'input[placeholder*="digitar" i]',
   'input[autocomplete="one-time-code"]',
-  'input[maxlength="6"]'
+  'input[maxlength="6"]',
+  'input[type="tel"][maxlength="6"]',
+  'input[type="text"][maxlength="6"]'
 ];
 
 let puppeteerPromise;
@@ -572,6 +583,206 @@ const fillFirstAnywhere = async (page, selectors, value, deadlineMs, timeoutMs, 
   });
 };
 
+const hasTvCodeUiAnywhere = async (page) => {
+  const contexts = getContexts(page);
+
+  for (const ctx of contexts) {
+    try {
+      const found = await ctx.evaluate(() => {
+        const normalize = (value) =>
+          String(value || '')
+            .toLowerCase()
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        const isVisible = (el) => {
+          if (!el) return false;
+          const rect = el.getBoundingClientRect?.();
+          if (!rect || rect.width < 2 || rect.height < 2) return false;
+          const style = window.getComputedStyle?.(el);
+          if (!style) return false;
+          if (style.display === 'none' || style.visibility === 'hidden') return false;
+          const opacity = Number(style.opacity || '1');
+          if (Number.isFinite(opacity) && opacity <= 0.05) return false;
+          return true;
+        };
+
+        const connectButton = Array.from(document.querySelectorAll('button, a, [role="button"], input[type="submit"], input[type="button"]'))
+          .filter(isVisible)
+          .some((el) => {
+            const tag = el.tagName.toLowerCase();
+            const raw = tag === 'input' ? el.getAttribute('value') || el.getAttribute('aria-label') || '' : el.textContent || el.getAttribute('aria-label') || '';
+            const text = normalize(raw);
+            return /(connect|conectar|link|vincular|activate|ativar)/i.test(text);
+          });
+
+        const codeInput = Array.from(document.querySelectorAll('input, textarea, [role="textbox"], [contenteditable="true"]'))
+          .filter(isVisible)
+          .some((el) => {
+            const attrs = normalize(
+              [
+                el.getAttribute?.('name'),
+                el.getAttribute?.('id'),
+                el.getAttribute?.('placeholder'),
+                el.getAttribute?.('aria-label'),
+                el.getAttribute?.('type')
+              ]
+                .filter(Boolean)
+                .join(' ')
+            );
+            const maxLen = Number(el.getAttribute?.('maxlength') || '0');
+            return /(code|codigo|código|digitar|activation)/i.test(attrs) || maxLen === 6;
+          });
+
+        return connectButton && codeInput;
+      });
+
+      if (found) return true;
+    } catch {
+      // ignore
+    }
+  }
+
+  return false;
+};
+
+const fillTvCodeSmart = async (page, tvCode, deadlineMs, timeoutMs, stage) => {
+  const deadline = Math.min(deadlineMs, Date.now() + timeoutMs);
+
+  // First pass: keep strict selectors.
+  const direct = await fillFirstAnywhere(
+    page,
+    CODE_SELECTORS,
+    tvCode,
+    deadlineMs,
+    Math.min(timeoutMs, 6000),
+    'Campo do codigo da TV nao foi encontrado.',
+    stage
+  ).then(() => true).catch(() => false);
+
+  if (direct) return;
+
+  while (Date.now() < deadline) {
+    const contexts = getContexts(page);
+
+    for (const ctx of contexts) {
+      try {
+        const ok = await ctx.evaluate((value) => {
+          const normalize = (v) =>
+            String(v || '')
+              .toLowerCase()
+              .replace(/\s+/g, ' ')
+              .trim();
+
+          const isVisible = (el) => {
+            if (!el) return false;
+            const rect = el.getBoundingClientRect?.();
+            if (!rect || rect.width < 2 || rect.height < 2) return false;
+            const style = window.getComputedStyle?.(el);
+            if (!style) return false;
+            if (style.display === 'none' || style.visibility === 'hidden') return false;
+            const opacity = Number(style.opacity || '1');
+            if (Number.isFinite(opacity) && opacity <= 0.05) return false;
+            return true;
+          };
+
+          const scoreInput = (el) => {
+            const attrs = normalize(
+              [
+                el.getAttribute?.('name'),
+                el.getAttribute?.('id'),
+                el.getAttribute?.('placeholder'),
+                el.getAttribute?.('aria-label'),
+                el.getAttribute?.('type'),
+                el.getAttribute?.('inputmode')
+              ]
+                .filter(Boolean)
+                .join(' ')
+            );
+            const maxLen = Number(el.getAttribute?.('maxlength') || '0');
+            let score = 0;
+            if (/(code|codigo|código|digitar|activation)/i.test(attrs)) score += 9;
+            if (maxLen === 6) score += 8;
+            if (/(tel|numeric)/i.test(attrs)) score += 3;
+
+            const container = el.closest('section, form, main, div');
+            if (container) {
+              const btns = Array.from(container.querySelectorAll('button, a, [role="button"], input[type="submit"], input[type="button"]')).filter(isVisible);
+              const hasConnect = btns.some((b) => {
+                const tag = b.tagName.toLowerCase();
+                const raw = tag === 'input' ? b.getAttribute('value') || b.getAttribute('aria-label') || '' : b.textContent || b.getAttribute('aria-label') || '';
+                return /(connect|conectar|link|vincular|activate|ativar)/i.test(normalize(raw));
+              });
+              if (hasConnect) score += 6;
+            }
+            return score;
+          };
+
+          const candidates = Array.from(document.querySelectorAll('input, textarea, [role="textbox"], [contenteditable="true"]')).filter(isVisible);
+          if (!candidates.length) return false;
+
+          let best = null;
+          let bestScore = -1;
+          for (const el of candidates) {
+            const s = scoreInput(el);
+            if (s > bestScore) {
+              bestScore = s;
+              best = el;
+            }
+          }
+
+          if (!best || bestScore < 6) return false;
+
+          best.scrollIntoView?.({ block: 'center', inline: 'center' });
+          best.click?.();
+
+          const tag = String(best.tagName || '').toLowerCase();
+          const isEditableDiv = best.getAttribute?.('contenteditable') === 'true';
+
+          if (tag === 'input' || tag === 'textarea') {
+            const setter =
+              tag === 'textarea'
+                ? Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
+                : Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+            if (setter) setter.call(best, String(value));
+            else best.value = String(value);
+            best.dispatchEvent(new Event('input', { bubbles: true }));
+            best.dispatchEvent(new Event('change', { bubbles: true }));
+            best.dispatchEvent(new Event('blur', { bubbles: true }));
+            return String(best.value || '') === String(value);
+          }
+
+          if (isEditableDiv) {
+            best.textContent = String(value);
+            best.dispatchEvent(new Event('input', { bubbles: true }));
+            best.dispatchEvent(new Event('change', { bubbles: true }));
+            return normalize(best.textContent) === normalize(value);
+          }
+
+          return false;
+        }, tvCode);
+
+        if (ok) return;
+      } catch {
+        // ignore
+      }
+    }
+
+    await sleep(220);
+  }
+
+  const url = page.url();
+  const text = await getCombinedText(page).catch(() => '');
+  const snippet = sanitizeForLogs(text).slice(0, 260);
+  const inputs = await getVisibleInputsSnapshot(page).catch(() => []);
+  const inputsJson = inputs.length ? JSON.stringify(inputs).slice(0, 900) : '[]';
+  throw new VikiAutomationError('Campo do codigo da TV nao foi encontrado.', {
+    statusCode: 500,
+    stage,
+    detail: `url=${url} snippet=${snippet} inputs=${inputsJson}`
+  });
+};
+
 const acceptCookiesIfPresent = async (page, deadlineMs) => {
   await clickButtonByTextAnywhere(page, ['accept all', 'accept', 'agree', 'aceitar tudo', 'aceitar'], deadlineMs, 2500).catch(() => {});
 };
@@ -958,7 +1169,7 @@ const waitForCodeOrLoginFailure = async (page, deadlineMs, brand) => {
   let didTvNavigate = false;
 
   while (Date.now() < deadlineMs) {
-    if (await isAnySelectorVisibleAnywhere(page, CODE_SELECTORS)) {
+    if ((await isAnySelectorVisibleAnywhere(page, CODE_SELECTORS)) || (await hasTvCodeUiAnywhere(page))) {
       return;
     }
 
@@ -1234,7 +1445,7 @@ const linkVikiTv = async ({ brand, vikiEmail, vikiPassword, tvCode }) => {
     }
 
     stage = 'fill_tv_code';
-    await fillFirstAnywhere(page, CODE_SELECTORS, tvCode, deadlineMs, ACTION_TIMEOUT_MS, 'Campo do codigo da TV nao foi encontrado.', stage);
+    await fillTvCodeSmart(page, tvCode, deadlineMs, ACTION_TIMEOUT_MS, stage);
 
     stage = 'submit_tv_code';
     const clickedConnect =
