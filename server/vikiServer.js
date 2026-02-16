@@ -228,8 +228,8 @@ const getPrimaryContinueStateAnywhere = async (page) => {
               : el.textContent || el.getAttribute('aria-label') || '';
           const label = normalize(rawText);
 
-          // Primary continue only.
-          if (label !== 'continue') continue;
+          // Primary continue only (EN/PT).
+          if (label !== 'continue' && label !== 'continuar') continue;
 
           const disabled =
             (tag === 'button' && el.disabled) ||
@@ -404,7 +404,7 @@ const clickButtonByExactTextAnywhere = async (page, exactTexts, deadlineMs, time
 
 const clickVikiLoginContinueAnywhere = async (page, deadlineMs) => {
   // Prefer the primary Continue button (not "Continue with ...").
-  const exactFirst = await clickButtonByExactTextAnywhere(page, ['continue', 'log in', 'login', 'sign in', 'entrar'], deadlineMs, 4500);
+  const exactFirst = await clickButtonByExactTextAnywhere(page, ['continue', 'continuar', 'log in', 'login', 'sign in', 'entrar'], deadlineMs, 4500);
   if (exactFirst) return true;
 
   // Next best: submit button.
@@ -435,7 +435,7 @@ const clickVikiLoginContinueAnywhere = async (page, deadlineMs) => {
             return true;
           };
 
-          const bad = /(continue with|facebook|apple|google|rakuten)/i;
+          const bad = /(continue with|continuar com|facebook|apple|google|rakuten)/i;
           const candidates = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]')).filter(isVisible);
 
           for (const candidate of candidates) {
@@ -448,7 +448,14 @@ const clickVikiLoginContinueAnywhere = async (page, deadlineMs) => {
             if (!label) continue;
             if (bad.test(label)) continue;
 
-            if (label.includes('continue') || label.includes('login') || label.includes('log in') || label.includes('sign in') || label.includes('entrar')) {
+            if (
+              label.includes('continue') ||
+              label.includes('continuar') ||
+              label.includes('login') ||
+              label.includes('log in') ||
+              label.includes('sign in') ||
+              label.includes('entrar')
+            ) {
               candidate.click();
               return true;
             }
@@ -823,7 +830,7 @@ const submitLoginByFormAnywhere = async (page) => {
           // Prefer primary login actions, avoid social providers.
           let score = 0;
           if (type === 'submit') score += 8;
-          if (/continue|log in|login|sign in|entrar/.test(text)) score += 6;
+          if (/continue|continuar|log in|login|sign in|entrar/.test(text)) score += 6;
           if (/email/.test(text)) score += 2;
           if (/google|facebook|apple|kakao|line/.test(text)) score -= 10;
           if (/create account|sign up|register/.test(text)) score -= 6;
@@ -904,7 +911,7 @@ const getLoginFormSummary = async (page) => {
           const rawText =
             tag === 'input' ? el.getAttribute('value') || el.getAttribute('aria-label') || '' : el.textContent || el.getAttribute('aria-label') || '';
           const t = String(rawText || '').toLowerCase();
-          return /continue|log in|login|sign in|entrar/.test(t);
+          return /continue|continuar|log in|login|sign in|entrar/.test(t);
         });
         const loginButtonsDisabled = loginButtons.filter((el) => el.disabled || el.getAttribute('aria-disabled') === 'true').length;
 
@@ -1161,6 +1168,18 @@ const linkVikiTv = async ({ brand, vikiEmail, vikiPassword, tvCode }) => {
     await loginNavigation;
     await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS) }).catch(() => {});
     await sleep(1500);
+
+    // Some Render/headless runs keep the sign-in URL after submit; force opening TV page once.
+    const afterSubmitUrl = String(page.url() || '').toLowerCase();
+    if (/\/web-sign-in|\/login/.test(afterSubmitUrl)) {
+      stage = 'open_tv_after_submit';
+      await page.goto(tvPageUrlForBrand(brand), {
+        waitUntil: 'domcontentloaded',
+        timeout: clampTimeout(deadlineMs, NAV_TIMEOUT_MS)
+      }).catch(() => {});
+      await page.waitForNetworkIdle({ idleTime: 650, timeout: clampTimeout(deadlineMs, NETWORK_IDLE_TIMEOUT_MS) }).catch(() => {});
+      await acceptCookiesIfPresent(page, deadlineMs);
+    }
   };
 
   try {
