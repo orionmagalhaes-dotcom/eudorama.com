@@ -569,17 +569,42 @@ const acceptCookiesIfPresent = async (page, deadlineMs) => {
   await clickButtonByTextAnywhere(page, ['accept all', 'accept', 'agree', 'aceitar tudo', 'aceitar'], deadlineMs, 2500).catch(() => {});
 };
 
+const waitForEmailAndPasswordInputs = async (page, deadlineMs, timeoutMs = 5500) => {
+  const deadline = Math.min(deadlineMs, Date.now() + timeoutMs);
+
+  while (Date.now() < deadline) {
+    const hasEmail = await isAnySelectorVisibleAnywhere(page, EMAIL_SELECTORS).catch(() => false);
+    const hasPass = await isAnySelectorVisibleAnywhere(page, PASSWORD_SELECTORS).catch(() => false);
+    if (hasEmail && hasPass) return true;
+    await sleep(220);
+  }
+
+  return false;
+};
+
 const ensureEmailLoginFormVisible = async (page, deadlineMs) => {
   // Some flows show provider selection first (Google/Apple/etc). Prefer Email.
-  const hasEmail = await isAnySelectorVisibleAnywhere(page, EMAIL_SELECTORS).catch(() => false);
-  const hasPass = await isAnySelectorVisibleAnywhere(page, PASSWORD_SELECTORS).catch(() => false);
-  if (hasEmail && hasPass) return;
+  if (await waitForEmailAndPasswordInputs(page, deadlineMs, 1800)) return;
+
+  // Samsung TV landing often starts with a "Log in" CTA and no form fields yet.
+  await clickButtonByTextAnywhere(page, ['log in', 'login', 'sign in', 'entrar'], deadlineMs, 5500).catch(() => {});
+  if (await waitForEmailAndPasswordInputs(page, deadlineMs, 2600)) return;
 
   await clickButtonByTextAnywhere(
     page,
     ['continue with email', 'continue via email', 'email', 'continuar com email', 'entrar com email', 'e-mail'],
     deadlineMs,
     4500
+  ).catch(() => {});
+
+  // Retry login CTA once more because some pages render "Continue with email" only after opening login modal.
+  if (await waitForEmailAndPasswordInputs(page, deadlineMs, 2000)) return;
+  await clickButtonByTextAnywhere(page, ['log in', 'login', 'sign in', 'entrar'], deadlineMs, 2500).catch(() => {});
+  await clickButtonByTextAnywhere(
+    page,
+    ['continue with email', 'continue via email', 'email', 'continuar com email', 'entrar com email', 'e-mail'],
+    deadlineMs,
+    2500
   ).catch(() => {});
 };
 
