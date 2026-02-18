@@ -2,7 +2,7 @@
 
 /* Custom styles from HTML */
 body {
-  font-family: 'Inter', sans-serif;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
 }
 
 /* Custom scrollbar for chat */

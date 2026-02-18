@@ -401,25 +401,11 @@ const Login: React.FC<LoginProps> = ({ onLogin, onAdminClick, onAdminLoginSucces
             </form>
         )}
 
-        {/* SECURITY FOOTER - GOOGLE PARTNERSHIP */}
+        {/* SECURITY FOOTER */}
         <div className="mt-8 pt-6 border-t border-gray-100 flex flex-col items-center gap-3">
             <div className="flex items-center gap-2 text-xs text-green-700 font-bold bg-green-50 px-3 py-1 rounded-full border border-green-100">
                 <ShieldCheck className="w-4 h-4" />
                 <span>Site Seguro & Verificado</span>
-            </div>
-            
-            <div className="flex items-center gap-3 opacity-80 hover:opacity-100 transition-opacity">
-                 {/* Google G Logo SVG */}
-                 <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M23.5 12.2857C23.5 11.4429 23.425 10.725 23.2857 10H12V14.5143H18.5214C18.2536 15.9857 17.3643 17.25 16.0393 18.1321V21.1036H19.9214C22.2036 19.0107 23.5 15.925 23.5 12.2857Z" fill="#4285F4"/>
-                    <path d="M12 24C15.2357 24 17.95 22.925 19.925 21.1036L16.0429 18.1321C14.9607 18.8679 13.5929 19.2857 12 19.2857C8.85714 19.2857 6.19643 17.1643 5.23929 14.2821H1.22143V17.3964C3.20357 21.3321 7.27143 24 12 24Z" fill="#34A853"/>
-                    <path d="M5.23929 14.2821C4.99286 13.5429 4.85714 12.7786 4.85714 12C4.85714 11.2214 4.99286 10.4571 5.23929 9.71786V6.60358H1.22143C0.442857 8.16786 0 9.975 0 12C0 14.025 0.442857 15.8321 1.22143 17.3964L5.23929 14.2821Z" fill="#FBBC05"/>
-                    <path d="M12 4.71429C13.7643 4.71429 15.3393 5.31786 16.5857 6.50714L19.9929 3.1C17.9464 1.19286 15.2321 0 12 0C7.27143 0 3.20357 2.66786 1.22143 6.60358L5.23929 9.71786C6.19643 6.83571 8.85714 4.71429 12 4.71429Z" fill="#EA4335"/>
-                 </svg>
-                 <div className="flex flex-col">
-                    <span className="text-[10px] font-bold text-gray-500 leading-none">Parceria com Google</span>
-                    <span className="text-[9px] font-medium text-gray-400 leading-none mt-0.5">Referência no Mercado Digital</span>
-                 </div>
             </div>
         </div>
 
