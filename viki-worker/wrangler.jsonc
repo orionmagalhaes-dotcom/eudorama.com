@@ -1,0 +1,32 @@
+{
+  "name": "viki-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-02-18",
+  "compatibility_flags": [
+    "nodejs_compat_v2"
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "viki-automation-db",
+      "database_id": "99f6d4c9-f5ab-4165-b55c-06886d367b04"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "VIKI_QUEUE",
+        "queue": "viki-tasks"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "viki-tasks"
+      }
+    ]
+  },
+  "browser": {
+    "binding": "BROWSER",
+    "remote": true
+  }
+}

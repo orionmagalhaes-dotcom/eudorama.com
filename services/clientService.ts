@@ -416,6 +416,217 @@ export const saveCredentialAcks = async (phoneNumber: string, newAcks: Record<st
   await supabase.from('clients').update({ game_progress: updated }).eq('phone_number', phoneNumber);
 };
 
+export interface VikiTvAutomationRequest {
+  phoneNumber: string;
+  clientName: string;
+  serviceName: string;
+  tvModel: 'samsung' | 'lg' | 'android';
+  tvUrl: string;
+  tvCode: string;
+  credentialEmail: string;
+  credentialPassword: string;
+}
+
+export type VikiTvAutomationExecutionStatus = 'queued' | 'running' | 'success' | 'failed' | 'unknown';
+export type VikiTvAutomationStepStatus = 'pending' | 'running' | 'success' | 'failed';
+
+export interface VikiTvAutomationStep {
+  key: string;
+  label: string;
+  status: VikiTvAutomationStepStatus;
+  details?: string;
+  updatedAt?: string;
+}
+
+export interface VikiTvAutomationResponse {
+  success: boolean;
+  requestId: string;
+  provider: 'webhook' | 'history_fallback';
+  message: string;
+  executionStatus: VikiTvAutomationExecutionStatus;
+  steps: VikiTvAutomationStep[];
+}
+
+const buildVikiRequestId = () => `viki-tv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const normalizeStepStatus = (value: any): VikiTvAutomationStepStatus => {
+  const raw = String(value || '').toLowerCase();
+  if (raw === 'success' || raw === 'ok' || raw === 'completed' || raw === 'done') return 'success';
+  if (raw === 'failed' || raw === 'error') return 'failed';
+  if (raw === 'running' || raw === 'in_progress' || raw === 'processing') return 'running';
+  return 'pending';
+};
+
+const normalizeExecutionStatus = (value: any): VikiTvAutomationExecutionStatus => {
+  const raw = String(value || '').toLowerCase();
+  if (raw === 'success' || raw === 'completed' || raw === 'done') return 'success';
+  if (raw === 'failed' || raw === 'error') return 'failed';
+  if (raw === 'running' || raw === 'in_progress' || raw === 'processing') return 'running';
+  if (raw === 'queued' || raw === 'pending') return 'queued';
+  return 'unknown';
+};
+
+const buildDefaultQueuedSteps = (submittedAt: string): VikiTvAutomationStep[] => ([
+  { key: 'request', label: 'Solicitacao recebida', status: 'success', updatedAt: submittedAt },
+  { key: 'dispatch', label: 'Automacao em background iniciada', status: 'running', updatedAt: submittedAt },
+  { key: 'login', label: 'Login na Viki', status: 'pending' },
+  { key: 'code', label: 'Insercao do codigo da TV', status: 'pending' },
+  { key: 'logout', label: 'Logout e finalizacao', status: 'pending' }
+]);
+
+const parseWebhookResponseBody = (body: any, fallbackRequestId: string): {
+  requestId: string;
+  message: string;
+  executionStatus: VikiTvAutomationExecutionStatus;
+  steps: VikiTvAutomationStep[];
+} => {
+  const requestId = typeof body?.requestId === 'string' && body.requestId.trim() ? body.requestId : fallbackRequestId;
+  const executionStatus = normalizeExecutionStatus(body?.status || body?.executionStatus);
+  const message = typeof body?.message === 'string' && body.message.trim()
+    ? body.message
+    : 'Solicitacao enviada. A automacao esta em andamento.';
+
+  const stepsRaw = Array.isArray(body?.steps) ? body.steps : [];
+  const steps: VikiTvAutomationStep[] = stepsRaw
+    .filter((step: any) => step)
+    .map((step: any, index: number) => ({
+      key: typeof step.key === 'string' && step.key.trim() ? step.key : `step_${index + 1}`,
+      label: typeof step.label === 'string' && step.label.trim() ? step.label : `Etapa ${index + 1}`,
+      status: normalizeStepStatus(step.status),
+      details: typeof step.details === 'string' ? step.details : undefined,
+      updatedAt: typeof step.updatedAt === 'string' ? step.updatedAt : undefined
+    }));
+
+  return {
+    requestId,
+    message,
+    executionStatus,
+    steps: steps.length > 0 ? steps : buildDefaultQueuedSteps(new Date().toISOString())
+  };
+};
+
+export const submitVikiTvAutomationRequest = async (payload: VikiTvAutomationRequest): Promise<VikiTvAutomationResponse> => {
+  const requestId = buildVikiRequestId();
+  const submittedAt = new Date().toISOString();
+
+  const webhookUrl = ((import.meta as any).env?.VITE_VIKI_TV_AUTOMATION_WEBHOOK as string | undefined)
+    || ((import.meta as any).env?.DEV ? '/api/viki-tv-automation' : undefined);
+  const webhookToken = (import.meta as any).env?.VITE_VIKI_TV_AUTOMATION_TOKEN as string | undefined;
+
+  if (webhookUrl && webhookUrl.trim()) {
+    try {
+      const response = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(webhookToken ? { Authorization: `Bearer ${webhookToken}` } : {})
+        },
+        body: JSON.stringify({
+          requestId,
+          submittedAt,
+          source: 'eudorama-client-dashboard',
+          payload
+        })
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(`Webhook ${response.status}: ${errorBody.slice(0, 200)}`);
+      }
+
+      let parsedBody: any = null;
+      try {
+        parsedBody = await response.json();
+      } catch {
+        parsedBody = null;
+      }
+
+      const parsed = parseWebhookResponseBody(parsedBody, requestId);
+      const success = parsed.executionStatus !== 'failed';
+
+      return {
+        success,
+        requestId: parsed.requestId,
+        provider: 'webhook',
+        message: parsed.message,
+        executionStatus: parsed.executionStatus === 'unknown' ? 'queued' : parsed.executionStatus,
+        steps: parsed.steps
+      };
+    } catch (e: any) {
+      console.error('Falha ao enviar webhook de automacao Viki TV:', e?.message || e);
+    }
+  }
+
+  // Fallback: registra a solicitacao para processamento manual/externo sem quebrar o fluxo do cliente
+  await supabase.from('history_logs').insert({
+    action: 'Solicitacao Conexao TV Viki',
+    details: JSON.stringify({
+      requestId,
+      submittedAt,
+      mode: 'history_fallback',
+      payload: {
+        ...payload,
+        credentialPassword: '***'
+      }
+    })
+  });
+
+  return {
+    success: false,
+    requestId,
+    provider: 'history_fallback',
+    message: 'Automacao nao configurada. A solicitacao foi registrada, mas nao foi executada automaticamente.',
+    executionStatus: 'failed',
+    steps: [
+      { key: 'request', label: 'Solicitacao recebida', status: 'success', updatedAt: submittedAt },
+      { key: 'dispatch', label: 'Tentativa de iniciar automacao', status: 'failed', updatedAt: submittedAt, details: 'Webhook de automacao nao configurado' }
+    ]
+  };
+};
+
+export const getVikiTvAutomationStatus = async (requestId: string): Promise<VikiTvAutomationResponse | null> => {
+  const statusWebhook = ((import.meta as any).env?.VITE_VIKI_TV_AUTOMATION_STATUS_WEBHOOK as string | undefined)
+    || ((import.meta as any).env?.DEV ? '/api/viki-tv-automation/status' : undefined);
+  const webhookToken = (import.meta as any).env?.VITE_VIKI_TV_AUTOMATION_TOKEN as string | undefined;
+  if (!statusWebhook || !statusWebhook.trim()) return null;
+
+  try {
+    const baseOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost';
+    const url = new URL(statusWebhook, baseOrigin);
+    url.searchParams.set('requestId', requestId);
+
+    const response = await fetch(url.toString(), {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(webhookToken ? { Authorization: `Bearer ${webhookToken}` } : {})
+      }
+    });
+
+    if (!response.ok) return null;
+
+    let body: any = null;
+    try {
+      body = await response.json();
+    } catch {
+      return null;
+    }
+
+    const parsed = parseWebhookResponseBody(body, requestId);
+    return {
+      success: parsed.executionStatus === 'success',
+      requestId: parsed.requestId,
+      provider: 'webhook',
+      message: parsed.message,
+      executionStatus: parsed.executionStatus,
+      steps: parsed.steps
+    };
+  } catch (e) {
+    console.error('Falha ao consultar status da automacao Viki TV:', e);
+    return null;
+  }
+};
+
 export const addDoramaToDB = async (phoneNumber: string, listType: 'watching' | 'favorites' | 'completed', dorama: Dorama): Promise<Dorama | null> => {
   try {
     let status = 'Watching';
