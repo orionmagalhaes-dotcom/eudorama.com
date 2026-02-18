@@ -1,30 +1,13 @@
-import React, { useState, useEffect } from 'react';
-import { AlertTriangle, X, TrendingUp, Calendar } from 'lucide-react';
-
-const STORAGE_KEY = 'eudorama_price_notice_2026_seen';
+import React from 'react';
+import { X, TrendingUp, Calendar } from 'lucide-react';
 
 interface PriceAdjustmentBannerProps {
-    onClose?: () => void;
+    isOpen: boolean;
+    onClose: () => void;
 }
 
-const PriceAdjustmentBanner: React.FC<PriceAdjustmentBannerProps> = ({ onClose }) => {
-    const [isVisible, setIsVisible] = useState(false);
-
-    useEffect(() => {
-        // Verifica se o usuário já viu o aviso nesta sessão
-        const hasSeen = localStorage.getItem(STORAGE_KEY);
-        if (!hasSeen) {
-            setIsVisible(true);
-        }
-    }, []);
-
-    const handleClose = () => {
-        localStorage.setItem(STORAGE_KEY, 'true');
-        setIsVisible(false);
-        onClose?.();
-    };
-
-    if (!isVisible) return null;
+const PriceAdjustmentBanner: React.FC<PriceAdjustmentBannerProps> = ({ isOpen, onClose }) => {
+    if (!isOpen) return null;
 
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fade-in">
@@ -43,7 +26,7 @@ const PriceAdjustmentBanner: React.FC<PriceAdjustmentBannerProps> = ({ onClose }
                         </div>
                     </div>
                     <button
-                        onClick={handleClose}
+                        onClick={onClose}
                         className="p-1.5 hover:bg-gray-100 rounded-full transition-colors"
                     >
                         <X size={20} className="text-gray-400" />
@@ -83,7 +66,7 @@ const PriceAdjustmentBanner: React.FC<PriceAdjustmentBannerProps> = ({ onClose }
 
                 {/* Botão */}
                 <button
-                    onClick={handleClose}
+                    onClick={onClose}
                     className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-500 text-white font-black text-sm uppercase tracking-wide shadow-lg shadow-amber-200 active:scale-95 transition-all"
                 >
                     Entendido

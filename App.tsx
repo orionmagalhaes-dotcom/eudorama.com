@@ -6,6 +6,7 @@ import CheckoutModal from './components/CheckoutModal';
 import NameModal from './components/NameModal';
 import Toast from './components/Toast';
 import PriceAdjustmentBanner from './components/PriceAdjustmentBanner';
+import NewAppBanner from './components/NewAppBanner';
 import { User, Dorama } from './types';
 import {
   addDoramaToDB,
@@ -21,6 +22,12 @@ import { Heart, X, CheckCircle2, MessageCircle, Gift, Sparkles, Home, Tv2, Palet
 
 const AdminLogin = lazy(() => import('./components/AdminLogin'));
 const AdminPanel = lazy(() => import('./components/AdminPanel').then(mod => ({ default: mod.AdminPanel })));
+
+type UserNotice = 'price' | 'new_app';
+const PRICE_NOTICE_KEY = 'eudorama_notice_price_2026_seen';
+const NEW_APP_NOTICE_KEY = 'eudorama_notice_new_app_seen';
+
+const getUserNoticeKey = (base: string, phoneNumber: string) => `${base}:${phoneNumber}`;
 
 const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -50,6 +57,7 @@ const App: React.FC = () => {
   const [isDeleting, setIsDeleting] = useState(false);
 
   const [showNameModal, setShowNameModal] = useState(false);
+  const [activeNotice, setActiveNotice] = useState<UserNotice | null>(null);
   const lastRefreshRef = useRef<number>(0);
 
   const handleRefreshSession = useCallback(async (silent: boolean = false) => {
@@ -150,6 +158,29 @@ const App: React.FC = () => {
     if (currentUser && (currentUser.name === 'Dorameira' || !currentUser.name)) setShowNameModal(true);
   }, [currentUser?.name]);
 
+  const getPendingNotice = useCallback((phoneNumber: string): UserNotice | null => {
+    const hasSeenPrice = sessionStorage.getItem(getUserNoticeKey(PRICE_NOTICE_KEY, phoneNumber)) === 'true';
+    const hasSeenNewApp = sessionStorage.getItem(getUserNoticeKey(NEW_APP_NOTICE_KEY, phoneNumber)) === 'true';
+    if (!hasSeenPrice) return 'price';
+    if (!hasSeenNewApp) return 'new_app';
+    return null;
+  }, []);
+
+  const markNoticeAsSeen = useCallback((notice: UserNotice, phoneNumber: string) => {
+    const key = notice === 'price'
+      ? getUserNoticeKey(PRICE_NOTICE_KEY, phoneNumber)
+      : getUserNoticeKey(NEW_APP_NOTICE_KEY, phoneNumber);
+    sessionStorage.setItem(key, 'true');
+  }, []);
+
+  useEffect(() => {
+    if (!currentUser || isAdminMode) {
+      setActiveNotice(null);
+      return;
+    }
+    setActiveNotice(getPendingNotice(currentUser.phoneNumber));
+  }, [currentUser?.phoneNumber, isAdminMode, getPendingNotice]);
+
   const handleLogin = (user: User, remember: boolean = false) => {
     setCurrentUser(user);
     const userData = JSON.stringify(user);
@@ -170,10 +201,28 @@ const App: React.FC = () => {
   };
 
   const handleLogout = () => {
+    if (currentUser?.phoneNumber) {
+      sessionStorage.removeItem(getUserNoticeKey(PRICE_NOTICE_KEY, currentUser.phoneNumber));
+      sessionStorage.removeItem(getUserNoticeKey(NEW_APP_NOTICE_KEY, currentUser.phoneNumber));
+    }
+
     setCurrentUser(null);
+    setActiveNotice(null);
     setActiveTab('home');
     localStorage.removeItem('eudorama_session');
     sessionStorage.removeItem('eudorama_session');
+  };
+
+  const handleClosePriceNotice = () => {
+    if (!currentUser) return;
+    markNoticeAsSeen('price', currentUser.phoneNumber);
+    setActiveNotice(getPendingNotice(currentUser.phoneNumber));
+  };
+
+  const handleCloseNewAppNotice = () => {
+    if (!currentUser) return;
+    markNoticeAsSeen('new_app', currentUser.phoneNumber);
+    setActiveNotice(getPendingNotice(currentUser.phoneNumber));
   };
 
   const handleNameSaved = (newName: string) => {
@@ -538,7 +587,14 @@ const App: React.FC = () => {
         </nav>
       </div>
 
-      <PriceAdjustmentBanner />
+      <PriceAdjustmentBanner
+        isOpen={activeNotice === 'price'}
+        onClose={handleClosePriceNotice}
+      />
+      <NewAppBanner
+        isOpen={activeNotice === 'new_app'}
+        onClose={handleCloseNewAppNotice}
+      />
     </div>
   );
 };
