@@ -1,0 +1,43 @@
+{
+  "report": "funcionamento do ciclo",
+  "startedAt": "2026-02-18T20:23:39.028Z",
+  "finishedAt": "2026-02-18T20:24:11.105Z",
+  "credentials": {
+    "email": "clientesviki1@gmail.com",
+    "passwordMasked": "*********"
+  },
+  "testCode": "aaa000",
+  "devices": [
+    {
+      "device": "Pixel 7",
+      "loginPageOpened": true,
+      "authenticated": true,
+      "codeScreenShown": true,
+      "codeRejectedAsExpected": true,
+      "logout": {
+        "menuOpened": true,
+        "clickedLogOut": true,
+        "finalUrl": "https://www.viki.com/",
+        "loggedOutLikely": true
+      },
+      "success": true,
+      "notes": []
+    },
+    {
+      "device": "Galaxy S24",
+      "loginPageOpened": true,
+      "authenticated": true,
+      "codeScreenShown": true,
+      "codeRejectedAsExpected": true,
+      "logout": {
+        "menuOpened": true,
+        "clickedLogOut": true,
+        "finalUrl": "https://www.viki.com/",
+        "loggedOutLikely": true
+      },
+      "success": true,
+      "notes": []
+    }
+  ],
+  "cycleStatus": "sucesso"
+}

@@ -1,8 +1,17 @@
 
 import React, { useEffect, useState, useMemo, useRef } from 'react';
-import { User, AppCredential } from '../types';
+import { User } from '../types';
 import { getAssignedCredential } from '../services/credentialService';
-import { updateClientName, updateClientPreferences, saveCredentialAck, saveCredentialAcks } from '../services/clientService';
+import {
+    updateClientName,
+    updateClientPreferences,
+    saveCredentialAcks,
+    saveGameProgress,
+    submitVikiTvAutomationRequest,
+    getVikiTvAutomationStatus,
+    type VikiTvAutomationStep,
+    type VikiTvAutomationExecutionStatus
+} from '../services/clientService';
 import {
     Copy, Check, CreditCard, Star, Crown, Sparkles, Loader2,
     RotateCw, Key, Smartphone, Mail, Lock, AlertTriangle, PlusCircle, ArrowRight, Edit3, Fingerprint, ShieldAlert, Palette, Camera, X, CheckCircle2, Upload, Trash2, Clock, Zap, ShoppingBag, ArrowUpRight, RefreshCw, Bell, Calendar, Heart
@@ -36,6 +45,35 @@ const ALL_AVAILABLE_SERVICES = [
     { name: 'Youku', desc: 'Clássicos chineses e novas tendências.', color: 'from-cyan-500 to-blue-600' }
 ];
 
+type VikiTvModel = 'samsung' | 'lg' | 'android';
+
+const VIKI_TV_OPTIONS: { id: VikiTvModel; label: string; url: string }[] = [
+    { id: 'samsung', label: 'Samsung TV', url: 'https://www.viki.com/samsungtv' },
+    { id: 'lg', label: 'LG TV', url: 'https://www.viki.com/lgtv' },
+    { id: 'android', label: 'Android TV', url: 'https://www.viki.com/androidtv' }
+];
+
+const normalizeVikiCodeInput = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 6);
+const isValidVikiTvCode = (value: string) => /^[a-z0-9]{6}$/.test(value);
+
+type VikiTvUiExecutionStatus = 'idle' | VikiTvAutomationExecutionStatus;
+const VIKI_TV_TERMINAL_STATUSES = new Set<VikiTvUiExecutionStatus>(['success', 'failed']);
+
+const getVikiExecutionBadge = (status: VikiTvUiExecutionStatus) => {
+    if (status === 'success') return { label: 'Concluida com sucesso', className: 'bg-emerald-100 text-emerald-700' };
+    if (status === 'failed') return { label: 'Falha na execucao', className: 'bg-red-100 text-red-700' };
+    if (status === 'running') return { label: 'Executando', className: 'bg-blue-100 text-blue-700' };
+    if (status === 'queued') return { label: 'Na fila', className: 'bg-amber-100 text-amber-700' };
+    return { label: 'Aguardando', className: 'bg-gray-100 text-gray-600' };
+};
+
+const getVikiStepBadge = (status: VikiTvAutomationStep['status']) => {
+    if (status === 'success') return { label: 'Sucesso', className: 'text-emerald-700 bg-emerald-100' };
+    if (status === 'failed') return { label: 'Falha', className: 'text-red-700 bg-red-100' };
+    if (status === 'running') return { label: 'Executando', className: 'text-blue-700 bg-blue-100' };
+    return { label: 'Pendente', className: 'text-gray-600 bg-gray-100' };
+};
+
 const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette, setShowPalette, onUpdateUser, syncTrigger = 0, onRefresh }) => {
     const [mergedData, setMergedData] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
@@ -46,6 +84,16 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
     const [isSyncing, setIsSyncing] = useState(false);
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [credentialUpdates, setCredentialUpdates] = useState<{ name: string, date: string }[]>([]);
+    const [showVikiTvModal, setShowVikiTvModal] = useState(false);
+    const [activeVikiService, setActiveVikiService] = useState<string>('Viki Pass');
+    const [selectedVikiTvModel, setSelectedVikiTvModel] = useState<VikiTvModel | null>(null);
+    const [vikiTvCode, setVikiTvCode] = useState('');
+    const [vikiTvError, setVikiTvError] = useState<string | null>(null);
+    const [vikiTvNotice, setVikiTvNotice] = useState<string | null>(null);
+    const [isSubmittingVikiTv, setIsSubmittingVikiTv] = useState(false);
+    const [vikiTvRequestId, setVikiTvRequestId] = useState<string | null>(null);
+    const [vikiTvExecutionStatus, setVikiTvExecutionStatus] = useState<VikiTvUiExecutionStatus>('idle');
+    const [vikiTvSteps, setVikiTvSteps] = useState<VikiTvAutomationStep[]>([]);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const validServices = useMemo(() => (user.services || []).filter(s => s && s.trim().length > 0), [user.services]);
@@ -59,6 +107,11 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
     const expiringServices = useMemo(() => {
         return mergedData.filter(item => item.daysLeft <= 5);
     }, [mergedData]);
+
+    const activeVikiCredential = useMemo(() => {
+        const item = mergedData.find(data => data.name === activeVikiService);
+        return item?.cred || null;
+    }, [activeVikiService, mergedData]);
 
     const getBgClass = () => {
         switch (user.themeColor) {
@@ -178,6 +231,180 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
         setTimeout(() => setCopiedId(null), 2000);
     };
 
+    const openVikiTvModal = (serviceName: string) => {
+        setActiveVikiService(serviceName);
+        setSelectedVikiTvModel(null);
+        setVikiTvCode('');
+        setVikiTvError(null);
+        setVikiTvNotice(null);
+        setIsSubmittingVikiTv(false);
+        setVikiTvRequestId(null);
+        setVikiTvExecutionStatus('idle');
+        setVikiTvSteps([]);
+        setShowVikiTvModal(true);
+    };
+
+    const closeVikiTvModal = () => {
+        setShowVikiTvModal(false);
+        setVikiTvError(null);
+        setVikiTvNotice(null);
+        setIsSubmittingVikiTv(false);
+        setVikiTvRequestId(null);
+        setVikiTvExecutionStatus('idle');
+        setVikiTvSteps([]);
+    };
+
+    const handleVikiTvCodeChange = (value: string) => {
+        setVikiTvCode(normalizeVikiCodeInput(value));
+        if (vikiTvError) setVikiTvError(null);
+    };
+
+    const handleStartVikiTvFlow = async () => {
+        if (isSubmittingVikiTv) return;
+
+        if (!selectedVikiTvModel) {
+            setVikiTvError('Selecione o modelo da TV para continuar.');
+            return;
+        }
+
+        if (!isValidVikiTvCode(vikiTvCode)) {
+            setVikiTvError('Informe um codigo valido com 6 caracteres (a-z e 0-9).');
+            return;
+        }
+
+        const tvOption = VIKI_TV_OPTIONS.find(option => option.id === selectedVikiTvModel);
+        if (!tvOption) {
+            setVikiTvError('Modelo de TV invalido.');
+            return;
+        }
+
+        if (!activeVikiCredential?.email || !activeVikiCredential?.password) {
+            setVikiTvError('Credencial Viki indisponivel no momento. Tente atualizar a conta.');
+            return;
+        }
+
+        const submittedAt = new Date().toISOString();
+        const initialSteps: VikiTvAutomationStep[] = [
+            { key: 'validation', label: 'Validacao dos dados', status: 'success', updatedAt: submittedAt },
+            { key: 'request', label: 'Envio da solicitacao de automacao', status: 'running', updatedAt: submittedAt },
+            { key: 'login', label: 'Login automatico na Viki', status: 'pending' },
+            { key: 'code', label: 'Insercao do codigo informado', status: 'pending' },
+            { key: 'logout', label: 'Logout e finalizacao', status: 'pending' }
+        ];
+
+        try {
+            setIsSubmittingVikiTv(true);
+            setVikiTvError(null);
+            setVikiTvNotice(null);
+            setVikiTvExecutionStatus('running');
+            setVikiTvSteps(initialSteps);
+            setVikiTvRequestId(null);
+
+            const response = await submitVikiTvAutomationRequest({
+                phoneNumber: user.phoneNumber,
+                clientName: user.name,
+                serviceName: activeVikiService,
+                tvModel: selectedVikiTvModel,
+                tvUrl: tvOption.url,
+                tvCode: vikiTvCode,
+                credentialEmail: activeVikiCredential.email,
+                credentialPassword: activeVikiCredential.password
+            });
+
+            setVikiTvRequestId(response.requestId);
+            setVikiTvExecutionStatus(response.executionStatus);
+            setVikiTvSteps(response.steps && response.steps.length > 0 ? response.steps : initialSteps);
+
+            const gameProgressUpdate = {
+                requestId: response.requestId,
+                provider: response.provider,
+                submittedAt,
+                serviceName: activeVikiService,
+                tvModel: selectedVikiTvModel,
+                tvUrl: tvOption.url,
+                tvCodeMasked: `${vikiTvCode.slice(0, 2)}****`,
+                status: response.executionStatus
+            };
+
+            await saveGameProgress(user.phoneNumber, '_viki_tv_last_request', gameProgressUpdate);
+            const updatedUser = {
+                ...user,
+                gameProgress: {
+                    ...user.gameProgress,
+                    _viki_tv_last_request: gameProgressUpdate
+                }
+            };
+            onUpdateUser(updatedUser);
+
+            setVikiTvNotice(`${response.message} ID: ${response.requestId}`);
+            if (response.executionStatus === 'failed') {
+                setVikiTvError('A automacao foi iniciada, mas retornou falha. Veja as etapas abaixo.');
+            } else {
+                setVikiTvError(null);
+            }
+            setVikiTvCode('');
+        } catch (e) {
+            console.error('Erro ao iniciar automacao Viki TV:', e);
+            setVikiTvError('Falha ao iniciar automacao em background. Tente novamente.');
+            setVikiTvExecutionStatus('failed');
+            setVikiTvSteps(prev => prev.length > 0 ? prev.map(step => {
+                if (step.key === 'request') {
+                    return { ...step, status: 'failed', details: 'Erro no envio da solicitacao', updatedAt: new Date().toISOString() };
+                }
+                return step;
+            }) : [{ key: 'request', label: 'Envio da solicitacao de automacao', status: 'failed', details: 'Erro no envio da solicitacao', updatedAt: new Date().toISOString() }]);
+        } finally {
+            setIsSubmittingVikiTv(false);
+        }
+    };
+
+    useEffect(() => {
+        if (!showVikiTvModal || !vikiTvRequestId) return;
+        if (VIKI_TV_TERMINAL_STATUSES.has(vikiTvExecutionStatus) || vikiTvExecutionStatus === 'idle') return;
+
+        let isActive = true;
+        let inFlight = false;
+        let timerId: number | undefined;
+
+        const pollStatus = async () => {
+            if (!isActive || inFlight) return;
+            inFlight = true;
+
+            try {
+                const status = await getVikiTvAutomationStatus(vikiTvRequestId);
+                if (!isActive) return;
+                if (!status) return;
+
+                setVikiTvExecutionStatus(status.executionStatus);
+                if (status.steps?.length > 0) setVikiTvSteps(status.steps);
+                setVikiTvNotice(`${status.message} ID: ${status.requestId}`);
+
+                if (status.executionStatus === 'failed') {
+                    setVikiTvError('A automacao retornou falha. Confira as etapas para identificar o ponto.');
+                }
+                if (status.executionStatus === 'success') {
+                    setVikiTvError(null);
+                }
+                if (VIKI_TV_TERMINAL_STATUSES.has(status.executionStatus) && timerId) {
+                    isActive = false;
+                    window.clearInterval(timerId);
+                }
+            } finally {
+                inFlight = false;
+            }
+        };
+
+        void pollStatus();
+        timerId = window.setInterval(() => {
+            void pollStatus();
+        }, 5000);
+
+        return () => {
+            isActive = false;
+            if (timerId) window.clearInterval(timerId);
+        };
+    }, [showVikiTvModal, vikiTvRequestId, vikiTvExecutionStatus]);
+
     const handleEditName = async () => {
         if (isEditingName && tempName !== user.name && tempName.trim()) {
             await updateClientName(user.phoneNumber, tempName.trim());
@@ -273,6 +500,100 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                             className="w-full py-3 rounded-xl bg-amber-500 text-white font-black text-sm uppercase tracking-wide shadow-lg shadow-amber-200 active:scale-95 transition-all"
                         >
                             Entendido
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {showVikiTvModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+                    <div className="bg-white rounded-[2rem] p-6 max-w-md w-full shadow-2xl space-y-4 animate-scale-up">
+                        <div className="flex items-start justify-between gap-3">
+                            <div>
+                                <h3 className="text-lg font-black text-gray-800 leading-none">Conexao TV Viki</h3>
+                                <p className="text-xs text-gray-500 font-bold uppercase mt-1">{activeVikiService}</p>
+                            </div>
+                            <button onClick={closeVikiTvModal} className="p-1.5 hover:bg-gray-100 rounded-full transition-colors">
+                                <X size={18} className="text-gray-400" />
+                            </button>
+                        </div>
+
+                        <div className="space-y-2">
+                            <p className="text-[11px] font-black uppercase text-gray-500">1. Escolha o modelo da TV</p>
+                            <div className="grid grid-cols-1 gap-2">
+                                {VIKI_TV_OPTIONS.map(option => (
+                                    <button
+                                        key={option.id}
+                                        onClick={() => {
+                                            setSelectedVikiTvModel(option.id);
+                                            setVikiTvError(null);
+                                        }}
+                                        className={`w-full text-left px-4 py-3 rounded-xl border text-sm font-bold transition-all ${selectedVikiTvModel === option.id ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100'}`}
+                                    >
+                                        {option.label}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="space-y-2">
+                            <p className="text-[11px] font-black uppercase text-gray-500">2. Informe o codigo da TV</p>
+                            <input
+                                value={vikiTvCode}
+                                onChange={(e) => handleVikiTvCodeChange(e.target.value)}
+                                placeholder="ex: aaa000"
+                                className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-mono tracking-wider lowercase text-gray-900 outline-none focus:border-blue-500"
+                            />
+                            <p className="text-[10px] text-gray-500 font-bold uppercase">Use 6 caracteres: letras minusculas e numeros.</p>
+                        </div>
+
+                        <div className="bg-blue-50 rounded-xl p-3 border border-blue-100 space-y-1">
+                            <p className="text-[10px] font-black uppercase text-blue-700">Processo 100% automatizado</p>
+                            <p className="text-[11px] font-bold text-blue-700">Depois de confirmar, nosso sistema executa login, preenchimento do codigo e logout em background.</p>
+                        </div>
+
+                        <div className="bg-gray-50 rounded-xl p-3 border border-gray-100 space-y-3">
+                            <div className="flex items-center justify-between gap-2">
+                                <p className="text-[10px] font-black uppercase text-gray-600">Status da automacao</p>
+                                <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase ${getVikiExecutionBadge(vikiTvExecutionStatus).className}`}>
+                                    {getVikiExecutionBadge(vikiTvExecutionStatus).label}
+                                </span>
+                            </div>
+                            {vikiTvRequestId && (
+                                <p className="text-[10px] font-mono text-gray-500 break-all">ID: {vikiTvRequestId}</p>
+                            )}
+                            {vikiTvSteps.length > 0 && (
+                                <div className="space-y-2 max-h-44 overflow-y-auto pr-1">
+                                    {vikiTvSteps.map((step) => (
+                                        <div key={step.key} className="bg-white border border-gray-100 rounded-lg px-3 py-2">
+                                            <div className="flex items-center justify-between gap-2">
+                                                <p className="text-[11px] font-bold text-gray-700">{step.label}</p>
+                                                <span className={`px-2 py-1 rounded-md text-[9px] font-black uppercase ${getVikiStepBadge(step.status).className}`}>
+                                                    {getVikiStepBadge(step.status).label}
+                                                </span>
+                                            </div>
+                                            {step.details && (
+                                                <p className="text-[10px] text-gray-500 font-semibold mt-1">{step.details}</p>
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
+                        {vikiTvError && (
+                            <p className="text-xs font-bold text-red-600 bg-red-50 border border-red-100 rounded-xl p-3">{vikiTvError}</p>
+                        )}
+                        {vikiTvNotice && (
+                            <p className="text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-xl p-3">{vikiTvNotice}</p>
+                        )}
+
+                        <button
+                            onClick={handleStartVikiTvFlow}
+                            disabled={isSubmittingVikiTv}
+                            className={`w-full py-3 rounded-xl text-white font-black text-sm uppercase tracking-wide shadow-lg active:scale-95 transition-all ${isSubmittingVikiTv ? 'bg-blue-300 shadow-blue-100' : 'bg-blue-600 shadow-blue-200'}`}
+                        >
+                            {isSubmittingVikiTv ? 'Iniciando automacao...' : 'Iniciar conexao automatica'}
                         </button>
                     </div>
                 </div>
@@ -469,6 +790,21 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                                         {!item.isBlocked && <button onClick={() => item.cred && copyToClipboard(item.cred.password, `p-${i}`)} className="p-3 text-indigo-600 bg-white border border-gray-100 rounded-xl shadow-sm active:scale-90 flex items-center gap-1"><Copy size={14} /><span className="text-[10px] font-black uppercase">Copiar</span></button>}
                                     </div>
                                 </div>
+
+                                {item.name.toLowerCase().includes('viki') && !item.isBlocked && (
+                                    <div className="mt-4 bg-blue-50 p-4 rounded-2xl border border-blue-100 flex items-center justify-between gap-3">
+                                        <div>
+                                            <p className="text-[10px] font-black uppercase text-blue-700">Conexao de TV Viki</p>
+                                            <p className="text-[10px] font-bold text-blue-600 mt-1">Informe modelo e codigo da TV. O restante roda automatico em background.</p>
+                                        </div>
+                                        <button
+                                            onClick={() => openVikiTvModal(item.name)}
+                                            className="px-4 py-2 rounded-xl bg-blue-600 text-white text-[10px] font-black uppercase whitespace-nowrap shadow-md active:scale-95"
+                                        >
+                                            Conectar TV
+                                        </button>
+                                    </div>
+                                )}
 
                                 {item.daysLeft < 0 && !item.isInTolerance && !item.isBlocked && (
                                     <div className="mt-4 bg-orange-50 p-3 rounded-2xl border border-orange-100 flex items-center gap-3">
