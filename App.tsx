@@ -1,37 +1,40 @@
-
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import Login from './components/Login';
 import Dashboard from './components/Dashboard';
 import DoramaList from './components/DoramaList';
-import SupportChat from './components/SupportChat';
 import CheckoutModal from './components/CheckoutModal';
-import AdminLogin from './components/AdminLogin';
-import { AdminPanel } from './components/AdminPanel';
 import NameModal from './components/NameModal';
-import GamesHub from './components/GamesHub';
 import Toast from './components/Toast';
-import PWAInstallOverlay from './components/PWAInstallOverlay';
 import PriceAdjustmentBanner from './components/PriceAdjustmentBanner';
-import TVStreamingBanner from './components/TVStreamingBanner';
 import { User, Dorama } from './types';
-import { addDoramaToDB, updateDoramaInDB, removeDoramaFromDB, getUserDoramasFromDB, saveGameProgress, addLocalDorama, refreshUserProfile, updateLastActive, supabase } from './services/clientService';
-import { Heart, X, CheckCircle2, MessageCircle, Gift, Gamepad2, Sparkles, Home, Tv2, Palette, RefreshCw, LogOut, AlertTriangle, Smartphone } from 'lucide-react';
+import {
+  addDoramaToDB,
+  updateDoramaInDB,
+  removeDoramaFromDB,
+  getUserDoramasFromDB,
+  addLocalDorama,
+  refreshUserProfile,
+  updateLastActive,
+  supabase
+} from './services/clientService';
+import { Heart, X, CheckCircle2, MessageCircle, Gift, Sparkles, Home, Tv2, Palette, LogOut, AlertTriangle } from 'lucide-react';
+
+const AdminLogin = lazy(() => import('./components/AdminLogin'));
+const AdminPanel = lazy(() => import('./components/AdminPanel').then(mod => ({ default: mod.AdminPanel })));
 
 const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isAdminMode, setIsAdminMode] = useState(false);
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
-  const [activeTab, setActiveTab] = useState<'home' | 'watching' | 'favorites' | 'games' | 'completed'>('home');
+  const [activeTab, setActiveTab] = useState<'home' | 'watching' | 'favorites' | 'completed'>('home');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [syncTrigger, setSyncTrigger] = useState(0);
-  const [isStandalone, setIsStandalone] = useState(false);
 
   const [showPalette, setShowPalette] = useState(false);
-  const [isSupportOpen, setIsSupportOpen] = useState(false);
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
   const [checkoutType, setCheckoutType] = useState<'renewal' | 'gift' | 'new_sub' | 'early_renewal'>('renewal');
   const [checkoutTargetService, setCheckoutTargetService] = useState<string | null>(null);
-  const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalType, setModalType] = useState<'watching' | 'favorites' | 'completed'>('watching');
@@ -47,11 +50,8 @@ const App: React.FC = () => {
   const [isDeleting, setIsDeleting] = useState(false);
 
   const [showNameModal, setShowNameModal] = useState(false);
-
-  // OTIMIZAÇÃO EGRESS: Ref para throttle de refresh
   const lastRefreshRef = useRef<number>(0);
 
-  // --- REFRESH SILENCIOSO (PULSO DE ATUALIZAÇÃO) ---
   const handleRefreshSession = useCallback(async (silent: boolean = false) => {
     if (!currentUser) return;
     if (!silent) setIsRefreshing(true);
@@ -60,7 +60,6 @@ const App: React.FC = () => {
     if (user) {
       setCurrentUser(prev => {
         if (!prev) return user;
-        // Mantém as listas locais de doramas para evitar flicker, mas atualiza status de assinaturas e cores
         const updatedUser = {
           ...user,
           watching: prev.watching,
@@ -68,25 +67,20 @@ const App: React.FC = () => {
           completed: prev.completed
         };
 
-        // Atualiza o cache do navegador imediatamente
         const userData = JSON.stringify(updatedUser);
-        if (localStorage.getItem('eudorama_session')) {
-          localStorage.setItem('eudorama_session', userData);
-        } else {
-          sessionStorage.setItem('eudorama_session', userData);
-        }
+        if (localStorage.getItem('eudorama_session')) localStorage.setItem('eudorama_session', userData);
+        else sessionStorage.setItem('eudorama_session', userData);
 
         return updatedUser;
       });
       if (!silent) setToast({ message: 'Sincronizado!', type: 'success' });
-      setSyncTrigger(prev => prev + 1); // Força componentes filhos a re-calcularem dados
+      setSyncTrigger(prev => prev + 1);
     } else if (!silent) {
       setToast({ message: error || 'Erro de sincronização.', type: 'error' });
     }
     if (!silent) setIsRefreshing(false);
   }, [currentUser?.phoneNumber]);
 
-  // --- INITIALIZATION ---
   useEffect(() => {
     let savedSession = localStorage.getItem('eudorama_session');
     if (!savedSession) savedSession = sessionStorage.getItem('eudorama_session');
@@ -96,17 +90,12 @@ const App: React.FC = () => {
         const user = JSON.parse(savedSession);
         if (user && user.phoneNumber) {
           setCurrentUser(user);
-          // Busca doramas do banco logo após carregar a sessão básica
           getUserDoramasFromDB(user.phoneNumber).then(doramas => {
-            setCurrentUser(prev => {
-              if (!prev) return null;
-              return { ...prev, ...doramas };
-            });
+            setCurrentUser(prev => (prev ? { ...prev, ...doramas } : null));
           });
-          // Faz um refresh inicial silencioso para garantir que dados administrativos (ex: renovação) estejam em dia
           setTimeout(() => handleRefreshSession(true), 1000);
         }
-      } catch (e) {
+      } catch {
         localStorage.removeItem('eudorama_session');
         sessionStorage.removeItem('eudorama_session');
       }
@@ -118,122 +107,49 @@ const App: React.FC = () => {
       setIsAdminMode(true);
       setIsAdminLoggedIn(true);
     }
-
-    const checkStandalone = () => {
-      const standalone = window.matchMedia('(display-mode: standalone)').matches || (window.navigator as any).standalone;
-      setIsStandalone(!!standalone);
-    };
-    checkStandalone();
-    window.matchMedia('(display-mode: standalone)').addListener(checkStandalone);
-    window.addEventListener('focus', checkStandalone);
-    return () => window.removeEventListener('focus', checkStandalone);
   }, []);
 
-  // --- REAL-TIME UPDATES (Ouvinte do Supabase) ---
   useEffect(() => {
     if (!currentUser || isAdminMode) return;
 
-    const channels: any[] = [];
-
-    // 1. Escuta mudanças na tabela de clientes (Status, Assinaturas, Bloqueios)
     const clientChannel = supabase
       .channel(`user-sync-${currentUser.phoneNumber}`)
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'clients', filter: `phone_number=eq.${currentUser.phoneNumber}` },
-        (payload) => {
-          console.log('⚡ [REALTIME] Atualização de cliente detectada!', payload);
-          // Pequeno delay para garantir que alterações em outras tabelas (credentials/history) tenham propagado
-          setTimeout(() => handleRefreshSession(true), 1500);
-        }
+        () => handleRefreshSession(true)
       )
       .subscribe();
-    channels.push(clientChannel);
 
-    // 2. Para conta DEMO (6789): Escuta também atualizações nas credenciais globais
-    if (currentUser.phoneNumber === '6789' || currentUser.name === 'Demo') {
-      const demoChannel = supabase
-        .channel('demo-global-sync')
-        .on(
-          'postgres_changes',
-          { event: 'UPDATE', schema: 'public', table: 'history_settings', filter: "key=eq.demo_credentials_map" },
-          () => {
-            console.log('⚡ [REALTIME] Credenciais DEMO atualizadas!');
-            handleRefreshSession(true);
-          }
-        )
-        .subscribe();
-      channels.push(demoChannel);
-    }
-
-    // 3. Escuta mudanças na tabela de credenciais (Para quando Admin/Sistema roda credenciais)
-    // Isso garante que se a senha mudar, o cliente recebe o update na hora
-    const credentialsChannel = supabase
-      .channel('global-credentials-sync')
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'credentials' },
-        () => {
-          console.log('⚡ [REALTIME] Credencial atualizada no sistema!');
-          handleRefreshSession(true);
-        }
-      )
-      .subscribe();
-    channels.push(credentialsChannel);
-
-    // 4. Estratégia Agressiva de Refresh (Foco/Visibilidade)
-    const handleAggressiveRefresh = () => {
-      // Reduzido throttle para 5s para garantir atualização rápida ao voltar pro app
+    const onFocus = () => {
       const now = Date.now();
-      if (now - lastRefreshRef.current > 5000) {
-        console.log('⚡ [FOCUS] App em foco, atualizando dados...');
+      if (now - lastRefreshRef.current > 30000) {
         lastRefreshRef.current = now;
         handleRefreshSession(true);
       }
     };
 
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') handleAggressiveRefresh();
-    };
-
-    window.addEventListener('focus', handleAggressiveRefresh);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
-    // 5. Polling de Segurança (Fallback para PWA/Mobile onde socket pode cair)
-    // A cada 10 segundos, verifica se tem novidade. Garante consistência máxima.
-    const pollingInterval = setInterval(() => {
-      console.log('🔄 [POLLING] Verificando atualizações automáticas...');
-      handleRefreshSession(true);
-    }, 10000);
-
+    window.addEventListener('focus', onFocus);
     return () => {
-      channels.forEach(ch => supabase.removeChannel(ch));
-      window.removeEventListener('focus', handleAggressiveRefresh);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      clearInterval(pollingInterval);
+      supabase.removeChannel(clientChannel);
+      window.removeEventListener('focus', onFocus);
     };
   }, [currentUser?.phoneNumber, isAdminMode, handleRefreshSession]);
 
   useEffect(() => {
     if (!currentUser || isAdminMode) return;
     const performHeartbeat = () => {
-      if (document.visibilityState === 'visible') {
-        updateLastActive(currentUser.phoneNumber);
-      }
+      if (document.visibilityState === 'visible') updateLastActive(currentUser.phoneNumber);
     };
     performHeartbeat();
-    // OTIMIZAÇÃO EGRESS: Heartbeat a cada 15 minutos ao invés de 5
     const heartbeatInterval = setInterval(performHeartbeat, 15 * 60 * 1000);
     return () => clearInterval(heartbeatInterval);
   }, [currentUser?.phoneNumber, isAdminMode]);
 
   useEffect(() => {
-    if (currentUser && (currentUser.name === 'Dorameira' || !currentUser.name)) {
-      setShowNameModal(true);
-    }
+    if (currentUser && (currentUser.name === 'Dorameira' || !currentUser.name)) setShowNameModal(true);
   }, [currentUser?.name]);
 
-  // --- HANDLERS ---
   const handleLogin = (user: User, remember: boolean = false) => {
     setCurrentUser(user);
     const userData = JSON.stringify(user);
@@ -249,8 +165,7 @@ const App: React.FC = () => {
   const handleUpdateUser = (updatedUser: User) => {
     setCurrentUser(updatedUser);
     const userData = JSON.stringify(updatedUser);
-    const isLocal = !!localStorage.getItem('eudorama_session');
-    if (isLocal) localStorage.setItem('eudorama_session', userData);
+    if (localStorage.getItem('eudorama_session')) localStorage.setItem('eudorama_session', userData);
     else sessionStorage.setItem('eudorama_session', userData);
   };
 
@@ -262,10 +177,7 @@ const App: React.FC = () => {
   };
 
   const handleNameSaved = (newName: string) => {
-    if (currentUser) {
-      const updatedUser = { ...currentUser, name: newName };
-      handleUpdateUser(updatedUser);
-    }
+    if (currentUser) handleUpdateUser({ ...currentUser, name: newName });
     setShowNameModal(false);
   };
 
@@ -300,16 +212,14 @@ const App: React.FC = () => {
   };
 
   const handleUpdateDorama = async (updatedDorama: Dorama) => {
-    if (!currentUser) return;
+    if (!currentUser || activeTab === 'home') return;
     const listKey = activeTab === 'favorites' ? 'favorites' : (activeTab === 'completed' ? 'completed' : 'watching');
-    if (activeTab === 'games' || activeTab === 'home') return;
     const newList = currentUser[listKey as 'watching' | 'favorites' | 'completed'].map(d => d.id === updatedDorama.id ? updatedDorama : d);
     const newUserState = { ...currentUser, [listKey]: newList };
     handleUpdateUser(newUserState);
-    addLocalDorama(currentUser.phoneNumber, listKey as any, updatedDorama);
+    addLocalDorama(currentUser.phoneNumber, listKey as 'watching' | 'favorites' | 'completed', updatedDorama);
     const success = await updateDoramaInDB(updatedDorama);
-    if (success) setToast({ message: 'Salvo com sucesso!', type: 'success' });
-    else setToast({ message: 'Erro ao salvar.', type: 'error' });
+    setToast({ message: success ? 'Salvo com sucesso!' : 'Erro ao salvar.', type: success ? 'success' : 'error' });
   };
 
   const handleConfirmDelete = async () => {
@@ -317,22 +227,12 @@ const App: React.FC = () => {
     setIsDeleting(true);
     const listKey = activeTab === 'favorites' ? 'favorites' : (activeTab === 'completed' ? 'completed' : 'watching');
     const newList = currentUser[listKey as 'watching' | 'favorites' | 'completed'].filter(d => d.id !== doramaToDelete);
-    const newUserState = { ...currentUser, [listKey]: newList };
-    handleUpdateUser(newUserState);
+    handleUpdateUser({ ...currentUser, [listKey]: newList });
     const success = await removeDoramaFromDB(doramaToDelete);
     setIsDeleting(false);
     setIsDeleteModalOpen(false);
     setDoramaToDelete(null);
-    if (success) setToast({ message: 'Dorama removido!', type: 'success' });
-    else setToast({ message: 'Erro ao remover.', type: 'error' });
-  };
-
-  const handleSaveGame = async (gameId: string, data: any) => {
-    if (!currentUser) return;
-    const newProgress = { ...currentUser.gameProgress, [gameId]: data };
-    const updatedUser = { ...currentUser, gameProgress: newProgress };
-    handleUpdateUser(updatedUser);
-    await saveGameProgress(currentUser.phoneNumber, gameId, data);
+    setToast({ message: success ? 'Dorama removido!' : 'Erro ao remover.', type: success ? 'success' : 'error' });
   };
 
   const getModalTitle = () => {
@@ -343,13 +243,21 @@ const App: React.FC = () => {
   };
 
   if (isAdminMode) {
-    if (isAdminLoggedIn) return <AdminPanel onLogout={handleAdminLogout} />;
-    return <AdminLogin onSuccess={handleAdminSuccess} onBack={() => setIsAdminMode(false)} />;
+    if (isAdminLoggedIn) {
+      return (
+        <Suspense fallback={<div className="min-h-screen flex items-center justify-center text-sm font-bold text-gray-500">Carregando painel...</div>}>
+          <AdminPanel onLogout={handleAdminLogout} />
+        </Suspense>
+      );
+    }
+    return (
+      <Suspense fallback={<div className="min-h-screen flex items-center justify-center text-sm font-bold text-gray-500">Carregando login admin...</div>}>
+        <AdminLogin onSuccess={handleAdminSuccess} onBack={() => setIsAdminMode(false)} />
+      </Suspense>
+    );
   }
 
-  if (!currentUser) {
-    return <Login onLogin={handleLogin} onAdminClick={handleAdminClick} />;
-  }
+  if (!currentUser) return <Login onLogin={handleLogin} onAdminClick={handleAdminClick} />;
 
   const openAddModal = (type: 'watching' | 'favorites' | 'completed') => {
     setModalType(type);
@@ -362,7 +270,7 @@ const App: React.FC = () => {
   };
 
   const openEditModal = (dorama: Dorama) => {
-    if (activeTab === 'games' || activeTab === 'home') return;
+    if (activeTab === 'home') return;
     setModalType(activeTab);
     setEditingDorama(dorama);
     setNewDoramaName(dorama.title);
@@ -374,64 +282,71 @@ const App: React.FC = () => {
 
   const saveDorama = async () => {
     if (!currentUser || !newDoramaName.trim()) return;
+
     let status: Dorama['status'] = 'Watching';
     if (modalType === 'favorites') status = 'Plan to Watch';
     if (modalType === 'completed') status = 'Completed';
+
     const season = parseInt(newDoramaSeason) || 1;
     const total = parseInt(newDoramaTotalEp) || 16;
     const rating = newDoramaRating;
+
     if (editingDorama) {
       const updated: Dorama = { ...editingDorama, title: newDoramaName, season, totalEpisodes: total, rating };
       setIsModalOpen(false);
       await handleUpdateDorama(updated);
-    } else {
-      const tempDorama: Dorama = {
-        id: 'temp-' + Date.now(),
-        title: newDoramaName,
-        genre: 'Drama',
-        thumbnail: `https://ui-avatars.com/api/?name=${newDoramaName}&background=random&size=128`,
-        status,
-        episodesWatched: modalType === 'completed' ? total : 1,
-        totalEpisodes: total,
-        season,
-        rating
-      };
-      setIsModalOpen(false);
+      return;
+    }
+
+    const tempDorama: Dorama = {
+      id: 'temp-' + Date.now(),
+      title: newDoramaName,
+      genre: 'Drama',
+      thumbnail: '',
+      status,
+      episodesWatched: modalType === 'completed' ? total : 1,
+      totalEpisodes: total,
+      season,
+      rating
+    };
+
+    setIsModalOpen(false);
+    setCurrentUser(prev => {
+      if (!prev) return null;
+      const newState = { ...prev, [modalType]: [...prev[modalType], tempDorama] };
+      handleUpdateUser(newState);
+      return newState;
+    });
+
+    const createdDorama = await addDoramaToDB(currentUser.phoneNumber, modalType, tempDorama);
+    if (createdDorama) {
+      setToast({ message: 'Adicionado com sucesso!', type: 'success' });
       setCurrentUser(prev => {
         if (!prev) return null;
-        const newState = { ...prev, [modalType]: [...prev[modalType], tempDorama] };
+        const updatedList = prev[modalType].map(d => d.id === tempDorama.id ? createdDorama : d);
+        const newState = { ...prev, [modalType]: updatedList };
         handleUpdateUser(newState);
         return newState;
       });
-      const createdDorama = await addDoramaToDB(currentUser.phoneNumber, modalType, tempDorama);
-      if (createdDorama) {
-        setToast({ message: 'Adicionado com sucesso!', type: 'success' });
-        setCurrentUser(prev => {
-          if (!prev) return null;
-          const updatedList = prev[modalType].map(d => d.id === tempDorama.id ? createdDorama : d);
-          const newState = { ...prev, [modalType]: updatedList };
-          handleUpdateUser(newState);
-          return newState;
-        });
-      } else {
-        setToast({ message: 'Erro ao salvar no banco.', type: 'error' });
-      }
+    } else {
+      setToast({ message: 'Erro ao salvar no banco.', type: 'error' });
     }
   };
 
   const renderContent = () => {
     switch (activeTab) {
       case 'home':
-        return <Dashboard
-          user={currentUser}
-          onOpenSupport={() => setIsSupportOpen(true)}
-          onOpenCheckout={handleOpenCheckout}
-          showPalette={showPalette}
-          setShowPalette={setShowPalette}
-          onUpdateUser={handleUpdateUser}
-          syncTrigger={syncTrigger}
-          onRefresh={() => handleRefreshSession(false)}
-        />;
+        return (
+          <Dashboard
+            user={currentUser}
+            onOpenCheckout={handleOpenCheckout}
+            showPalette={showPalette}
+            setShowPalette={setShowPalette}
+            onUpdateUser={handleUpdateUser}
+            syncTrigger={syncTrigger}
+            onRefresh={() => handleRefreshSession(false)}
+          />
+        );
       case 'watching':
         return (
           <DoramaList
@@ -440,7 +355,10 @@ const App: React.FC = () => {
             type="watching"
             onAdd={() => openAddModal('watching')}
             onUpdate={handleUpdateDorama}
-            onDelete={(id) => { setDoramaToDelete(id); setIsDeleteModalOpen(true); }}
+            onDelete={(id) => {
+              setDoramaToDelete(id);
+              setIsDeleteModalOpen(true);
+            }}
             onEdit={openEditModal}
           />
         );
@@ -452,7 +370,10 @@ const App: React.FC = () => {
             type="favorites"
             onAdd={() => openAddModal('favorites')}
             onUpdate={handleUpdateDorama}
-            onDelete={(id) => { setDoramaToDelete(id); setIsDeleteModalOpen(true); }}
+            onDelete={(id) => {
+              setDoramaToDelete(id);
+              setIsDeleteModalOpen(true);
+            }}
             onEdit={openEditModal}
           />
         );
@@ -464,18 +385,19 @@ const App: React.FC = () => {
             type="completed"
             onAdd={() => openAddModal('completed')}
             onUpdate={handleUpdateDorama}
-            onDelete={(id) => { setDoramaToDelete(id); setIsDeleteModalOpen(true); }}
+            onDelete={(id) => {
+              setDoramaToDelete(id);
+              setIsDeleteModalOpen(true);
+            }}
             onEdit={openEditModal}
           />
         );
-      case 'games':
-        return <GamesHub user={currentUser} onSaveGame={handleSaveGame} />;
       default:
         return null;
     }
   };
 
-  const NavItem = ({ id, icon: Icon, label }: any) => {
+  const NavItem = ({ id, icon: Icon, label }: { id: 'home' | 'watching' | 'favorites' | 'completed'; icon: any; label: string }) => {
     const isActive = activeTab === id;
     return (
       <button
@@ -485,11 +407,7 @@ const App: React.FC = () => {
         <div className={`p-3 rounded-full transition-all duration-300 shadow-sm ${isActive ? 'bg-gradient-to-br from-pink-500 to-purple-600 text-white shadow-pink-200 shadow-lg scale-110' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-50'}`}>
           <Icon className={`w-6 h-6 ${isActive ? 'fill-current' : ''}`} />
         </div>
-        {isActive && (
-          <span className="absolute -bottom-1 text-[9px] font-black text-pink-600 animate-fade-in tracking-tight uppercase">
-            {label}
-          </span>
-        )}
+        {isActive && <span className="absolute -bottom-4 text-xs font-bold text-pink-600 animate-fade-in tracking-tight">{label}</span>}
       </button>
     );
   };
@@ -497,7 +415,7 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen bg-gray-50 max-w-lg mx-auto shadow-2xl relative overflow-hidden flex flex-col font-sans">
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
-      <div className="bg-white/95 backdrop-blur-md px-4 py-3 shadow-sm flex justify-between items-center z-30 sticky top-0 border-b border-gray-100 shrink-0">
+      <div className="bg-white/95 backdrop-blur-md p-4 shadow-sm flex justify-between items-center z-30 sticky top-0 border-b border-gray-100 shrink-0">
         <div className="flex flex-col">
           <h1 className="text-2xl font-black text-gray-900 tracking-tight flex items-center gap-1 font-sans">
             EuDorama <Sparkles className="w-4 h-4 text-pink-500 fill-pink-500" />
@@ -505,19 +423,6 @@ const App: React.FC = () => {
           <span className="text-xs text-gray-400 font-bold uppercase tracking-widest -mt-1 ml-0.5">Clube Exclusivo</span>
         </div>
         <div className="flex items-center gap-2">
-          {!isStandalone && (
-            <button
-              onClick={() => {
-                const url = new URL(window.location.href);
-                url.searchParams.set('install', 'true');
-                window.history.pushState({}, '', url);
-                window.dispatchEvent(new CustomEvent('trigger-pwa-overlay'));
-              }}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-pink-600 text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-all border border-pink-500 shadow-sm active:scale-95"
-            >
-              <Smartphone className="w-3.5 h-3.5" /> <span>Instalar</span>
-            </button>
-          )}
           <button onClick={() => setShowPalette(!showPalette)} className={`flex items-center gap-1 px-3 py-2 rounded-xl text-sm font-bold transition-all border active:scale-95 ${showPalette ? 'bg-pink-100 text-pink-600 border-pink-200' : 'bg-gray-50 hover:bg-gray-100 text-gray-600 border-gray-200'}`}>
             <Palette className="w-4 h-4" /> <span className="hidden sm:inline">Personalizar</span>
           </button>
@@ -526,14 +431,11 @@ const App: React.FC = () => {
           </button>
         </div>
       </div>
-      <main className={`flex-1 relative overflow-hidden pb-36`}>
+
+      <main className="flex-1 relative overflow-hidden pb-28">
         <div className="h-full overflow-y-auto scrollbar-hide">{renderContent()}</div>
       </main>
-      {isSupportOpen && (
-        <div className="fixed inset-0 z-[60] bg-white animate-slide-up">
-          <SupportChat user={currentUser} onClose={() => setIsSupportOpen(false)} />
-        </div>
-      )}
+
       {showNameModal && <NameModal user={currentUser} onNameSaved={handleNameSaved} />}
       {isCheckoutOpen && (
         <CheckoutModal
@@ -543,14 +445,15 @@ const App: React.FC = () => {
           targetService={checkoutTargetService || undefined}
         />
       )}
-      {!isSupportOpen && !isCheckoutOpen && activeTab !== 'games' && !showNameModal && (
-        <div className="fixed bottom-32 right-4 z-40 flex flex-col gap-4 items-center pointer-events-none">
+
+      {!isCheckoutOpen && !showNameModal && (
+        <div className="fixed bottom-28 right-4 z-40 flex flex-col gap-4 items-center pointer-events-none">
           <div className="pointer-events-auto flex flex-col gap-4 items-end">
             <div className="relative group">
               <div className="absolute right-full mr-3 top-1/2 -translate-y-1/2 bg-white px-3 py-1.5 rounded-xl text-xs font-bold shadow-md text-gray-700 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
-                Apoie a Plataforma
+                Apoiar Plataforma
               </div>
-              <button onClick={() => handleOpenCheckout('gift')} className="w-14 h-14 bg-gradient-to-br from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 text-white rounded-full shadow-xl flex items-center justify-center transition-transform hover:scale-110 border-4 border-white animate-pulse">
+              <button onClick={() => handleOpenCheckout('gift')} className="w-14 h-14 bg-gradient-to-br from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white rounded-full shadow-xl flex items-center justify-center transition-transform hover:scale-110 border-4 border-white">
                 <Gift className="w-7 h-7" />
               </button>
             </div>
@@ -565,6 +468,7 @@ const App: React.FC = () => {
           </div>
         </div>
       )}
+
       {isModalOpen && (
         <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
           <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl animate-fade-in-up">
@@ -608,6 +512,7 @@ const App: React.FC = () => {
           </div>
         </div>
       )}
+
       {isDeleteModalOpen && (
         <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-[100] p-4 backdrop-blur-sm">
           <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl animate-bounce-in border-t-8 border-red-500">
@@ -617,24 +522,23 @@ const App: React.FC = () => {
               <p className="text-gray-600 text-sm">Essa ação não pode ser desfeita.</p>
               <div className="flex gap-3 w-full pt-2">
                 <button onClick={() => setIsDeleteModalOpen(false)} className="flex-1 bg-gray-200 text-gray-800 font-bold py-3 rounded-xl">Cancelar</button>
-                <button onClick={handleConfirmDelete} disabled={isDeleting} className="flex-1 bg-red-600 text-white font-bold py-3 rounded-xl">{isDeleting ? "..." : "Excluir"}</button>
+                <button onClick={handleConfirmDelete} disabled={isDeleting} className="flex-1 bg-red-600 text-white font-bold py-3 rounded-xl">{isDeleting ? '...' : 'Excluir'}</button>
               </div>
             </div>
           </div>
         </div>
       )}
+
       <div className="fixed bottom-6 inset-x-0 z-40 px-4 flex justify-center pointer-events-none">
-        <nav className="bg-white/95 backdrop-blur-xl border border-white/50 rounded-[2.5rem] shadow-2xl px-2 py-3 flex justify-between items-center w-full max-w-sm pointer-events-auto ring-1 ring-black/5">
+        <nav className="bg-white/90 backdrop-blur-lg border border-white/50 rounded-[2rem] shadow-2xl p-2 flex justify-between items-center w-full max-w-sm pointer-events-auto ring-1 ring-black/5">
           <NavItem id="home" icon={Home} label="Início" />
           <NavItem id="watching" icon={Tv2} label="Vendo" />
-          <NavItem id="games" icon={Gamepad2} label="Jogos" />
           <NavItem id="favorites" icon={Heart} label="Amei" />
           <NavItem id="completed" icon={CheckCircle2} label="Fim" />
         </nav>
       </div>
-      <PWAInstallOverlay />
+
       <PriceAdjustmentBanner />
-      {currentUser && <TVStreamingBanner />}
     </div>
   );
 };

@@ -101,41 +101,7 @@ export interface User {
   manualCredentials?: Record<string, string>;
 }
 
-// --- SUPPORT & SYSTEM TYPES ---
-
-export interface SupportFlowStep {
-  id: string;
-  message: string;
-  options: {
-    label: string;
-    next_step_id: string | null;
-    action?: 'link' | 'copy_credential' | 'check_subscription' | 'open_url';
-    action_value?: string
-  }[];
-}
-
-export interface Message {
-  id: string;
-  role: 'user' | 'model' | 'system';
-  text: string;
-  timestamp: Date;
-  options?: { label: string; action: () => void }[];
-}
-
-export interface NewsItem {
-  title: string;
-  link: string;
-  pubDate: string;
-  image: string;
-  source: string;
-}
-
-export interface SystemConfig {
-  bannerText: string;
-  bannerType: 'info' | 'warning' | 'error' | 'success';
-  bannerActive: boolean;
-  serviceStatus: Record<string, 'ok' | 'down' | 'maintenance'>;
-}
+// --- SYSTEM TYPES ---
 
 // --- HISTORY & LOGS ---
 

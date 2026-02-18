@@ -7,12 +7,6 @@
   <title>Clientes EuDorama</title>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
     rel="stylesheet">
-  <link rel="manifest" href="/manifest.json">
-  <meta name="theme-color" content="#ec4899">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="EuDorama">
-  <link rel="apple-touch-icon" href="/icon-192.png">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -72,33 +66,6 @@
       font-family: 'Inter', sans-serif;
     }
   </style>
-  <script type="importmap">
-{
-  "imports": {
-    "react/": "https://aistudiocdn.com/react@^19.2.1/",
-    "react": "https://aistudiocdn.com/react@^19.2.1",
-    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.1/",
-    "lucide-react": "https://esm.sh/lucide-react@0.460.0?external=react",
-    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@^2.45.0"
-  }
-}
-</script>
-  <script>
-    if ('serviceWorker' in navigator) {
-      if (window.isSecureContext) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js')
-            .then(reg => console.log('PWA: Service Worker registrado com sucesso!', reg.scope))
-            .catch(err => console.error('PWA: Falha ao registrar Service Worker:', err));
-        });
-      } else {
-        console.error('PWA: O navegador bloqueou o Service Worker porque esta conexão não é segura (HTTPS).');
-        console.warn('PWA: Para testar a instalação, use localhost ou acesse via HTTPS.');
-      }
-    } else {
-      console.warn('PWA: Service Worker não é suportado neste navegador.');
-    }
-  </script>
 </head>
 
 <body class="bg-gray-50 text-gray-800 antialiased">
