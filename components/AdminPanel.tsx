@@ -7,7 +7,7 @@ import {
     Plus, Trash2, Edit2, LogOut, Users, Search, AlertTriangle, X, ShieldAlert, Key,
     Clock, CheckCircle2, RefreshCw, Phone, Mail, Lock, Loader2, Eye, EyeOff,
     Calendar, Download, Upload, Shield, LayoutGrid, SortAsc, SortDesc, RotateCw,
-    ShieldCheck, UsersRound, ArrowUpRight, ArrowDownRight, DollarSign, MessageCircle,
+    ShieldCheck, UsersRound, ArrowUpRight, ArrowDownRight, MessageCircle,
     Sun, Moon, Fingerprint, Copy, Check, Zap, BarChart3, TrendingUp, Wallet, PieChart, Undo2, TrendingDown, Settings2,
     Activity, Banknote, CreditCard, Eraser, ListFilter, ArrowUpDown, Wifi, Filter, ChevronRight, History
 } from 'lucide-react';
@@ -97,6 +97,49 @@ const getDaysRemaining = (expiryDate: Date) => {
     return Math.ceil((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 };
 
+const safeDateMs = (value?: string | null) => {
+    if (!value) return 0;
+    const ms = new Date(value).getTime();
+    return Number.isNaN(ms) ? 0 : ms;
+};
+
+const getExpiringSortMeta = (client: ClientDBRow) => {
+    const subs = normalizeSubscriptions(client.subscriptions || [], client.duration_months);
+    const expiring = subs
+        .map((s) => {
+            const parts = s.split('|');
+            const startMs = safeDateMs(parts[1]);
+            const duration = parseInt(parts[3] || '1');
+            const expiry = calculateExpiry(parts[1], duration);
+            const days = getDaysRemaining(expiry);
+            return { startMs, expiryMs: expiry.getTime(), days };
+        })
+        .filter((item) => item.days <= 5 && item.days >= 0);
+
+    if (expiring.length === 0) {
+        return {
+            nearestExpiryMs: Number.MAX_SAFE_INTEGER,
+            inclusionMs: safeDateMs(client.created_at) || safeDateMs(client.purchase_date)
+        };
+    }
+
+    const nearestExpiryMs = Math.min(...expiring.map((item) => item.expiryMs));
+    const latestSubStartMs = Math.max(...expiring.map((item) => item.startMs));
+    const inclusionMs = Math.max(latestSubStartMs, safeDateMs(client.created_at), safeDateMs(client.purchase_date));
+    return { nearestExpiryMs, inclusionMs };
+};
+
+const getChargeTagMeta = (client: Partial<ClientDBRow>) => {
+    const gp = client.game_progress || {};
+    const lastAt = gp?._charge_whatsapp_last_at || null;
+    const lastAtMs = safeDateMs(lastAt);
+    const hasSent = Boolean(client.is_contacted || lastAtMs);
+    return {
+        hasSent,
+        label: hasSent && lastAtMs ? `Cobranca enviada em ${new Date(lastAtMs).toLocaleDateString()}` : 'Cobranca enviada'
+    };
+};
+
 const getCredentialHealth = (service: string, publishedAt: string, currentUsers: number) => {
     const pubDate = new Date(publishedAt);
     const now = new Date();
@@ -116,7 +159,7 @@ const getCredentialHealth = (service: string, publishedAt: string, currentUsers:
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const [activeTab, setActiveTab] = useState<'clients' | 'credentials' | 'buscar_login' | 'danger' | 'finances' | 'trash' | 'history'>('clients');
-    const [clientFilterStatus, setClientFilterStatus] = useState<'all' | 'charged' | 'expiring' | 'debtor'>('all');
+    const [clientFilterStatus, setClientFilterStatus] = useState<'all' | 'expiring' | 'debtor'>('all');
     const [clientSortByExpiry, setClientSortByExpiry] = useState(false);
     const [darkMode, setDarkMode] = useState(false);
     const [credentials, setCredentials] = useState<AppCredential[]>([]);
@@ -620,12 +663,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 const subs = normalizeSubscriptions(c.subscriptions || [], c.duration_months);
                 return subs.some(s => getDaysRemaining(calculateExpiry(s.split('|')[1], parseInt(s.split('|')[3] || '1'))) < 0);
             });
-        } else if (clientFilterStatus === 'charged') {
-            list = list.filter(c => {
-                if (c.deleted) return false;
-                const subs = normalizeSubscriptions(c.subscriptions || [], c.duration_months);
-                return subs.some(s => s.split('|')[2] === '1');
-            });
         } else if (clientFilterStatus === 'expiring') {
             list = list.filter(c => {
                 if (c.deleted) return false;
@@ -638,7 +675,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         }
 
         // Step 4: Apply sorting
-        if (clientSortByExpiry) {
+        if (clientFilterStatus === 'expiring') {
+            list = [...list].sort((a, b) => {
+                const aMeta = getExpiringSortMeta(a);
+                const bMeta = getExpiringSortMeta(b);
+                if (aMeta.nearestExpiryMs !== bMeta.nearestExpiryMs) return aMeta.nearestExpiryMs - bMeta.nearestExpiryMs;
+                return bMeta.inclusionMs - aMeta.inclusionMs;
+            });
+        } else if (clientSortByExpiry) {
             list = [...list].sort((a, b) => {
                 const getMinDays = (c: ClientDBRow) => {
                     if (c.deleted) return 99999;
@@ -679,6 +723,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                     .sort((a, b) => new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime());
 
                 let assignedLogin = "Não vinculada";
+                let assignedPassword = "-";
                 if (serviceCreds.length > 0) {
                     const clientsForThisService = clients
                         .filter(c => !c.deleted && normalizeSubscriptions(c.subscriptions || [], client.duration_months).some(s => s.toLowerCase().includes(serviceLower)))
@@ -687,9 +732,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                     if (rank !== -1) {
                         const credIndex = rank % serviceCreds.length;
                         assignedLogin = serviceCreds[credIndex].email;
+                        assignedPassword = serviceCreds[credIndex].password || "-";
                     }
                 }
-                return { serviceName, login: assignedLogin, daysLeft, isExpired: daysLeft < 0 };
+                return { serviceName, login: assignedLogin, password: assignedPassword, daysLeft, isExpired: daysLeft < 0 };
             });
             return { clientName: client.client_name || "Sem Nome", phoneNumber: client.phone_number, accesses: subAccesses };
         });
@@ -749,14 +795,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         setCredModalOpen(false);
         loadData();
         setLoading(false);
-    };
-
-    const handleMarkAsChargedQuick = async (client: ClientDBRow, subIndex: number) => {
-        const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
-        const parts = subs[subIndex].split('|');
-        subs[subIndex] = `${parts[0]}|${parts[1]}|1|${parts[3] || '1'}`;
-        await saveClientToDB({ ...client, subscriptions: subs });
-        loadData();
     };
 
     const handleRenewSmart = async (client: ClientDBRow, subIndex: number) => {
@@ -912,13 +950,33 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         enforceHistoryRetention();
     }, []);
 
-    const sendWhatsAppMessage = (phone: string, name: string, service: string, expiryDate: Date) => {
+    const sendWhatsAppMessage = async (phone: string, name: string, service: string, expiryDate: Date, client?: Partial<ClientDBRow>) => {
         const cleanPhone = phone.replace(/\D/g, '');
         const daysLeft = getDaysRemaining(expiryDate);
         let message = daysLeft < 0
-            ? `Olá ${name}! 🍿 Notamos que sua assinatura do ${service} venceu. Gostaria de renovar para continuar assistindo seus doramas favoritos conosco? Sem pressão, quando puder nos avise! 💖`
-            : `Olá ${name}! 👋 Passando para avisar que sua assinatura do ${service} vence em ${daysLeft} dias (${expiryDate.toLocaleDateString()}). Se quiser renovar antecipadamente para não perder o acesso, estamos à disposição! ✨`;
+            ? `Ola ${name}! Notamos que sua assinatura do ${service} venceu. Quer renovar para continuar assistindo seus doramas favoritos?`
+            : `Ola ${name}! Sua assinatura do ${service} vence em ${daysLeft} dias (${expiryDate.toLocaleDateString()}). Se quiser renovar antes para nao perder o acesso, estamos a disposicao.`;
         window.open(`https://wa.me/55${cleanPhone}?text=${encodeURIComponent(message)}`, '_blank');
+
+        if (!client?.id || !client.phone_number) return;
+
+        const nowIso = new Date().toISOString();
+        const currentProgress = client.game_progress || {};
+        const previousServices = Array.isArray(currentProgress._charge_whatsapp_services) ? currentProgress._charge_whatsapp_services : [];
+        const nextProgress = {
+            ...currentProgress,
+            _charge_whatsapp_last_at: nowIso,
+            _charge_whatsapp_last_service: service,
+            _charge_whatsapp_services: Array.from(new Set([...previousServices, service]))
+        };
+
+        setClients(prev => prev.map(c => c.id === client.id ? { ...c, is_contacted: true, game_progress: nextProgress } : c));
+        await saveClientToDB({
+            id: client.id,
+            phone_number: client.phone_number,
+            is_contacted: true,
+            game_progress: nextProgress
+        });
     };
 
     return (
@@ -974,9 +1032,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                 <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide flex-1">
                                     {[
                                         { id: 'all', label: 'Todos', color: 'bg-indigo-600 text-white' },
-                                        { id: 'charged', label: 'Cobrados', color: 'bg-emerald-100 text-emerald-700' },
-                                        { id: 'expiring', label: 'Vencendo', color: 'bg-orange-100 text-orange-700' },
-                                        { id: 'debtor', label: 'Pendentes', color: 'bg-red-100 text-red-700' }
+                                        { id: 'expiring', label: 'Vencimento Proximo', color: 'bg-orange-100 text-orange-700' },
+                                        { id: 'debtor', label: 'Vencidos', color: 'bg-red-100 text-red-700' }
                                     ].map(f => (
                                         <button key={f.id} onClick={() => setClientFilterStatus(f.id as any)} className={`px-5 py-2.5 rounded-xl text-[10px] font-black uppercase border transition-all whitespace-nowrap ${clientFilterStatus === f.id ? f.color : 'bg-white dark:bg-slate-900 text-indigo-300 border-indigo-100 dark:border-slate-800'}`}>{f.label}</button>
                                     ))}
@@ -1000,6 +1057,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                             <p className="text-xs font-bold text-indigo-400 mt-1 flex items-center gap-1.5">
                                                 <Phone size={12} /> {client.phone_number}
                                                 {client.deleted && <span className="bg-red-600 text-white px-2 py-0.5 rounded-md text-[9px] uppercase tracking-widest ml-2">Lixeira</span>}
+                                                {getChargeTagMeta(client).hasSent && <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-md text-[9px] uppercase tracking-widest ml-2">{getChargeTagMeta(client).label}</span>}
+                                                {clientFilterStatus === 'expiring' && getExpiringSortMeta(client).inclusionMs > 0 && (
+                                                    <span className="bg-amber-100 text-amber-700 px-2 py-0.5 rounded-md text-[9px] uppercase tracking-widest ml-2">
+                                                        Incluido: {new Date(getExpiringSortMeta(client).inclusionMs).toLocaleDateString()}
+                                                    </span>
+                                                )}
                                                 {client.observation && <span title={client.observation} className="text-amber-500 cursor-help"><AlertTriangle size={14} /></span>}
                                             </p>
                                         </div>
@@ -1026,7 +1089,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                             const serviceName = parts[0];
                                             const expiry = calculateExpiry(parts[1], parseInt(parts[3] || '1'));
                                             const daysLeft = getDaysRemaining(expiry);
-                                            const isCharged = parts[2] === '1';
 
                                             // Tolerance Check
                                             const toleranceDate = parts[4] ? new Date(parts[4]) : null;
@@ -1051,8 +1113,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                             </span>
                                                         </div>
                                                         <div className="flex gap-1.5">
-                                                            <button onClick={() => sendWhatsAppMessage(client.phone_number, client.client_name || 'Dorameira', serviceName, expiry)} className="p-2.5 bg-white/50 dark:bg-slate-800/50 hover:bg-emerald-500 hover:text-white rounded-xl transition-all"><MessageCircle size={16} className="text-emerald-600 dark:text-emerald-400 hover:text-inherit" /></button>
-                                                            {!isCharged && <button onClick={() => { setClientForm({ ...clientForm, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months).map((s, idx) => idx === i ? `${s.split('|')[0]}|${s.split('|')[1]}|1|${s.split('|')[3] || '1'}` : s) }); handleMarkAsChargedQuick(client, i); }} className="p-2.5 bg-white/50 dark:bg-slate-800/50 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-900/50 rounded-xl hover:bg-indigo-600 hover:text-white transition-all"><DollarSign size={16} /></button>}
+                                                            <button onClick={() => { void sendWhatsAppMessage(client.phone_number, client.client_name || 'Dorameira', serviceName, expiry, client); }} className="p-2.5 bg-white/50 dark:bg-slate-800/50 hover:bg-emerald-500 hover:text-white rounded-xl transition-all"><MessageCircle size={16} className="text-emerald-600 dark:text-emerald-400 hover:text-inherit" /></button>
                                                         </div>
                                                     </div>
                                                     <div className="flex gap-2">
@@ -1546,7 +1607,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                 const serviceName = parts[0];
                                                 const expiry = calculateExpiry(parts[1], parseInt(parts[3] || '1'));
                                                 const daysLeft = getDaysRemaining(expiry);
-                                                const isCharged = parts[2] === '1';
 
                                                 // Tolerance Check
                                                 const toleranceDate = parts[4] ? new Date(parts[4]) : null;
@@ -1601,7 +1661,48 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                 loginSearchResults.map((res, i) => (
                                     <div key={i} className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-indigo-100 dark:border-slate-800 animate-slide-up">
                                         <div className="flex justify-between items-center mb-6 px-2"><div><h4 className="font-black text-xl text-gray-900 dark:text-white leading-none">{res.clientName}</h4><p className="text-xs font-bold text-indigo-400 mt-1 flex items-center gap-1.5"><Phone size={12} /> {res.phoneNumber}</p></div><div className="bg-indigo-50 text-indigo-600 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest">{res.accesses.length} Assinaturas</div></div>
-                                        <div className="overflow-x-auto"><table className="w-full text-left border-separate border-spacing-y-2"><thead><tr className="text-[10px] font-black uppercase text-indigo-300 tracking-widest"><th className="px-4 py-2">Aplicativo</th><th className="px-4 py-2">Status</th><th className="px-4 py-2">E-mail de Acesso</th><th className="px-4 py-2 text-right">Ação</th></tr></thead><tbody>{res.accesses.map((acc, idx) => (<tr key={idx} className={`group hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors ${acc.isExpired ? 'opacity-60' : ''}`}><td className="px-4 py-4 rounded-l-2xl bg-gray-50 dark:bg-slate-800/50"><span className="font-black text-sm text-gray-800 dark:text-gray-200">{acc.serviceName}</span></td><td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50"><span className={`px-2.5 py-1 rounded-lg text-[9px] font-black uppercase border ${acc.isExpired ? 'bg-red-50 text-red-600 border-red-100' : 'bg-green-50 text-green-700 border-green-100'}`}>{acc.isExpired ? 'Expirada' : 'Ativa'}</span></td><td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50"><span className="font-mono text-xs font-bold text-indigo-600 dark:text-indigo-400">{acc.login}</span></td><td className="px-4 py-4 rounded-r-2xl bg-gray-50 dark:bg-slate-800/50 text-right"><button onClick={() => copyToClipboard(acc.login, `copy-login-${i}-${idx}`)} className="p-2 hover:bg-white rounded-lg transition-all text-indigo-400 hover:text-indigo-600 shadow-sm" title="Copiar Login">{copiedId === `copy-login-${i}-${idx}` ? <Check size={16} className="text-green-500" /> : <Copy size={16} />}</button></td></tr>))}</tbody></table></div>
+                                        <div className="overflow-x-auto">
+                                            <table className="w-full text-left border-separate border-spacing-y-2">
+                                                <thead>
+                                                    <tr className="text-[10px] font-black uppercase text-indigo-300 tracking-widest">
+                                                        <th className="px-4 py-2">Aplicativo</th>
+                                                        <th className="px-4 py-2">Status</th>
+                                                        <th className="px-4 py-2">E-mail de Acesso</th>
+                                                        <th className="px-4 py-2">Senha</th>
+                                                        <th className="px-4 py-2 text-right">Acao</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {res.accesses.map((acc, idx) => (
+                                                        <tr key={idx} className={`group hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors ${acc.isExpired ? 'opacity-60' : ''}`}>
+                                                            <td className="px-4 py-4 rounded-l-2xl bg-gray-50 dark:bg-slate-800/50">
+                                                                <span className="font-black text-sm text-gray-800 dark:text-gray-200">{acc.serviceName}</span>
+                                                            </td>
+                                                            <td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50">
+                                                                <span className={`px-2.5 py-1 rounded-lg text-[9px] font-black uppercase border ${acc.isExpired ? 'bg-red-50 text-red-600 border-red-100' : 'bg-green-50 text-green-700 border-green-100'}`}>
+                                                                    {acc.isExpired ? 'Expirada' : 'Ativa'}
+                                                                </span>
+                                                            </td>
+                                                            <td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50">
+                                                                <span className="font-mono text-xs font-bold text-indigo-600 dark:text-indigo-400">{acc.login}</span>
+                                                            </td>
+                                                            <td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50">
+                                                                <span className="font-mono text-xs font-bold text-indigo-600 dark:text-indigo-400">{acc.password}</span>
+                                                            </td>
+                                                            <td className="px-4 py-4 rounded-r-2xl bg-gray-50 dark:bg-slate-800/50 text-right">
+                                                                <button
+                                                                    onClick={() => copyToClipboard(`Login: ${acc.login} | Senha: ${acc.password}`, `copy-login-${i}-${idx}`)}
+                                                                    className="p-2 hover:bg-white rounded-lg transition-all text-indigo-400 hover:text-indigo-600 shadow-sm"
+                                                                    title="Copiar Login e Senha"
+                                                                >
+                                                                    {copiedId === `copy-login-${i}-${idx}` ? <Check size={16} className="text-green-500" /> : <Copy size={16} />}
+                                                                </button>
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
                                     </div>
                                 ))
                             )}
@@ -1884,11 +1985,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                         const durationStr = parts[3] || String(clientForm.duration_months || 1);
                                         const duration = parseInt(durationStr);
                                         const expiryDate = calculateExpiry(startDate, duration);
-                                        const isCharged = parts[2] === '1';
                                         return (
                                             <div key={i} className="flex flex-col p-5 bg-gray-50 dark:bg-slate-800 rounded-3xl border border-indigo-50 dark:border-slate-700 gap-4 shadow-sm">
-                                                <div className="flex justify-between items-center"><p className="font-black text-gray-800 dark:text-white uppercase">{serviceName}</p><div className="flex gap-2"><button onClick={() => sendWhatsAppMessage(clientForm.phone_number || '', clientForm.client_name || 'Dorameira', serviceName, expiryDate)} className="p-2 text-emerald-500 hover:bg-emerald-50 rounded-xl" title="Mandar cobrança WhatsApp"><MessageCircle size={20} /></button><button onClick={() => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; n.splice(i, 1); setClientForm({ ...clientForm, subscriptions: n }); }} className="p-2 text-red-400 hover:bg-red-50 rounded-xl" title="Remover Assinatura"><Trash2 size={20} /></button></div></div>
-                                                <div className="space-y-3"><div className="grid grid-cols-2 gap-3"><div className="space-y-1"><label className="text-[9px] font-black uppercase text-indigo-400 ml-1">Data de Início</label><input type="date" className="w-full bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-bold outline-none border border-indigo-50" value={toDateInput(startDate)} onChange={(e) => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; if (n[i]) { const p = n[i].split('|'); n[i] = `${p[0]}|${new Date(e.target.value).toISOString()}|${p[2]}|${p[3] || '1'}|${p[4] || ''}|${p[5] || p[1]}`; setClientForm({ ...clientForm, subscriptions: n }); } }} /></div><div className="space-y-1"><label className="text-[9px] font-black uppercase text-indigo-400 ml-1">Plano</label><div className="flex gap-1.5"><select className="flex-1 bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-black outline-none border border-indigo-50 h-[34px]" value={durationStr} onChange={(e) => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; if (n[i]) { const p = n[i].split('|'); n[i] = `${p[0]}|${p[1]}|${p[2]}|${e.target.value}|${p[4] || ''}|${p[5] || p[1]}`; setClientForm({ ...clientForm, subscriptions: n }); } }}>{PLAN_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}</select><button onClick={() => handleModalSmartRenew(i)} className="p-1.5 bg-indigo-600 text-white rounded-xl shadow-sm hover:bg-indigo-700 transition-all active:scale-90" title="Renovação Inteligente"><Zap size={16} /></button></div></div></div><div className="grid grid-cols-2 gap-2"><div className="bg-indigo-50/50 dark:bg-slate-900/50 p-2.5 rounded-xl border border-indigo-100/50 flex justify-between items-center"><span className="text-[9px] font-black text-indigo-400 uppercase">Fim</span><span className="text-xs font-black text-indigo-600">{expiryDate.toLocaleDateString()}</span></div><button onClick={() => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; if (n[i]) { const p = n[i].split('|'); n[i] = `${p[0]}|${p[1]}|${isCharged ? '0' : '1'}|${p[3] || '1'}|${p[4] || ''}|${p[5] || p[1]}`; setClientForm({ ...clientForm, subscriptions: n }); } }} className={`rounded-xl text-[9px] font-black uppercase border transition-all ${isCharged ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-indigo-600 border-indigo-100'}`}>{isCharged ? 'Cobrado ✓' : 'Marcar Cobrado'}</button></div><div className="flex gap-2 items-center mt-2"><input type="number" min="1" max="365" placeholder="Dias" className="w-20 bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-bold outline-none border border-emerald-200 focus:border-emerald-400 text-center" value={daysToAddInputs[i] || ''} onChange={(e) => setDaysToAddInputs({ ...daysToAddInputs, [i]: parseInt(e.target.value) || 0 })} /><button onClick={() => { handleModalAddDays(i, daysToAddInputs[i] || 0); setDaysToAddInputs({ ...daysToAddInputs, [i]: 0 }); }} className="flex-1 bg-emerald-500 text-white p-2 rounded-xl text-[10px] font-black uppercase hover:bg-emerald-600 transition-all flex items-center justify-center gap-1" title="Adicionar dias manualmente à assinatura"><Plus size={14} /> Adicionar Dias</button></div></div>
+                                                <div className="flex justify-between items-center"><p className="font-black text-gray-800 dark:text-white uppercase">{serviceName}</p><div className="flex gap-2"><button onClick={() => { void sendWhatsAppMessage(clientForm.phone_number || '', clientForm.client_name || 'Dorameira', serviceName, expiryDate, clientForm); }} className="p-2 text-emerald-500 hover:bg-emerald-50 rounded-xl" title="Mandar cobrança WhatsApp"><MessageCircle size={20} /></button><button onClick={() => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; n.splice(i, 1); setClientForm({ ...clientForm, subscriptions: n }); }} className="p-2 text-red-400 hover:bg-red-50 rounded-xl" title="Remover Assinatura"><Trash2 size={20} /></button></div></div>
+                                                <div className="space-y-3"><div className="grid grid-cols-2 gap-3"><div className="space-y-1"><label className="text-[9px] font-black uppercase text-indigo-400 ml-1">Data de Início</label><input type="date" className="w-full bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-bold outline-none border border-indigo-50" value={toDateInput(startDate)} onChange={(e) => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; if (n[i]) { const p = n[i].split('|'); n[i] = `${p[0]}|${new Date(e.target.value).toISOString()}|${p[2]}|${p[3] || '1'}|${p[4] || ''}|${p[5] || p[1]}`; setClientForm({ ...clientForm, subscriptions: n }); } }} /></div><div className="space-y-1"><label className="text-[9px] font-black uppercase text-indigo-400 ml-1">Plano</label><div className="flex gap-1.5"><select className="flex-1 bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-black outline-none border border-indigo-50 h-[34px]" value={durationStr} onChange={(e) => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; if (n[i]) { const p = n[i].split('|'); n[i] = `${p[0]}|${p[1]}|${p[2]}|${e.target.value}|${p[4] || ''}|${p[5] || p[1]}`; setClientForm({ ...clientForm, subscriptions: n }); } }}>{PLAN_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}</select><button onClick={() => handleModalSmartRenew(i)} className="p-1.5 bg-indigo-600 text-white rounded-xl shadow-sm hover:bg-indigo-700 transition-all active:scale-90" title="Renovação Inteligente"><Zap size={16} /></button></div></div></div><div className="grid grid-cols-1 gap-2"><div className="bg-indigo-50/50 dark:bg-slate-900/50 p-2.5 rounded-xl border border-indigo-100/50 flex justify-between items-center"><span className="text-[9px] font-black text-indigo-400 uppercase">Fim</span><span className="text-xs font-black text-indigo-600">{expiryDate.toLocaleDateString()}</span></div></div><div className="flex gap-2 items-center mt-2"><input type="number" min="1" max="365" placeholder="Dias" className="w-20 bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-bold outline-none border border-emerald-200 focus:border-emerald-400 text-center" value={daysToAddInputs[i] || ''} onChange={(e) => setDaysToAddInputs({ ...daysToAddInputs, [i]: parseInt(e.target.value) || 0 })} /><button onClick={() => { handleModalAddDays(i, daysToAddInputs[i] || 0); setDaysToAddInputs({ ...daysToAddInputs, [i]: 0 }); }} className="flex-1 bg-emerald-500 text-white p-2 rounded-xl text-[10px] font-black uppercase hover:bg-emerald-600 transition-all flex items-center justify-center gap-1" title="Adicionar dias manualmente à assinatura"><Plus size={14} /> Adicionar Dias</button></div></div>
                                             </div>
                                         );
                                     })}
