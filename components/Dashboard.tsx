@@ -25,6 +25,8 @@ interface DashboardProps {
     onUpdateUser: (updatedUser: User) => void;
     syncTrigger?: number;
     onRefresh?: () => Promise<void>;
+    onInstallPwa?: () => Promise<'prompted' | 'already_installed' | 'ios_manual' | 'unsupported'>;
+    isPwaInstalled?: boolean;
 }
 
 const THEME_OPTIONS = [
@@ -142,7 +144,7 @@ const getFriendlyProgressMessage = (
     return '';
 };
 
-const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette, setShowPalette, onUpdateUser, syncTrigger = 0, onRefresh }) => {
+const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette, setShowPalette, onUpdateUser, syncTrigger = 0, onRefresh, onInstallPwa, isPwaInstalled = false }) => {
     const [mergedData, setMergedData] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [uploading, setUploading] = useState(false);
@@ -324,6 +326,24 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
         navigator.clipboard.writeText(text.trim());
         setCopiedId(id);
         setTimeout(() => setCopiedId(null), 2000);
+    };
+
+    const handleInstallPwa = async () => {
+        const result = onInstallPwa ? await onInstallPwa() : 'unsupported';
+
+        if (result === 'already_installed') {
+            alert('O aplicativo ja esta instalado neste celular.');
+            return;
+        }
+
+        if (result === 'ios_manual') {
+            alert('No iPhone/iPad, toque em Compartilhar e depois em "Adicionar a Tela de Inicio".');
+            return;
+        }
+
+        if (result === 'unsupported') {
+            alert('Abra o menu do navegador e toque em "Instalar app" para concluir a instalacao.');
+        }
     };
 
     const openVikiTvModal = (serviceName: string) => {
@@ -767,6 +787,15 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                             >
                                 <RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} />
                                 <span className="text-[11px] font-black uppercase tracking-wide">{isRefreshing ? 'Atualizando...' : 'Atualizar informações da conta'}</span>
+                            </button>
+                            <button
+                                onClick={() => {
+                                    void handleInstallPwa();
+                                }}
+                                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full border bg-white shadow-sm transition-all active:scale-95 ${isPwaInstalled ? 'border-emerald-200 text-emerald-600' : 'border-indigo-100 text-indigo-600 hover:bg-indigo-50 hover:border-indigo-300'}`}
+                            >
+                                <Smartphone size={14} />
+                                <span className="text-[11px] font-black uppercase tracking-wide">Instalar no celular</span>
                             </button>
                         </div>
                     </div>

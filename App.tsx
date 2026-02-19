@@ -24,6 +24,13 @@ const AdminLogin = lazy(() => import('./components/AdminLogin'));
 const AdminPanel = lazy(() => import('./components/AdminPanel').then(mod => ({ default: mod.AdminPanel })));
 
 type UserNotice = 'price' | 'new_app';
+type PwaInstallResult = 'prompted' | 'already_installed' | 'ios_manual' | 'unsupported';
+
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+}
+
 const PRICE_NOTICE_KEY = 'eudorama_notice_price_2026_seen';
 const NEW_APP_NOTICE_KEY = 'eudorama_notice_new_app_seen';
 
@@ -58,7 +65,26 @@ const App: React.FC = () => {
 
   const [showNameModal, setShowNameModal] = useState(false);
   const [activeNotice, setActiveNotice] = useState<UserNotice | null>(null);
+  const [deferredInstallPrompt, setDeferredInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [isPwaInstalled, setIsPwaInstalled] = useState(false);
   const lastRefreshRef = useRef<number>(0);
+
+  const handleInstallPwa = useCallback(async (): Promise<PwaInstallResult> => {
+    if (isPwaInstalled) return 'already_installed';
+
+    if (deferredInstallPrompt) {
+      await deferredInstallPrompt.prompt();
+      await deferredInstallPrompt.userChoice;
+      setDeferredInstallPrompt(null);
+      return 'prompted';
+    }
+
+    const userAgent = window.navigator.userAgent.toLowerCase();
+    const isIos = /iphone|ipad|ipod/.test(userAgent);
+    if (isIos) return 'ios_manual';
+
+    return 'unsupported';
+  }, [deferredInstallPrompt, isPwaInstalled]);
 
   const handleRefreshSession = useCallback(async (silent: boolean = false) => {
     if (!currentUser) return;
@@ -115,6 +141,33 @@ const App: React.FC = () => {
       setIsAdminMode(true);
       setIsAdminLoggedIn(true);
     }
+  }, []);
+
+  useEffect(() => {
+    const detectStandaloneMode = () => {
+      const nav = window.navigator as Navigator & { standalone?: boolean };
+      const standalone = window.matchMedia('(display-mode: standalone)').matches || nav.standalone === true;
+      setIsPwaInstalled(standalone);
+    };
+
+    const handleBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setDeferredInstallPrompt(event as BeforeInstallPromptEvent);
+    };
+
+    const handleAppInstalled = () => {
+      setDeferredInstallPrompt(null);
+      setIsPwaInstalled(true);
+    };
+
+    detectStandaloneMode();
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt as EventListener);
+    window.addEventListener('appinstalled', handleAppInstalled);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt as EventListener);
+      window.removeEventListener('appinstalled', handleAppInstalled);
+    };
   }, []);
 
   useEffect(() => {
@@ -394,6 +447,8 @@ const App: React.FC = () => {
             onUpdateUser={handleUpdateUser}
             syncTrigger={syncTrigger}
             onRefresh={() => handleRefreshSession(false)}
+            onInstallPwa={handleInstallPwa}
+            isPwaInstalled={isPwaInstalled}
           />
         );
       case 'watching':
