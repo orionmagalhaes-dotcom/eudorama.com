@@ -14,7 +14,7 @@ import {
 } from '../services/clientService';
 import {
     Copy, Check, CreditCard, Star, Crown, Sparkles, Loader2,
-    RotateCw, Key, Smartphone, Mail, Lock, AlertTriangle, PlusCircle, ArrowRight, Edit3, Fingerprint, ShieldAlert, Palette, Camera, X, CheckCircle2, Upload, Trash2, Clock, Zap, ShoppingBag, ArrowUpRight, RefreshCw, Bell, Calendar, Heart
+    RotateCw, Key, Smartphone, Mail, Lock, AlertTriangle, PlusCircle, ArrowRight, Edit3, Fingerprint, ShieldAlert, Palette, Camera, X, CheckCircle2, Upload, Trash2, Clock, Zap, ShoppingBag, ArrowUpRight, RefreshCw, Bell, Calendar, Heart, MessageCircle
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -74,6 +74,54 @@ const getVikiStepBadge = (status: VikiTvAutomationStep['status']) => {
     return { label: 'Pendente', className: 'text-gray-600 bg-gray-100' };
 };
 
+type VikiTvFinalFeedbackType = 'none' | 'invalid_code' | 'accepted_code' | 'generic_error';
+
+const VIKI_TV_SUPPORT_WHATSAPP_URL = 'https://wa.me/558894875029?text=Ol%C3%A1!%20Preciso%20de%20assistencia%20na%20conexao%20da%20TV%20na%20Viki.';
+
+const normalizeFeedbackText = (value: string | undefined | null) =>
+    String(value || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '');
+
+const getVikiTvFinalFeedback = (
+    executionStatus: VikiTvUiExecutionStatus,
+    backendMessage: string | null,
+    steps: VikiTvAutomationStep[]
+): { type: VikiTvFinalFeedbackType; message: string } => {
+    if (!VIKI_TV_TERMINAL_STATUSES.has(executionStatus)) {
+        return { type: 'none', message: '' };
+    }
+
+    const codeStep = steps.find((step) => step.key === 'code');
+    const joinedText = normalizeFeedbackText(
+        [backendMessage, codeStep?.details, ...steps.map((step) => step.details || '')]
+            .filter(Boolean)
+            .join(' ')
+    );
+
+    const hasInvalidCodeSignal = /codigo invalido|code is not valid|valid samsung tv code|valid lg tv code|valid android tv code/.test(joinedText);
+    if (hasInvalidCodeSignal) {
+        return {
+            type: 'invalid_code',
+            message: 'O codigo que voce inseriu foi invalido. Confira o codigo na TV e tente novamente.'
+        };
+    }
+
+    const hasAcceptedCodeSignal = /codigo aceito|codigo enviado para vinculacao|vinculacao/.test(joinedText);
+    if (executionStatus === 'success' || hasAcceptedCodeSignal) {
+        return {
+            type: 'accepted_code',
+            message: 'Conexao com a TV bem-sucedida.'
+        };
+    }
+
+    return {
+        type: 'generic_error',
+        message: 'Nao foi possivel concluir a conexao automaticamente.'
+    };
+};
+
 const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette, setShowPalette, onUpdateUser, syncTrigger = 0, onRefresh }) => {
     const [mergedData, setMergedData] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
@@ -90,6 +138,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
     const [vikiTvCode, setVikiTvCode] = useState('');
     const [vikiTvError, setVikiTvError] = useState<string | null>(null);
     const [vikiTvNotice, setVikiTvNotice] = useState<string | null>(null);
+    const [vikiTvBackendMessage, setVikiTvBackendMessage] = useState<string | null>(null);
     const [isSubmittingVikiTv, setIsSubmittingVikiTv] = useState(false);
     const [vikiTvRequestId, setVikiTvRequestId] = useState<string | null>(null);
     const [vikiTvExecutionStatus, setVikiTvExecutionStatus] = useState<VikiTvUiExecutionStatus>('idle');
@@ -112,6 +161,27 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
         const item = mergedData.find(data => data.name === activeVikiService);
         return item?.cred || null;
     }, [activeVikiService, mergedData]);
+
+    const vikiTvFinalFeedback = useMemo(
+        () => getVikiTvFinalFeedback(vikiTvExecutionStatus, vikiTvBackendMessage, vikiTvSteps),
+        [vikiTvExecutionStatus, vikiTvBackendMessage, vikiTvSteps]
+    );
+
+    const vikiTvCurrentStep = useMemo(() => {
+        if (vikiTvSteps.length === 0) return null;
+
+        const runningStep = vikiTvSteps.find((step) => step.status === 'running');
+        if (runningStep) return runningStep;
+
+        const failedStep = [...vikiTvSteps].reverse().find((step) => step.status === 'failed');
+        if (failedStep) return failedStep;
+
+        const pendingStep = vikiTvSteps.find((step) => step.status === 'pending');
+        if (pendingStep) return pendingStep;
+
+        const lastSuccessStep = [...vikiTvSteps].reverse().find((step) => step.status === 'success');
+        return lastSuccessStep || vikiTvSteps[0];
+    }, [vikiTvSteps]);
 
     const getBgClass = () => {
         switch (user.themeColor) {
@@ -237,6 +307,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
         setVikiTvCode('');
         setVikiTvError(null);
         setVikiTvNotice(null);
+        setVikiTvBackendMessage(null);
         setIsSubmittingVikiTv(false);
         setVikiTvRequestId(null);
         setVikiTvExecutionStatus('idle');
@@ -248,6 +319,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
         setShowVikiTvModal(false);
         setVikiTvError(null);
         setVikiTvNotice(null);
+        setVikiTvBackendMessage(null);
         setIsSubmittingVikiTv(false);
         setVikiTvRequestId(null);
         setVikiTvExecutionStatus('idle');
@@ -296,6 +368,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
             setIsSubmittingVikiTv(true);
             setVikiTvError(null);
             setVikiTvNotice(null);
+            setVikiTvBackendMessage(null);
             setVikiTvExecutionStatus('running');
             setVikiTvSteps(initialSteps);
             setVikiTvRequestId(null);
@@ -314,6 +387,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
             setVikiTvRequestId(response.requestId);
             setVikiTvExecutionStatus(response.executionStatus);
             setVikiTvSteps(response.steps && response.steps.length > 0 ? response.steps : initialSteps);
+            setVikiTvBackendMessage(response.message);
 
             const gameProgressUpdate = {
                 requestId: response.requestId,
@@ -337,15 +411,12 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
             onUpdateUser(updatedUser);
 
             setVikiTvNotice(`${response.message} ID: ${response.requestId}`);
-            if (response.executionStatus === 'failed') {
-                setVikiTvError('A automacao foi iniciada, mas retornou falha. Veja as etapas abaixo.');
-            } else {
-                setVikiTvError(null);
-            }
+            setVikiTvError(null);
             setVikiTvCode('');
         } catch (e) {
             console.error('Erro ao iniciar automacao Viki TV:', e);
-            setVikiTvError('Falha ao iniciar automacao em background. Tente novamente.');
+            setVikiTvError(null);
+            setVikiTvBackendMessage('Falha ao iniciar automacao em background.');
             setVikiTvExecutionStatus('failed');
             setVikiTvSteps(prev => prev.length > 0 ? prev.map(step => {
                 if (step.key === 'request') {
@@ -377,12 +448,10 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
 
                 setVikiTvExecutionStatus(status.executionStatus);
                 if (status.steps?.length > 0) setVikiTvSteps(status.steps);
+                setVikiTvBackendMessage(status.message);
                 setVikiTvNotice(`${status.message} ID: ${status.requestId}`);
 
-                if (status.executionStatus === 'failed') {
-                    setVikiTvError('A automacao retornou falha. Confira as etapas para identificar o ponto.');
-                }
-                if (status.executionStatus === 'success') {
+                if (status.executionStatus === 'success' || status.executionStatus === 'failed') {
                     setVikiTvError(null);
                 }
                 if (VIKI_TV_TERMINAL_STATUSES.has(status.executionStatus) && timerId) {
@@ -562,21 +631,18 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                             {vikiTvRequestId && (
                                 <p className="text-[10px] font-mono text-gray-500 break-all">ID: {vikiTvRequestId}</p>
                             )}
-                            {vikiTvSteps.length > 0 && (
-                                <div className="space-y-2 max-h-44 overflow-y-auto pr-1">
-                                    {vikiTvSteps.map((step) => (
-                                        <div key={step.key} className="bg-white border border-gray-100 rounded-lg px-3 py-2">
-                                            <div className="flex items-center justify-between gap-2">
-                                                <p className="text-[11px] font-bold text-gray-700">{step.label}</p>
-                                                <span className={`px-2 py-1 rounded-md text-[9px] font-black uppercase ${getVikiStepBadge(step.status).className}`}>
-                                                    {getVikiStepBadge(step.status).label}
-                                                </span>
-                                            </div>
-                                            {step.details && (
-                                                <p className="text-[10px] text-gray-500 font-semibold mt-1">{step.details}</p>
-                                            )}
-                                        </div>
-                                    ))}
+                            {vikiTvCurrentStep && (
+                                <div className="bg-white border border-gray-100 rounded-lg px-3 py-2 space-y-1">
+                                    <p className="text-[10px] font-black uppercase text-gray-500">Etapa atual</p>
+                                    <div className="flex items-center justify-between gap-2">
+                                        <p className="text-[11px] font-bold text-gray-700">{vikiTvCurrentStep.label}</p>
+                                        <span className={`px-2 py-1 rounded-md text-[9px] font-black uppercase ${getVikiStepBadge(vikiTvCurrentStep.status).className}`}>
+                                            {getVikiStepBadge(vikiTvCurrentStep.status).label}
+                                        </span>
+                                    </div>
+                                    {vikiTvCurrentStep.details && (
+                                        <p className="text-[10px] text-gray-500 font-semibold">{vikiTvCurrentStep.details}</p>
+                                    )}
                                 </div>
                             )}
                         </div>
@@ -584,8 +650,28 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                         {vikiTvError && (
                             <p className="text-xs font-bold text-red-600 bg-red-50 border border-red-100 rounded-xl p-3">{vikiTvError}</p>
                         )}
-                        {vikiTvNotice && (
+                        {vikiTvFinalFeedback.type === 'none' && vikiTvNotice && (
                             <p className="text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-xl p-3">{vikiTvNotice}</p>
+                        )}
+                        {vikiTvFinalFeedback.type === 'invalid_code' && (
+                            <p className="text-xs font-bold text-amber-700 bg-amber-50 border border-amber-100 rounded-xl p-3">{vikiTvFinalFeedback.message}</p>
+                        )}
+                        {vikiTvFinalFeedback.type === 'accepted_code' && (
+                            <p className="text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-xl p-3">{vikiTvFinalFeedback.message}</p>
+                        )}
+                        {vikiTvFinalFeedback.type === 'generic_error' && (
+                            <div className="bg-red-50 border border-red-100 rounded-xl p-3 space-y-3">
+                                <p className="text-xs font-bold text-red-700">{vikiTvFinalFeedback.message}</p>
+                                <a
+                                    href={VIKI_TV_SUPPORT_WHATSAPP_URL}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="w-full inline-flex items-center justify-center gap-2 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black uppercase tracking-wide transition-colors"
+                                >
+                                    <MessageCircle size={14} />
+                                    Falar com assistencia no WhatsApp
+                                </a>
+                            </div>
                         )}
 
                         <button
