@@ -360,20 +360,28 @@ const Login: React.FC<LoginProps> = ({ onLogin, onAdminClick, onAdminLoginSucces
                     </div>
                 </div>
 
-                {/* CHECKBOX PERMANECER CONECTADO */}
-                <div className="flex items-center justify-center py-1">
-                    <label className="flex items-center gap-3 cursor-pointer group bg-gray-50 px-4 py-2 rounded-full border border-gray-100 hover:bg-gray-100 transition-colors">
-                        <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${keepConnected ? 'bg-pink-500 border-pink-500' : 'bg-white border-gray-300 group-hover:border-pink-300'}`}>
-                            {keepConnected && <Check className="w-3 h-3 text-white" />}
-                        </div>
-                        <input 
-                            type="checkbox" 
-                            className="hidden" 
-                            checked={keepConnected} 
-                            onChange={(e) => setKeepConnected(e.target.checked)} 
-                        />
-                        <span className={`text-sm font-bold text-gray-600 select-none`}>Permanecer conectado</span>
-                    </label>
+                {/* PREFERENCIA DE SESSAO */}
+                <div className="space-y-2">
+                    <p className={`text-[11px] font-black uppercase tracking-widest text-center opacity-70 ${theme.subTextClass}`}>
+                        Sessao
+                    </p>
+                    <div className="grid grid-cols-2 gap-2">
+                        <button
+                            type="button"
+                            onClick={() => setKeepConnected(true)}
+                            className={`py-2.5 rounded-xl border text-[11px] font-black uppercase transition-all active:scale-95 flex items-center justify-center gap-1.5 ${keepConnected ? 'bg-pink-500 border-pink-500 text-white shadow-md shadow-pink-200' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}
+                        >
+                            {keepConnected && <Check className="w-3.5 h-3.5" />}
+                            Permanecer conectado
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setKeepConnected(false)}
+                            className={`py-2.5 rounded-xl border text-[11px] font-black uppercase transition-all active:scale-95 ${!keepConnected ? 'bg-gray-900 border-gray-900 text-white shadow-md' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}
+                        >
+                            Somente nesta sessao
+                        </button>
+                    </div>
                 </div>
 
                 {error && (

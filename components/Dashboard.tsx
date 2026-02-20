@@ -2,6 +2,7 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { User } from '../types';
 import { getAssignedCredential } from '../services/credentialService';
+import { copyTextToClipboard } from '../services/clipboard';
 import {
     updateClientName,
     updateClientPreferences,
@@ -322,8 +323,13 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
         else setLoading(false);
     }, [validServices, user.phoneNumber, user.subscriptionDetails, user.isDebtor, user.name, user.purchaseDate, user.durationMonths, user.overrideExpiration, syncTrigger, user.gameProgress]);
 
-    const copyToClipboard = (text: string, id: string) => {
-        navigator.clipboard.writeText(text.trim());
+    const copyToClipboard = async (text: string, id: string) => {
+        const copied = await copyTextToClipboard(text);
+        if (!copied) {
+            alert('Nao foi possivel copiar agora. Tente novamente.');
+            return;
+        }
+
         setCopiedId(id);
         setTimeout(() => setCopiedId(null), 2000);
     };
@@ -898,7 +904,17 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                                                 {item.isBlocked ? 'BLOQUEADO' : (item.cred?.email || 'Buscando...')}
                                             </span>
                                         </div>
-                                        {!item.isBlocked && <button onClick={() => item.cred && copyToClipboard(item.cred.email, `e-${i}`)} className="p-3 text-indigo-600 bg-white border border-gray-100 rounded-xl shadow-sm active:scale-90 flex items-center gap-1"><Copy size={14} /><span className="text-[10px] font-black uppercase">Copiar</span></button>}
+                                        {!item.isBlocked && (
+                                            <button
+                                                onClick={() => {
+                                                    if (item.cred) void copyToClipboard(item.cred.email, `e-${i}`);
+                                                }}
+                                                className="p-3 text-indigo-600 bg-white border border-gray-100 rounded-xl shadow-sm active:scale-90 flex items-center gap-1"
+                                            >
+                                                {copiedId === `e-${i}` ? <Check size={14} /> : <Copy size={14} />}
+                                                <span className="text-[10px] font-black uppercase">{copiedId === `e-${i}` ? 'Copiado' : 'Copiar'}</span>
+                                            </button>
+                                        )}
                                     </div>
                                     <div className="bg-gray-50 p-4 rounded-[1.5rem] border border-gray-100 flex justify-between items-center group">
                                         <div className="flex flex-col min-w-0 flex-1 text-gray-800">
@@ -907,7 +923,17 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                                                 {item.isBlocked ? '••••••••' : (item.cred?.password || '••••••')}
                                             </span>
                                         </div>
-                                        {!item.isBlocked && <button onClick={() => item.cred && copyToClipboard(item.cred.password, `p-${i}`)} className="p-3 text-indigo-600 bg-white border border-gray-100 rounded-xl shadow-sm active:scale-90 flex items-center gap-1"><Copy size={14} /><span className="text-[10px] font-black uppercase">Copiar</span></button>}
+                                        {!item.isBlocked && (
+                                            <button
+                                                onClick={() => {
+                                                    if (item.cred) void copyToClipboard(item.cred.password, `p-${i}`);
+                                                }}
+                                                className="p-3 text-indigo-600 bg-white border border-gray-100 rounded-xl shadow-sm active:scale-90 flex items-center gap-1"
+                                            >
+                                                {copiedId === `p-${i}` ? <Check size={14} /> : <Copy size={14} />}
+                                                <span className="text-[10px] font-black uppercase">{copiedId === `p-${i}` ? 'Copiado' : 'Copiar'}</span>
+                                            </button>
+                                        )}
                                     </div>
                                 </div>
 

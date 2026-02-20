@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import { verifyAdminLogin, updateAdminPassword } from '../services/clientService';
-import { ShieldAlert, ArrowLeft, Loader2, Key } from 'lucide-react';
+import { ShieldAlert, ArrowLeft, Loader2, Key, Check } from 'lucide-react';
 
 interface AdminLoginProps {
   onSuccess: (remember: boolean) => void;
@@ -91,17 +91,27 @@ const AdminLogin: React.FC<AdminLoginProps> = ({ onSuccess, onBack }) => {
               />
             </div>
 
-            <div className="flex items-center mt-2">
-              <input
-                type="checkbox"
-                id="adminKeep"
-                checked={keepConnected}
-                onChange={e => setKeepConnected(e.target.checked)}
-                className="w-4 h-4 text-red-600 border-gray-300 rounded focus:ring-red-500"
-              />
-              <label htmlFor="adminKeep" className="ml-2 text-sm text-gray-600 cursor-pointer font-medium">
-                Permanecer conectado
-              </label>
+            <div className="space-y-2 mt-2">
+              <p className="text-[11px] font-black uppercase tracking-widest text-gray-400 text-center">
+                Sessao Admin
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setKeepConnected(true)}
+                  className={`py-2.5 rounded-lg border text-[10px] font-black uppercase transition-all active:scale-95 flex items-center justify-center gap-1 ${keepConnected ? 'bg-red-600 border-red-600 text-white shadow-md shadow-red-200' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}
+                >
+                  {keepConnected && <Check className="w-3.5 h-3.5" />}
+                  Permanecer conectado
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setKeepConnected(false)}
+                  className={`py-2.5 rounded-lg border text-[10px] font-black uppercase transition-all active:scale-95 ${!keepConnected ? 'bg-gray-900 border-gray-900 text-white shadow-md' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}
+                >
+                  Somente nesta sessao
+                </button>
+              </div>
             </div>
 
             {error && <p className="text-red-600 text-sm font-bold text-center">{error}</p>}

@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Check, Copy, Receipt, Gift, Rocket, Calendar, Sparkles, MessageCircle } from 'lucide-react';
 import { User } from '../types';
 import { getServicePrice } from '../services/pricingConfig';
+import { copyTextToClipboard } from '../services/clipboard';
 
 interface CheckoutModalProps {
     onClose: () => void;
@@ -60,8 +61,13 @@ const CheckoutModal: React.FC<CheckoutModalProps> = ({ onClose, user, type = 're
     const isVoluntaryOnly = renewalList.length === 1 && renewalList[0].includes('Contribuição Voluntária');
     const displayPrice = isVoluntaryOnly ? 'Voluntário' : formattedPrice;
 
-    const handleCopyPix = () => {
-        navigator.clipboard.writeText(PIX_KEY);
+    const handleCopyPix = async () => {
+        const copiedValue = await copyTextToClipboard(PIX_KEY);
+        if (!copiedValue) {
+            alert('Nao foi possivel copiar a chave Pix agora. Tente novamente.');
+            return;
+        }
+
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
     };

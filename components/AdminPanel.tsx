@@ -159,7 +159,7 @@ const getCredentialHealth = (service: string, publishedAt: string, currentUsers:
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const [activeTab, setActiveTab] = useState<'clients' | 'credentials' | 'buscar_login' | 'danger' | 'finances' | 'trash' | 'history'>('clients');
-    const [clientFilterStatus, setClientFilterStatus] = useState<'all' | 'expiring' | 'debtor'>('all');
+    const [clientFilterStatus, setClientFilterStatus] = useState<'all' | 'expiring' | 'debtor' | 'tolerance'>('all');
     const [clientSortByExpiry, setClientSortByExpiry] = useState(false);
     const [darkMode, setDarkMode] = useState(false);
     const [credentials, setCredentials] = useState<AppCredential[]>([]);
@@ -672,6 +672,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                     return days <= 5 && days >= 0;
                 });
             });
+        } else if (clientFilterStatus === 'tolerance') {
+            list = list.filter(c => {
+                if (c.deleted) return false;
+                const now = new Date();
+                now.setHours(0, 0, 0, 0);
+
+                return normalizeSubscriptions(c.subscriptions || [], c.duration_months).some(s => {
+                    const parts = s.split('|');
+                    const toleranceDate = parts[4] ? new Date(parts[4]) : null;
+                    if (!toleranceDate || Number.isNaN(toleranceDate.getTime())) return false;
+                    toleranceDate.setHours(23, 59, 59, 999);
+                    return toleranceDate.getTime() >= now.getTime();
+                });
+            });
         }
 
         // Step 4: Apply sorting
@@ -681,6 +695,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 const bMeta = getExpiringSortMeta(b);
                 if (aMeta.nearestExpiryMs !== bMeta.nearestExpiryMs) return aMeta.nearestExpiryMs - bMeta.nearestExpiryMs;
                 return bMeta.inclusionMs - aMeta.inclusionMs;
+            });
+        } else if (clientFilterStatus === 'tolerance') {
+            list = [...list].sort((a, b) => {
+                const now = new Date();
+                now.setHours(0, 0, 0, 0);
+
+                const getNearestToleranceMs = (client: ClientDBRow) => {
+                    const toleranceDates = normalizeSubscriptions(client.subscriptions || [], client.duration_months)
+                        .map((s) => {
+                            const parts = s.split('|');
+                            const toleranceDate = parts[4] ? new Date(parts[4]) : null;
+                            if (!toleranceDate || Number.isNaN(toleranceDate.getTime())) return Number.MAX_SAFE_INTEGER;
+                            toleranceDate.setHours(23, 59, 59, 999);
+                            return toleranceDate.getTime() >= now.getTime() ? toleranceDate.getTime() : Number.MAX_SAFE_INTEGER;
+                        })
+                        .filter((ms) => ms !== Number.MAX_SAFE_INTEGER);
+
+                    return toleranceDates.length > 0 ? Math.min(...toleranceDates) : Number.MAX_SAFE_INTEGER;
+                };
+
+                return getNearestToleranceMs(a) - getNearestToleranceMs(b);
             });
         } else if (clientSortByExpiry) {
             list = [...list].sort((a, b) => {
@@ -1033,7 +1068,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                     {[
                                         { id: 'all', label: 'Todos', color: 'bg-indigo-600 text-white' },
                                         { id: 'expiring', label: 'Vencimento Proximo', color: 'bg-orange-100 text-orange-700' },
-                                        { id: 'debtor', label: 'Vencidos', color: 'bg-red-100 text-red-700' }
+                                        { id: 'debtor', label: 'Vencidos', color: 'bg-red-100 text-red-700' },
+                                        { id: 'tolerance', label: 'Em tolerância', color: 'bg-indigo-100 text-indigo-700' }
                                     ].map(f => (
                                         <button key={f.id} onClick={() => setClientFilterStatus(f.id as any)} className={`px-5 py-2.5 rounded-xl text-[10px] font-black uppercase border transition-all whitespace-nowrap ${clientFilterStatus === f.id ? f.color : 'bg-white dark:bg-slate-900 text-indigo-300 border-indigo-100 dark:border-slate-800'}`}>{f.label}</button>
                                     ))}
