@@ -56,6 +56,13 @@ const VIKI_TV_OPTIONS: { id: VikiTvModel; label: string; url: string }[] = [
     { id: 'android', label: 'Android TV', url: 'https://www.viki.com/androidtv' }
 ];
 
+const VIKI_MOBILE_HELP_VIDEO_SUPABASE_URL = 'https://mhiormzpctfoyjbrmxfz.supabase.co/storage/v1/object/public/public-media/viki/como-conectar-no-celular.mp4';
+const VIKI_MOBILE_HELP_VIDEO_FALLBACK_URL = '/media/viki/como-conectar-no-celular.mp4';
+const VIKI_MOBILE_HELP_VIDEO_URL = import.meta.env['VITE_VIKI_MOBILE_HELP_VIDEO_URL'] || VIKI_MOBILE_HELP_VIDEO_SUPABASE_URL;
+const IQIYI_MOBILE_HELP_VIDEO_SUPABASE_URL = 'https://mhiormzpctfoyjbrmxfz.supabase.co/storage/v1/object/public/public-media/iqiyi/como-conectar-no-celular.mp4';
+const IQIYI_MOBILE_HELP_VIDEO_FALLBACK_URL = '/media/iqiyi/como-conectar-no-celular.mp4';
+const IQIYI_MOBILE_HELP_VIDEO_URL = import.meta.env['VITE_IQIYI_MOBILE_HELP_VIDEO_URL'] || IQIYI_MOBILE_HELP_VIDEO_SUPABASE_URL;
+
 const normalizeVikiCodeInput = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 6);
 const isValidVikiTvCode = (value: string) => /^[a-z0-9]{6}$/.test(value);
 
@@ -165,6 +172,12 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
     const [vikiTvRequestId, setVikiTvRequestId] = useState<string | null>(null);
     const [vikiTvExecutionStatus, setVikiTvExecutionStatus] = useState<VikiTvUiExecutionStatus>('idle');
     const [vikiTvSteps, setVikiTvSteps] = useState<VikiTvAutomationStep[]>([]);
+    const [showVikiMobileGuideModal, setShowVikiMobileGuideModal] = useState(false);
+    const [vikiMobileGuideVideoSrc, setVikiMobileGuideVideoSrc] = useState(VIKI_MOBILE_HELP_VIDEO_URL);
+    const [vikiMobileGuideVideoError, setVikiMobileGuideVideoError] = useState<string | null>(null);
+    const [showIqiyiMobileGuideModal, setShowIqiyiMobileGuideModal] = useState(false);
+    const [iqiyiMobileGuideVideoSrc, setIqiyiMobileGuideVideoSrc] = useState(IQIYI_MOBILE_HELP_VIDEO_URL);
+    const [iqiyiMobileGuideVideoError, setIqiyiMobileGuideVideoError] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const validServices = useMemo(() => (user.services || []).filter(s => s && s.trim().length > 0), [user.services]);
@@ -373,6 +386,44 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
         setVikiTvRequestId(null);
         setVikiTvExecutionStatus('idle');
         setVikiTvSteps([]);
+    };
+
+    const openVikiMobileGuideModal = () => {
+        setVikiMobileGuideVideoSrc(VIKI_MOBILE_HELP_VIDEO_URL);
+        setVikiMobileGuideVideoError(null);
+        setShowVikiMobileGuideModal(true);
+    };
+
+    const closeVikiMobileGuideModal = () => {
+        setShowVikiMobileGuideModal(false);
+    };
+
+    const handleVikiMobileGuideVideoError = () => {
+        if (vikiMobileGuideVideoSrc !== VIKI_MOBILE_HELP_VIDEO_FALLBACK_URL) {
+            setVikiMobileGuideVideoSrc(VIKI_MOBILE_HELP_VIDEO_FALLBACK_URL);
+            return;
+        }
+
+        setVikiMobileGuideVideoError('Nao foi possivel carregar o video agora. Tente novamente em alguns instantes.');
+    };
+
+    const openIqiyiMobileGuideModal = () => {
+        setIqiyiMobileGuideVideoSrc(IQIYI_MOBILE_HELP_VIDEO_URL);
+        setIqiyiMobileGuideVideoError(null);
+        setShowIqiyiMobileGuideModal(true);
+    };
+
+    const closeIqiyiMobileGuideModal = () => {
+        setShowIqiyiMobileGuideModal(false);
+    };
+
+    const handleIqiyiMobileGuideVideoError = () => {
+        if (iqiyiMobileGuideVideoSrc !== IQIYI_MOBILE_HELP_VIDEO_FALLBACK_URL) {
+            setIqiyiMobileGuideVideoSrc(IQIYI_MOBILE_HELP_VIDEO_FALLBACK_URL);
+            return;
+        }
+
+        setIqiyiMobileGuideVideoError('Nao foi possivel carregar o video agora. Tente novamente em alguns instantes.');
     };
 
     const handleVikiTvCodeChange = (value: string) => {
@@ -716,6 +767,80 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                 </div>
             )}
 
+            {showVikiMobileGuideModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+                    <div className="bg-white rounded-[2rem] p-5 max-w-xl w-full shadow-2xl space-y-4 animate-scale-up">
+                        <div className="flex items-start justify-between gap-3">
+                            <div>
+                                <h3 className="text-lg font-black text-gray-800 leading-none">Como conectar no celular</h3>
+                                <p className="text-xs text-gray-500 font-bold uppercase mt-1">Viki Pass</p>
+                            </div>
+                            <button onClick={closeVikiMobileGuideModal} className="p-1.5 hover:bg-gray-100 rounded-full transition-colors">
+                                <X size={18} className="text-gray-400" />
+                            </button>
+                        </div>
+
+                        <div className="overflow-hidden rounded-2xl border border-gray-200 bg-black">
+                            <video
+                                className="w-full max-h-[70vh] bg-black"
+                                controls
+                                preload="metadata"
+                                playsInline
+                                onError={handleVikiMobileGuideVideoError}
+                            >
+                                <source src={vikiMobileGuideVideoSrc} type="video/mp4" />
+                                Seu navegador nao suporta video HTML5.
+                            </video>
+                        </div>
+
+                        {vikiMobileGuideVideoError && (
+                            <p className="text-xs font-bold text-red-700 bg-red-50 border border-red-100 rounded-xl p-3">{vikiMobileGuideVideoError}</p>
+                        )}
+
+                        <p className="text-[11px] font-bold text-gray-600">
+                            Se o video nao abrir de primeira, aguarde alguns segundos e tente novamente.
+                        </p>
+                    </div>
+                </div>
+            )}
+
+            {showIqiyiMobileGuideModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+                    <div className="bg-white rounded-[2rem] p-5 max-w-xl w-full shadow-2xl space-y-4 animate-scale-up">
+                        <div className="flex items-start justify-between gap-3">
+                            <div>
+                                <h3 className="text-lg font-black text-gray-800 leading-none">Como conectar no celular</h3>
+                                <p className="text-xs text-gray-500 font-bold uppercase mt-1">IQIYI</p>
+                            </div>
+                            <button onClick={closeIqiyiMobileGuideModal} className="p-1.5 hover:bg-gray-100 rounded-full transition-colors">
+                                <X size={18} className="text-gray-400" />
+                            </button>
+                        </div>
+
+                        <div className="overflow-hidden rounded-2xl border border-gray-200 bg-black">
+                            <video
+                                className="w-full max-h-[70vh] bg-black"
+                                controls
+                                preload="metadata"
+                                playsInline
+                                onError={handleIqiyiMobileGuideVideoError}
+                            >
+                                <source src={iqiyiMobileGuideVideoSrc} type="video/mp4" />
+                                Seu navegador nao suporta video HTML5.
+                            </video>
+                        </div>
+
+                        {iqiyiMobileGuideVideoError && (
+                            <p className="text-xs font-bold text-red-700 bg-red-50 border border-red-100 rounded-xl p-3">{iqiyiMobileGuideVideoError}</p>
+                        )}
+
+                        <p className="text-[11px] font-bold text-gray-600">
+                            Se o video nao abrir de primeira, aguarde alguns segundos e tente novamente.
+                        </p>
+                    </div>
+                </div>
+            )}
+
             <input
                 type="file"
                 ref={fileInputRef}
@@ -938,16 +1063,37 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                                 </div>
 
                                 {item.name.toLowerCase().includes('viki') && !item.isBlocked && (
-                                    <div className="mt-4 bg-blue-50 p-4 rounded-2xl border border-blue-100 flex items-center justify-between gap-3">
+                                    <div className="mt-4 bg-blue-50 p-4 rounded-2xl border border-blue-100 flex justify-center sm:justify-end">
+                                        <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+                                            <button
+                                                onClick={() => openVikiTvModal(item.name)}
+                                                className="px-4 py-2 rounded-xl bg-blue-600 text-white text-[10px] font-black uppercase whitespace-nowrap shadow-md active:scale-95"
+                                            >
+                                                Conectar TV
+                                            </button>
+                                            {item.name.toLowerCase().includes('viki pass') && (
+                                                <button
+                                                    onClick={openVikiMobileGuideModal}
+                                                    className="px-4 py-2 rounded-xl bg-white border border-blue-200 text-blue-700 text-[10px] font-black uppercase whitespace-nowrap shadow-sm active:scale-95"
+                                                >
+                                                    Como conectar no celular
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {item.name.toLowerCase().includes('iqiyi') && !item.isBlocked && (
+                                    <div className="mt-4 bg-emerald-50 p-4 rounded-2xl border border-emerald-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                                         <div>
-                                            <p className="text-[10px] font-black uppercase text-blue-700">Conexao de TV Viki</p>
-                                            <p className="text-[10px] font-bold text-blue-600 mt-1">Informe o modelo e o codigo da TV. Nos fazemos o resto para voce.</p>
+                                            <p className="text-[10px] font-black uppercase text-emerald-700">Guia IQIYI no celular</p>
+                                            <p className="text-[10px] font-bold text-emerald-600 mt-1">Abra o passo a passo em video para configurar rapido no seu celular.</p>
                                         </div>
                                         <button
-                                            onClick={() => openVikiTvModal(item.name)}
-                                            className="px-4 py-2 rounded-xl bg-blue-600 text-white text-[10px] font-black uppercase whitespace-nowrap shadow-md active:scale-95"
+                                            onClick={openIqiyiMobileGuideModal}
+                                            className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-[10px] font-black uppercase whitespace-nowrap shadow-md active:scale-95"
                                         >
-                                            Conectar TV
+                                            Como conectar no celular
                                         </button>
                                     </div>
                                 )}

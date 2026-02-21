@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "upload:viki-mobile-video": "node scripts/upload-viki-mobile-video.mjs public/media/viki/como-conectar-no-celular.mp4 viki/como-conectar-no-celular.mp4",
+    "upload:iqiyi-mobile-video": "node scripts/upload-viki-mobile-video.mjs public/media/iqiyi/como-conectar-no-celular.mp4 iqiyi/como-conectar-no-celular.mp4"
   },
   "dependencies": {
     "@cloudflare/puppeteer": "^1.0.6",
