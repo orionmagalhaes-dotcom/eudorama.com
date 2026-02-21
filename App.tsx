@@ -16,7 +16,9 @@ import {
   addLocalDorama,
   refreshUserProfile,
   updateLastActive,
-  supabase
+  supabase,
+  checkInfinityPayPaymentStatus,
+  renewClientSubscriptionsAfterInfinityPayment
 } from './services/clientService';
 import { Heart, X, CheckCircle2, MessageCircle, Gift, Sparkles, Home, Tv2, Palette, LogOut, AlertTriangle } from 'lucide-react';
 
@@ -33,6 +35,8 @@ interface BeforeInstallPromptEvent extends Event {
 
 const PRICE_NOTICE_KEY = 'eudorama_notice_price_2026_seen';
 const NEW_APP_NOTICE_KEY = 'eudorama_notice_new_app_seen';
+const INFINITY_PAY_HANDLE = (import.meta as any).env?.VITE_INFINITY_PAY_HANDLE || 'orion_magalhaes';
+const INFINITY_PAY_ORDER_STORAGE_PREFIX = 'eudorama_ip_order_';
 
 const getUserNoticeKey = (base: string, phoneNumber: string) => `${base}:${phoneNumber}`;
 
@@ -68,6 +72,7 @@ const App: React.FC = () => {
   const [deferredInstallPrompt, setDeferredInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [isPwaInstalled, setIsPwaInstalled] = useState(false);
   const lastRefreshRef = useRef<number>(0);
+  const infinityPaymentProcessingRef = useRef<Set<string>>(new Set());
 
   const handleInstallPwa = useCallback(async (): Promise<PwaInstallResult> => {
     if (isPwaInstalled) return 'already_installed';
@@ -206,6 +211,108 @@ const App: React.FC = () => {
     const heartbeatInterval = setInterval(performHeartbeat, 15 * 60 * 1000);
     return () => clearInterval(heartbeatInterval);
   }, [currentUser?.phoneNumber, isAdminMode]);
+
+  useEffect(() => {
+    if (!currentUser || isAdminMode) return;
+
+    const url = new URL(window.location.href);
+    const orderNsu = url.searchParams.get('order_nsu');
+    const transactionNsu = url.searchParams.get('transaction_nsu');
+    const slug = url.searchParams.get('slug');
+    if (!orderNsu || !transactionNsu || !slug) return;
+    if (infinityPaymentProcessingRef.current.has(orderNsu)) return;
+
+    infinityPaymentProcessingRef.current.add(orderNsu);
+
+    const clearInfinityPayQueryParams = () => {
+      const cleanUrl = new URL(window.location.href);
+      [
+        'ip_checkout_return',
+        'order_nsu',
+        'transaction_nsu',
+        'slug',
+        'capture_method',
+        'receipt_url'
+      ].forEach((param) => cleanUrl.searchParams.delete(param));
+      window.history.replaceState({}, '', `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`);
+    };
+
+    const processInfinityPayReturn = async () => {
+      const doneKey = `eudorama_ip_done_${orderNsu}`;
+      const pendingKey = `${INFINITY_PAY_ORDER_STORAGE_PREFIX}${orderNsu}`;
+
+      if (sessionStorage.getItem(doneKey) === '1') {
+        clearInfinityPayQueryParams();
+        return;
+      }
+
+      let servicesToRenew: string[] = [];
+      try {
+        const pendingRaw = localStorage.getItem(pendingKey);
+        if (pendingRaw) {
+          const pendingData = JSON.parse(pendingRaw);
+          if (
+            pendingData &&
+            pendingData.phoneNumber === currentUser.phoneNumber &&
+            Array.isArray(pendingData.services)
+          ) {
+            servicesToRenew = pendingData.services
+              .map((service: any) => String(service || '').trim())
+              .filter((service: string) => service.length > 0);
+          }
+        }
+      } catch (e) {
+        console.warn('Falha ao recuperar pedido pendente do InfinityPay:', e);
+      }
+
+      const paymentCheck = await checkInfinityPayPaymentStatus({
+        handle: INFINITY_PAY_HANDLE,
+        orderNsu,
+        transactionNsu,
+        slug
+      });
+
+      if (!paymentCheck.success) {
+        setToast({ message: paymentCheck.message || 'Nao foi possivel validar pagamento no InfinityPay.', type: 'error' });
+        clearInfinityPayQueryParams();
+        return;
+      }
+
+      if (!paymentCheck.paid) {
+        setToast({ message: 'Pagamento ainda nao confirmado pelo InfinityPay.', type: 'error' });
+        clearInfinityPayQueryParams();
+        return;
+      }
+
+      if (servicesToRenew.length === 0) {
+        sessionStorage.setItem(doneKey, '1');
+        localStorage.removeItem(pendingKey);
+        setToast({ message: 'Pagamento confirmado, mas sem assinaturas mapeadas para renovacao automatica.', type: 'error' });
+        clearInfinityPayQueryParams();
+        return;
+      }
+
+      const renewalResult = await renewClientSubscriptionsAfterInfinityPayment(currentUser.phoneNumber, servicesToRenew);
+      if (!renewalResult.success) {
+        setToast({ message: renewalResult.msg || 'Pagamento confirmado, mas falhou a renovacao automatica.', type: 'error' });
+        clearInfinityPayQueryParams();
+        return;
+      }
+
+      sessionStorage.setItem(doneKey, '1');
+      localStorage.removeItem(pendingKey);
+      await handleRefreshSession(true);
+      setToast({
+        message: `Pagamento confirmado e renovacao aplicada: ${renewalResult.renewedServices.join(', ')}`,
+        type: 'success'
+      });
+      clearInfinityPayQueryParams();
+    };
+
+    processInfinityPayReturn().finally(() => {
+      infinityPaymentProcessingRef.current.delete(orderNsu);
+    });
+  }, [currentUser?.phoneNumber, isAdminMode, handleRefreshSession]);
 
   useEffect(() => {
     if (currentUser && (currentUser.name === 'Dorameira' || !currentUser.name)) setShowNameModal(true);

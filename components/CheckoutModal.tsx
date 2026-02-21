@@ -14,6 +14,7 @@ interface CheckoutModalProps {
 const PIX_KEY = '00020126330014br.gov.bcb.pix0111024461983255204000053039865802BR5925Orion Saimon Magalhaes Co6009Sao Paulo62290525REC69361CCAD78A4566579523630467EB';
 const INFINITY_PAY_CHECKOUT_FALLBACK_URL = 'https://checkout.infinitepay.io/orion_magalhaes/2RPzPmBfQ1';
 const INFINITY_PAY_CHECKOUT_HANDLE_URL = 'https://checkout.infinitepay.io/orion_magalhaes';
+const INFINITY_PAY_ORDER_STORAGE_PREFIX = 'eudorama_ip_order_';
 
 const SERVICE_INFO: Record<string, string[]> = {
     'Viki Pass': ['Doramas exclusivos (Originais Viki)', '100% sem anuncios', 'Alta qualidade (Full HD)', 'Episodios antes de todo mundo'],
@@ -25,8 +26,15 @@ const SERVICE_INFO: Record<string, string[]> = {
     'Contribuicao Voluntaria': ['Ajuda a manter nossos servidores', 'Mantem a plataforma funcionando', 'Seu carinho faz a diferenca', 'Acesso continuo aos doramas']
 };
 
-const buildInfinityPayCheckoutUrl = (services: string[], isVoluntaryOnly: boolean) => {
-    if (isVoluntaryOnly) return INFINITY_PAY_CHECKOUT_FALLBACK_URL;
+type InfinityPayCheckoutBuildResult = {
+    url: string;
+    orderNsu: string | null;
+};
+
+const buildInfinityPayCheckoutData = (services: string[], isVoluntaryOnly: boolean): InfinityPayCheckoutBuildResult => {
+    if (isVoluntaryOnly) {
+        return { url: INFINITY_PAY_CHECKOUT_FALLBACK_URL, orderNsu: null };
+    }
 
     const items = services
         .map((service) => {
@@ -41,14 +49,21 @@ const buildInfinityPayCheckoutUrl = (services: string[], isVoluntaryOnly: boolea
         })
         .filter((item): item is { name: string; price: number; quantity: number } => !!item);
 
-    if (items.length === 0) return INFINITY_PAY_CHECKOUT_FALLBACK_URL;
+    if (items.length === 0) {
+        return { url: INFINITY_PAY_CHECKOUT_FALLBACK_URL, orderNsu: null };
+    }
 
+    const orderNsu = `eudorama-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const redirectUrl = `${window.location.origin}${window.location.pathname}?ip_checkout_return=1`;
     const params = new URLSearchParams();
     params.set('items', JSON.stringify(items));
-    params.set('order_nsu', `eudorama-${Date.now()}`);
-    params.set('redirect_url', window.location.href);
+    params.set('order_nsu', orderNsu);
+    params.set('redirect_url', redirectUrl);
 
-    return `${INFINITY_PAY_CHECKOUT_HANDLE_URL}?${params.toString()}`;
+    return {
+        url: `${INFINITY_PAY_CHECKOUT_HANDLE_URL}?${params.toString()}`,
+        orderNsu
+    };
 };
 
 const CheckoutModal: React.FC<CheckoutModalProps> = ({ onClose, user, type = 'renewal', targetService }) => {
@@ -81,8 +96,8 @@ const CheckoutModal: React.FC<CheckoutModalProps> = ({ onClose, user, type = 're
     const formattedPrice = useMemo(() => total.toFixed(2).replace('.', ','), [total]);
     const isVoluntaryOnly = renewalList.length === 1 && renewalList[0].includes('Contribuicao Voluntaria');
 
-    const checkoutUrl = useMemo(
-        () => buildInfinityPayCheckoutUrl(renewalList, isVoluntaryOnly),
+    const checkoutData = useMemo(
+        () => buildInfinityPayCheckoutData(renewalList, isVoluntaryOnly),
         [renewalList, isVoluntaryOnly]
     );
 
@@ -93,7 +108,23 @@ const CheckoutModal: React.FC<CheckoutModalProps> = ({ onClose, user, type = 're
     }, [renewalList]);
 
     const handleInfinityPayCheckout = () => {
-        window.location.assign(checkoutUrl);
+        const renewableServices = renewalList.filter((service) => !service.includes('Contribuicao Voluntaria'));
+        if (checkoutData.orderNsu && renewableServices.length > 0) {
+            try {
+                localStorage.setItem(
+                    `${INFINITY_PAY_ORDER_STORAGE_PREFIX}${checkoutData.orderNsu}`,
+                    JSON.stringify({
+                        phoneNumber: user.phoneNumber,
+                        services: renewableServices,
+                        createdAt: new Date().toISOString()
+                    })
+                );
+            } catch (e) {
+                console.warn('Nao foi possivel salvar pedido pendente do InfinityPay.', e);
+            }
+        }
+
+        window.location.assign(checkoutData.url);
     };
 
     const handleCopyPix = async () => {

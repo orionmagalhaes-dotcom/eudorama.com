@@ -19,6 +19,7 @@ Frontend React + Vite focado em:
    - `VITE_VIKI_TV_AUTOMATION_WEBHOOK` (opcional, automacao Viki TV em background)
    - `VITE_VIKI_TV_AUTOMATION_TOKEN` (opcional, token Bearer do webhook)
    - `VITE_VIKI_TV_AUTOMATION_STATUS_WEBHOOK` (opcional, consulta de status das etapas)
+   - `VITE_INFINITY_PAY_HANDLE` (opcional, handle da loja no InfinityPay. Padrao: `orion_magalhaes`)
    - `VITE_VIKI_MOBILE_HELP_VIDEO_URL` (opcional, URL publica do video "Como conectar no celular")
    - `VITE_IQIYI_MOBILE_HELP_VIDEO_URL` (opcional, URL publica do video "Como conectar no celular" da assinatura IQIYI)
    - No modo dev, se os webhooks nao forem definidos, o Vite expoe endpoints locais:

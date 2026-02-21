@@ -7,6 +7,7 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://mhiormzpctfoy
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1oaW9ybXpwY3Rmb3lqYnJteGZ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU4NTkwNjUsImV4cCI6MjA4MTQzNTA2NX0.y5rfFm0XHsieEZ2fCDH6tq5sZI7mqo8V_tYbbkKWroQ';
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const INFINITY_PAY_PAYMENT_CHECK_URL = 'https://api.infinitepay.io/invoices/public/checkout/payment_check';
 
 // --- GERENCIAMENTO DE DADOS LOCAIS ---
 const getLocalUserData = (phoneNumber: string) => {
@@ -364,6 +365,186 @@ export const refreshUserProfile = async (phoneNumber: string): Promise<{ user: U
   } catch (e) { return { user: null, error: 'Erro de conexão.' }; }
 };
 
+const normalizeClientSubscriptionsForUpdate = (rawSubscriptions: any, defaultDuration: number): string[] => {
+  let list: string[] = [];
+
+  if (Array.isArray(rawSubscriptions)) {
+    list = rawSubscriptions.map((item: any) => String(item));
+  } else if (typeof rawSubscriptions === 'string') {
+    const cleaned = rawSubscriptions.replace(/^\{|\}$/g, '').trim();
+    if (!cleaned) return [];
+    if (cleaned.includes(';')) list = cleaned.split(';');
+    else if (cleaned.includes(',')) list = cleaned.split(',');
+    else if (cleaned.includes('+')) list = cleaned.split('+');
+    else list = [cleaned];
+  }
+
+  return list
+    .map((value) => {
+      const str = String(value).trim().replace(/^"|"$/g, '');
+      if (!str) return '';
+      const parts = str.split('|');
+      const serviceName = (parts[0] || '').trim();
+      if (!serviceName) return '';
+
+      const startDateRaw = parts[1] || new Date().toISOString();
+      const startDate = Number.isNaN(new Date(startDateRaw).getTime()) ? new Date().toISOString() : startDateRaw;
+      const paidFlag = (parts[2] || '0') === '1' ? '1' : '0';
+      const durationMonths = Math.max(1, parseInt(parts[3] || String(defaultDuration || 1), 10) || 1);
+      const toleranceDate = parts[4] || '';
+      const originalPaymentDate = parts[5] || startDate;
+
+      return `${serviceName}|${startDate}|${paidFlag}|${durationMonths}|${toleranceDate}|${originalPaymentDate}`;
+    })
+    .filter(Boolean);
+};
+
+const calculateNextSubscriptionStart = (dateStr: string, months: number): Date => {
+  const base = new Date(dateStr);
+  const next = Number.isNaN(base.getTime()) ? new Date() : new Date(base);
+  next.setDate(next.getDate() + Math.max(1, months) * 30);
+  return next;
+};
+
+export interface InfinityPayPaymentCheckRequest {
+  handle: string;
+  orderNsu: string;
+  transactionNsu: string;
+  slug: string;
+}
+
+export interface InfinityPayPaymentCheckResult {
+  success: boolean;
+  paid: boolean;
+  status?: string;
+  message?: string;
+  raw?: any;
+}
+
+export const checkInfinityPayPaymentStatus = async (
+  payload: InfinityPayPaymentCheckRequest
+): Promise<InfinityPayPaymentCheckResult> => {
+  try {
+    const response = await fetch(INFINITY_PAY_PAYMENT_CHECK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        handle: payload.handle,
+        order_nsu: payload.orderNsu,
+        transaction_nsu: payload.transactionNsu,
+        slug: payload.slug
+      })
+    });
+
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      return {
+        success: false,
+        paid: false,
+        status: String(body?.status || ''),
+        message: `Falha ao validar pagamento (HTTP ${response.status}).`,
+        raw: body
+      };
+    }
+
+    const status = String(body?.status || '').toUpperCase();
+    return {
+      success: true,
+      paid: status === 'PAID',
+      status,
+      raw: body
+    };
+  } catch (e: any) {
+    return {
+      success: false,
+      paid: false,
+      message: e?.message || 'Erro ao validar pagamento no InfinityPay.'
+    };
+  }
+};
+
+export const renewClientSubscriptionsAfterInfinityPayment = async (
+  phoneNumber: string,
+  targetServices: string[]
+): Promise<{ success: boolean; msg: string; renewedServices: string[] }> => {
+  try {
+    const normalizedTargets = Array.from(
+      new Set(
+        (targetServices || [])
+          .map((service) => String(service || '').trim())
+          .filter(Boolean)
+      )
+    );
+
+    if (normalizedTargets.length === 0) {
+      return { success: false, msg: 'Nenhuma assinatura informada para renovacao.', renewedServices: [] };
+    }
+
+    const { data, error } = await supabase
+      .from('clients')
+      .select('*')
+      .eq('phone_number', phoneNumber)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (error || !data || data.length === 0) {
+      return { success: false, msg: 'Cliente nao encontrado para renovacao automatica.', renewedServices: [] };
+    }
+
+    const client = data[0] as ClientDBRow;
+    if (client.deleted) {
+      return { success: false, msg: 'Cliente removido e sem permissao para renovacao.', renewedServices: [] };
+    }
+
+    const normalizedSubs = normalizeClientSubscriptionsForUpdate(client.subscriptions, client.duration_months || 1);
+    const updatedSubs = [...normalizedSubs];
+    const renewedServices: string[] = [];
+
+    normalizedTargets.forEach((targetService) => {
+      const subIndex = updatedSubs.findIndex((sub) => {
+        const serviceName = sub.split('|')[0]?.trim()?.toLowerCase();
+        return serviceName === targetService.toLowerCase();
+      });
+
+      if (subIndex >= 0) {
+        const parts = updatedSubs[subIndex].split('|');
+        const months = Math.max(1, parseInt(parts[3] || String(client.duration_months || 1), 10) || 1);
+        const nextStartIso = calculateNextSubscriptionStart(parts[1], months).toISOString();
+        updatedSubs[subIndex] = `${parts[0]}|${nextStartIso}|1|${months}||${nextStartIso}`;
+        renewedServices.push(parts[0]);
+        return;
+      }
+
+      const fallbackMonths = Math.max(1, client.duration_months || 1);
+      const nowIso = new Date().toISOString();
+      updatedSubs.push(`${targetService}|${nowIso}|1|${fallbackMonths}||${nowIso}`);
+      renewedServices.push(targetService);
+    });
+
+    const hasDebtorServices = updatedSubs.some((sub) => (sub.split('|')[2] || '0') !== '1');
+    const saveResult = await saveClientToDB({
+      ...client,
+      subscriptions: updatedSubs,
+      is_debtor: hasDebtorServices
+    });
+
+    if (!saveResult.success) {
+      return { success: false, msg: saveResult.msg || 'Falha ao salvar renovacao automatica.', renewedServices: [] };
+    }
+
+    return {
+      success: true,
+      msg: 'Renovacao automatica aplicada com sucesso.',
+      renewedServices
+    };
+  } catch (e: any) {
+    return {
+      success: false,
+      msg: e?.message || 'Erro ao aplicar renovacao automatica.',
+      renewedServices: []
+    };
+  }
+};
 export const updateClientName = async (phoneNumber: string, newName: string): Promise<boolean> => {
   const { error } = await supabase.from('clients').update({ client_name: newName }).eq('phone_number', phoneNumber);
   return !error;
@@ -743,3 +924,4 @@ export const enforceHistoryRetention = async (): Promise<void> => {
     await supabase.from('history_logs').delete().lt('created_at', limitDate.toISOString());
   } catch (e) { console.error("Erro ao limpar histórico antigo:", e); }
 };
+
