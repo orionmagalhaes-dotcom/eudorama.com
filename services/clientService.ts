@@ -438,19 +438,36 @@ export const checkInfinityPayPaymentStatus = async (
 
     const body = await response.json().catch(() => null);
     if (!response.ok) {
+      const apiMessage = String(body?.error || body?.message || '').trim();
       return {
         success: false,
         paid: false,
         status: String(body?.status || ''),
-        message: `Falha ao validar pagamento (HTTP ${response.status}).`,
+        message: apiMessage || `Falha ao validar pagamento (HTTP ${response.status}).`,
         raw: body
       };
     }
 
     const status = String(body?.status || '').toUpperCase();
+    const apiSuccess = typeof body?.success === 'boolean' ? body.success : true;
+    const paidFromFlag = typeof body?.paid === 'boolean' ? body.paid : null;
+    const paidFromStatus = ['PAID', 'APPROVED', 'CONFIRMED', 'CAPTURED'].includes(status);
+    const paid = paidFromFlag ?? paidFromStatus;
+
+    if (!apiSuccess) {
+      const apiMessage = String(body?.error || body?.message || '').trim();
+      return {
+        success: false,
+        paid: false,
+        status,
+        message: apiMessage || 'Falha ao validar pagamento no InfinityPay.',
+        raw: body
+      };
+    }
+
     return {
       success: true,
-      paid: status === 'PAID',
+      paid,
       status,
       raw: body
     };

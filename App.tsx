@@ -37,6 +37,8 @@ const PRICE_NOTICE_KEY = 'eudorama_notice_price_2026_seen';
 const NEW_APP_NOTICE_KEY = 'eudorama_notice_new_app_seen';
 const INFINITY_PAY_HANDLE = (import.meta as any).env?.VITE_INFINITY_PAY_HANDLE || 'orion_magalhaes';
 const INFINITY_PAY_ORDER_STORAGE_PREFIX = 'eudorama_ip_order_';
+const INFINITY_PAY_CHECK_RETRY_ATTEMPTS = 4;
+const INFINITY_PAY_CHECK_RETRY_DELAY_MS = 1800;
 
 const getUserNoticeKey = (base: string, phoneNumber: string) => `${base}:${phoneNumber}`;
 
@@ -265,12 +267,32 @@ const App: React.FC = () => {
         console.warn('Falha ao recuperar pedido pendente do InfinityPay:', e);
       }
 
-      const paymentCheck = await checkInfinityPayPaymentStatus({
+      let paymentCheck = await checkInfinityPayPaymentStatus({
         handle: INFINITY_PAY_HANDLE,
         orderNsu,
         transactionNsu,
         slug
       });
+
+      for (let attempt = 1; attempt < INFINITY_PAY_CHECK_RETRY_ATTEMPTS; attempt++) {
+        const msg = String(paymentCheck.message || '').toLowerCase();
+        const shouldRetryFailure = !paymentCheck.success && (
+          msg.includes('failed check') ||
+          msg.includes('temporar') ||
+          msg.includes('timeout')
+        );
+        const shouldRetryPending = paymentCheck.success && !paymentCheck.paid;
+        const shouldRetry = shouldRetryFailure || shouldRetryPending;
+        if (!shouldRetry) break;
+
+        await new Promise((resolve) => setTimeout(resolve, INFINITY_PAY_CHECK_RETRY_DELAY_MS));
+        paymentCheck = await checkInfinityPayPaymentStatus({
+          handle: INFINITY_PAY_HANDLE,
+          orderNsu,
+          transactionNsu,
+          slug
+        });
+      }
 
       if (!paymentCheck.success) {
         setToast({ message: paymentCheck.message || 'Nao foi possivel validar pagamento no InfinityPay.', type: 'error' });
