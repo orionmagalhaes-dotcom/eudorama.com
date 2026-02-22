@@ -20,7 +20,7 @@ Frontend React + Vite focado em:
    - `VITE_VIKI_TV_AUTOMATION_TOKEN` (opcional, token Bearer do webhook)
    - `VITE_VIKI_TV_AUTOMATION_STATUS_WEBHOOK` (opcional, consulta de status das etapas)
    - `VITE_INFINITY_PAY_HANDLE` (opcional, handle da loja no InfinityPay. Padrao: `orion_magalhaes`)
-   - `VITE_INFINITY_PAY_PAYMENT_CHECK_WEBHOOK` (recomendado em producao, endpoint backend para validar pagamento InfinityPay sem CORS)
+   - `VITE_INFINITY_PAY_PAYMENT_CHECK_WEBHOOK` (recomendado em producao, endpoint backend para validar pagamento InfinityPay sem CORS; pode ser URL completa da rota ou apenas dominio base do worker)
    - `VITE_INFINITY_PAY_PAYMENT_CHECK_TOKEN` (opcional, token Bearer do endpoint backend de `payment_check`)
    - `VITE_VIKI_MOBILE_HELP_VIDEO_URL` (opcional, URL publica do video "Como conectar no celular")
    - `VITE_IQIYI_MOBILE_HELP_VIDEO_URL` (opcional, URL publica do video "Como conectar no celular" da assinatura IQIYI)

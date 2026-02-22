@@ -8,6 +8,7 @@ const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJ
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const INFINITY_PAY_PAYMENT_CHECK_URL = 'https://api.infinitepay.io/invoices/public/checkout/payment_check';
+const INFINITY_PAY_PAYMENT_CHECK_PATH = '/api/infinitypay/payment-check';
 const INFINITY_PAY_PAYMENT_CHECK_WEBHOOK =
   ((import.meta as any).env?.VITE_INFINITY_PAY_PAYMENT_CHECK_WEBHOOK as string | undefined)?.trim() || '';
 const INFINITY_PAY_PAYMENT_CHECK_TOKEN = (
@@ -17,8 +18,28 @@ const INFINITY_PAY_PAYMENT_CHECK_TOKEN = (
 ).trim();
 
 const getInfinityPayPaymentCheckEndpoint = (): string => {
-  if (INFINITY_PAY_PAYMENT_CHECK_WEBHOOK) return INFINITY_PAY_PAYMENT_CHECK_WEBHOOK;
-  if ((import.meta as any).env?.DEV) return '/api/infinitypay/payment-check';
+  if (INFINITY_PAY_PAYMENT_CHECK_WEBHOOK) {
+    const webhook = INFINITY_PAY_PAYMENT_CHECK_WEBHOOK.trim();
+
+    // Accept both a full endpoint URL and a worker base URL.
+    if (/^https?:\/\//i.test(webhook)) {
+      try {
+        const parsed = new URL(webhook);
+        if (parsed.pathname === '/' || !parsed.pathname.trim()) {
+          parsed.pathname = INFINITY_PAY_PAYMENT_CHECK_PATH;
+          return parsed.toString().replace(/\/$/, '');
+        }
+        return webhook;
+      } catch {
+        return webhook;
+      }
+    }
+
+    if (webhook.startsWith('/')) return webhook;
+    return `${webhook.replace(/\/+$/, '')}${INFINITY_PAY_PAYMENT_CHECK_PATH}`;
+  }
+
+  if ((import.meta as any).env?.DEV) return INFINITY_PAY_PAYMENT_CHECK_PATH;
   return INFINITY_PAY_PAYMENT_CHECK_URL;
 };
 
