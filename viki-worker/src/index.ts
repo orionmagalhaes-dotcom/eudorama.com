@@ -46,6 +46,7 @@ const JSON_HEADERS = {
 	'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
 	'Access-Control-Allow-Headers': 'Content-Type,Authorization',
 };
+const INFINITY_PAY_PAYMENT_CHECK_URL = 'https://api.infinitepay.io/invoices/public/checkout/payment_check';
 
 const TV_URL_BY_MODEL: Record<TvModel, string> = {
 	samsung: 'https://www.viki.com/samsungtv',
@@ -515,6 +516,83 @@ export default {
 		if (unauthorized) return unauthorized;
 
 		await ensureSchema(env);
+
+		if (request.method === 'POST' && url.pathname === '/api/infinitypay/payment-check') {
+			const body = await request.json().catch(() => ({} as Record<string, unknown>));
+			const handle = String((body as Record<string, unknown>)?.handle || '').trim();
+			const orderNsu = String((body as Record<string, unknown>)?.order_nsu || (body as Record<string, unknown>)?.orderNsu || '').trim();
+			const transactionNsu = String((body as Record<string, unknown>)?.transaction_nsu || (body as Record<string, unknown>)?.transactionNsu || '').trim();
+			const slug = String((body as Record<string, unknown>)?.slug || '').trim();
+
+			if (!handle || !orderNsu || !transactionNsu || !slug) {
+				return withJson(
+					{
+						success: false,
+						paid: false,
+						message: 'handle, order_nsu, transaction_nsu e slug sao obrigatorios',
+					},
+					400,
+				);
+			}
+
+			try {
+				const upstream = await fetch(INFINITY_PAY_PAYMENT_CHECK_URL, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						handle,
+						order_nsu: orderNsu,
+						transaction_nsu: transactionNsu,
+						slug,
+					}),
+				});
+
+				const upstreamText = await upstream.text().catch(() => '');
+				let upstreamBody: Record<string, unknown> | null = null;
+				try {
+					upstreamBody = upstreamText ? (JSON.parse(upstreamText) as Record<string, unknown>) : null;
+				} catch {
+					upstreamBody = upstreamText ? ({ message: upstreamText.slice(0, 220) } as Record<string, unknown>) : null;
+				}
+
+				const status = String(upstreamBody?.status || '').toUpperCase();
+				const apiSuccess = typeof upstreamBody?.success === 'boolean' ? Boolean(upstreamBody?.success) : upstream.ok;
+				const paidFromFlag = typeof upstreamBody?.paid === 'boolean' ? Boolean(upstreamBody?.paid) : null;
+				const paidFromStatus = ['PAID', 'APPROVED', 'CONFIRMED', 'CAPTURED'].includes(status);
+				const paid = paidFromFlag ?? paidFromStatus;
+
+				if (!upstream.ok || !apiSuccess) {
+					const apiMessage = String(upstreamBody?.error || upstreamBody?.message || '').trim();
+					return withJson(
+						{
+							success: false,
+							paid: false,
+							status,
+							message: apiMessage || `Falha ao validar pagamento (HTTP ${upstream.status}).`,
+							raw: upstreamBody,
+						},
+						upstream.ok ? 200 : upstream.status,
+					);
+				}
+
+				return withJson({
+					success: true,
+					paid,
+					status,
+					raw: upstreamBody,
+				});
+			} catch (error) {
+				const errorMessage = error instanceof Error ? error.message : 'Falha de rede no backend de pagamento';
+				return withJson(
+					{
+						success: false,
+						paid: false,
+						message: errorMessage,
+					},
+					502,
+				);
+			}
+		}
 
 		if (request.method === 'POST' && url.pathname === '/api/viki-tv-automation') {
 			const body = await request.json().catch(() => ({}));

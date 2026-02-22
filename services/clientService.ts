@@ -8,6 +8,24 @@ const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJ
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const INFINITY_PAY_PAYMENT_CHECK_URL = 'https://api.infinitepay.io/invoices/public/checkout/payment_check';
+const INFINITY_PAY_PAYMENT_CHECK_WEBHOOK =
+  ((import.meta as any).env?.VITE_INFINITY_PAY_PAYMENT_CHECK_WEBHOOK as string | undefined)?.trim() || '';
+const INFINITY_PAY_PAYMENT_CHECK_TOKEN = (
+  ((import.meta as any).env?.VITE_INFINITY_PAY_PAYMENT_CHECK_TOKEN as string | undefined)
+  || ((import.meta as any).env?.VITE_VIKI_TV_AUTOMATION_TOKEN as string | undefined)
+  || ''
+).trim();
+
+const getInfinityPayPaymentCheckEndpoint = (): string => {
+  if (INFINITY_PAY_PAYMENT_CHECK_WEBHOOK) return INFINITY_PAY_PAYMENT_CHECK_WEBHOOK;
+  if ((import.meta as any).env?.DEV) return '/api/infinitypay/payment-check';
+  return INFINITY_PAY_PAYMENT_CHECK_URL;
+};
+
+const getInfinityPayPaymentCheckHeaders = (): Record<string, string> => ({
+  'Content-Type': 'application/json',
+  ...(INFINITY_PAY_PAYMENT_CHECK_TOKEN ? { Authorization: `Bearer ${INFINITY_PAY_PAYMENT_CHECK_TOKEN}` } : {})
+});
 
 // --- GERENCIAMENTO DE DADOS LOCAIS ---
 const getLocalUserData = (phoneNumber: string) => {
@@ -425,9 +443,9 @@ export const checkInfinityPayPaymentStatus = async (
   payload: InfinityPayPaymentCheckRequest
 ): Promise<InfinityPayPaymentCheckResult> => {
   try {
-    const response = await fetch(INFINITY_PAY_PAYMENT_CHECK_URL, {
+    const response = await fetch(getInfinityPayPaymentCheckEndpoint(), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getInfinityPayPaymentCheckHeaders(),
       body: JSON.stringify({
         handle: payload.handle,
         order_nsu: payload.orderNsu,
@@ -436,7 +454,14 @@ export const checkInfinityPayPaymentStatus = async (
       })
     });
 
-    const body = await response.json().catch(() => null);
+    const rawText = await response.text().catch(() => '');
+    let body: any = null;
+    try {
+      body = rawText ? JSON.parse(rawText) : null;
+    } catch {
+      body = rawText ? { message: rawText.slice(0, 220) } : null;
+    }
+
     if (!response.ok) {
       const apiMessage = String(body?.error || body?.message || '').trim();
       return {

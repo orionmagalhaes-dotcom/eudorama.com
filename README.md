@@ -20,9 +20,12 @@ Frontend React + Vite focado em:
    - `VITE_VIKI_TV_AUTOMATION_TOKEN` (opcional, token Bearer do webhook)
    - `VITE_VIKI_TV_AUTOMATION_STATUS_WEBHOOK` (opcional, consulta de status das etapas)
    - `VITE_INFINITY_PAY_HANDLE` (opcional, handle da loja no InfinityPay. Padrao: `orion_magalhaes`)
+   - `VITE_INFINITY_PAY_PAYMENT_CHECK_WEBHOOK` (recomendado em producao, endpoint backend para validar pagamento InfinityPay sem CORS)
+   - `VITE_INFINITY_PAY_PAYMENT_CHECK_TOKEN` (opcional, token Bearer do endpoint backend de `payment_check`)
    - `VITE_VIKI_MOBILE_HELP_VIDEO_URL` (opcional, URL publica do video "Como conectar no celular")
    - `VITE_IQIYI_MOBILE_HELP_VIDEO_URL` (opcional, URL publica do video "Como conectar no celular" da assinatura IQIYI)
    - No modo dev, se os webhooks nao forem definidos, o Vite expoe endpoints locais:
+     - `POST /api/infinitypay/payment-check`
      - `POST /api/viki-tv-automation`
      - `GET /api/viki-tv-automation/status?requestId=...`
 3. Rode localmente:
@@ -39,3 +42,15 @@ Frontend React + Vite focado em:
 2. Rode `npm run upload:viki-mobile-video` para o video do Viki Pass.
 3. Rode `npm run upload:iqiyi-mobile-video` para o video do IQIYI.
 4. O script cria o bucket `public-media` (se necessario), envia o arquivo e retorna a URL publica.
+
+## Backend de validacao InfinityPay
+
+- Endpoint esperado pelo frontend: `POST /api/infinitypay/payment-check` (ou URL configurada em `VITE_INFINITY_PAY_PAYMENT_CHECK_WEBHOOK`).
+- Payload:
+  - `handle`
+  - `order_nsu`
+  - `transaction_nsu`
+  - `slug`
+- O projeto ja inclui implementacao para:
+  - dev local no `vite.config.ts`
+  - Cloudflare Worker em `viki-worker/src/index.ts`

@@ -4,6 +4,7 @@ import react from '@vitejs/plugin-react';
 import { createInitialJobStatus, runVikiTvAutomationJob, type VikiTvAutomationJobStatus } from './server/vikiTvAutomationWorker';
 
 const vikiAutomationJobs = new Map<string, VikiTvAutomationJobStatus>();
+const INFINITY_PAY_PAYMENT_CHECK_URL = 'https://api.infinitepay.io/invoices/public/checkout/payment_check';
 
 const readJsonBody = async (req: any): Promise<any> => {
   const chunks: Buffer[] = [];
@@ -29,6 +30,82 @@ const vikiAutomationDevPlugin = () => ({
       const method = String(req.method || '').toUpperCase();
       const url = String(req.url || '');
       const pathOnly = url.split('?')[0];
+
+      if (method === 'POST' && pathOnly === '/api/infinitypay/payment-check') {
+        try {
+          const body = await readJsonBody(req);
+          const handle = String(body?.handle || '').trim();
+          const orderNsu = String(body?.order_nsu || body?.orderNsu || '').trim();
+          const transactionNsu = String(body?.transaction_nsu || body?.transactionNsu || '').trim();
+          const slug = String(body?.slug || '').trim();
+
+          if (!handle || !orderNsu || !transactionNsu || !slug) {
+            sendJson(res, 400, { success: false, paid: false, message: 'handle, order_nsu, transaction_nsu e slug sao obrigatorios.' });
+            return;
+          }
+
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 15000);
+
+          let upstreamResponse: any;
+          try {
+            upstreamResponse = await fetch(INFINITY_PAY_PAYMENT_CHECK_URL, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                handle,
+                order_nsu: orderNsu,
+                transaction_nsu: transactionNsu,
+                slug
+              }),
+              signal: controller.signal
+            });
+          } finally {
+            clearTimeout(timeout);
+          }
+
+          const upstreamText = await upstreamResponse.text().catch(() => '');
+          let upstreamBody: any = null;
+          try {
+            upstreamBody = upstreamText ? JSON.parse(upstreamText) : null;
+          } catch {
+            upstreamBody = upstreamText ? { message: upstreamText.slice(0, 220) } : null;
+          }
+
+          const status = String(upstreamBody?.status || '').toUpperCase();
+          const apiSuccess = typeof upstreamBody?.success === 'boolean' ? upstreamBody.success : upstreamResponse.ok;
+          const paidFromFlag = typeof upstreamBody?.paid === 'boolean' ? upstreamBody.paid : null;
+          const paidFromStatus = ['PAID', 'APPROVED', 'CONFIRMED', 'CAPTURED'].includes(status);
+          const paid = paidFromFlag ?? paidFromStatus;
+
+          if (!upstreamResponse.ok || !apiSuccess) {
+            const apiMessage = String(upstreamBody?.error || upstreamBody?.message || '').trim();
+            sendJson(res, upstreamResponse.ok ? 200 : upstreamResponse.status, {
+              success: false,
+              paid: false,
+              status,
+              message: apiMessage || `Falha ao validar pagamento (HTTP ${upstreamResponse.status}).`,
+              raw: upstreamBody
+            });
+            return;
+          }
+
+          sendJson(res, 200, {
+            success: true,
+            paid,
+            status,
+            raw: upstreamBody
+          });
+          return;
+        } catch (e: any) {
+          sendJson(res, 502, {
+            success: false,
+            paid: false,
+            message: e?.message || 'Falha no backend ao validar pagamento.'
+          });
+          return;
+        }
+      }
 
       if (method === 'POST' && pathOnly === '/api/viki-tv-automation') {
         try {
