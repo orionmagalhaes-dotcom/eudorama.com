@@ -5,6 +5,7 @@
   "compatibility_flags": [
     "nodejs_compat_v2"
   ],
+  // Use `npx wrangler secret put INFINITY_PAY_PAYMENT_CHECK_TOKEN` for payment-check auth.
   "d1_databases": [
     {
       "binding": "DB",

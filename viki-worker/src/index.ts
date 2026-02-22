@@ -6,6 +6,7 @@ export interface Env {
 	VIKI_QUEUE: Queue<VikiQueueMessage>;
 	BROWSER: Fetcher;
 	VIKI_WEBHOOK_TOKEN?: string;
+	INFINITY_PAY_PAYMENT_CHECK_TOKEN?: string;
 }
 
 type TvModel = 'samsung' | 'lg' | 'android';
@@ -483,8 +484,15 @@ const runAutomation = async (
 	}
 };
 
-const authorizeIfNeeded = (request: Request, env: Env): Response | null => {
-	const token = env.VIKI_WEBHOOK_TOKEN?.trim();
+const resolveExpectedAuthToken = (pathname: string, env: Env): string => {
+	if (pathname === '/api/infinitypay/payment-check') {
+		return env.INFINITY_PAY_PAYMENT_CHECK_TOKEN?.trim() || env.VIKI_WEBHOOK_TOKEN?.trim() || '';
+	}
+	return env.VIKI_WEBHOOK_TOKEN?.trim() || '';
+};
+
+const authorizeIfNeeded = (request: Request, env: Env, pathname: string): Response | null => {
+	const token = resolveExpectedAuthToken(pathname, env);
 	if (!token) return null;
 
 	const authHeader = request.headers.get('authorization') || '';
@@ -512,7 +520,7 @@ export default {
 			return new Response(null, { status: 204, headers: JSON_HEADERS });
 		}
 
-		const unauthorized = authorizeIfNeeded(request, env);
+		const unauthorized = authorizeIfNeeded(request, env, url.pathname);
 		if (unauthorized) return unauthorized;
 
 		await ensureSchema(env);

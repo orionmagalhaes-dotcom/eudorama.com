@@ -1,0 +1,2 @@
+INFINITY_PAY_PAYMENT_CHECK_TOKEN=replace_with_same_token_used_in_frontend
+VIKI_WEBHOOK_TOKEN=optional_shared_token_for_viki_routes

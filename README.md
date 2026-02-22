@@ -46,6 +46,12 @@ Frontend React + Vite focado em:
 ## Backend de validacao InfinityPay
 
 - Endpoint esperado pelo frontend: `POST /api/infinitypay/payment-check` (ou URL configurada em `VITE_INFINITY_PAY_PAYMENT_CHECK_WEBHOOK`).
+- Configure o mesmo token no frontend e no Worker:
+  - Frontend: `VITE_INFINITY_PAY_PAYMENT_CHECK_TOKEN=<seu_token>`
+  - Worker Cloudflare (recomendado como secret): `INFINITY_PAY_PAYMENT_CHECK_TOKEN=<seu_token>`
+- Comando recomendado para Worker:
+  - `cd viki-worker`
+  - `npx wrangler secret put INFINITY_PAY_PAYMENT_CHECK_TOKEN`
 - Payload:
   - `handle`
   - `order_nsu`
