@@ -41,6 +41,22 @@ interface StatusRow {
 	error?: string | null;
 }
 
+interface InfinityPayOrderRow {
+	order_nsu: string;
+	phone_number: string;
+	services_json: string | null;
+	status: string | null;
+	paid: number | null;
+	handle?: string | null;
+	transaction_nsu?: string | null;
+	slug?: string | null;
+	receipt_url?: string | null;
+	capture_method?: string | null;
+	error?: string | null;
+	created_at?: string | null;
+	updated_at?: string | null;
+}
+
 const JSON_HEADERS = {
 	'Content-Type': 'application/json',
 	'Access-Control-Allow-Origin': '*',
@@ -48,6 +64,9 @@ const JSON_HEADERS = {
 	'Access-Control-Allow-Headers': 'Content-Type,Authorization',
 };
 const INFINITY_PAY_PAYMENT_CHECK_URL = 'https://api.infinitepay.io/invoices/public/checkout/payment_check';
+const INFINITY_PAY_PAYMENT_CHECK_PATH = '/api/infinitypay/payment-check';
+const INFINITY_PAY_ORDER_REGISTER_PATH = '/api/infinitypay/order-register';
+const INFINITY_PAY_ORDER_LOOKUP_PATH = '/api/infinitypay/order';
 
 const TV_URL_BY_MODEL: Record<TvModel, string> = {
 	samsung: 'https://www.viki.com/samsungtv',
@@ -90,6 +109,25 @@ const normalizeId = (value: unknown): string | null => {
 	if (!trimmed) return null;
 	if (!/^[a-zA-Z0-9-_]{8,80}$/.test(trimmed)) return null;
 	return trimmed;
+};
+
+const normalizePhoneNumber = (value: unknown): string => String(value || '').replace(/\D/g, '');
+
+const normalizeServices = (value: unknown): string[] => {
+	if (!Array.isArray(value)) return [];
+	return value
+		.map((item) => String(item || '').trim())
+		.filter((item) => item.length > 0);
+};
+
+const parseServicesJson = (raw: string | null | undefined): string[] => {
+	if (!raw) return [];
+	try {
+		const parsed = JSON.parse(raw);
+		return normalizeServices(parsed);
+	} catch {
+		return [];
+	}
 };
 
 const normalizeTvCode = (value: unknown): string => {
@@ -249,6 +287,29 @@ const ensureSchema = async (env: Env): Promise<void> => {
 		)
 	`).run();
 
+	await env.DB.prepare(`
+		CREATE TABLE IF NOT EXISTS infinitypay_orders (
+			order_nsu TEXT PRIMARY KEY,
+			phone_number TEXT NOT NULL DEFAULT '',
+			services_json TEXT NOT NULL DEFAULT '[]',
+			status TEXT NOT NULL DEFAULT 'pending',
+			paid INTEGER NOT NULL DEFAULT 0,
+			handle TEXT,
+			transaction_nsu TEXT,
+			slug TEXT,
+			receipt_url TEXT,
+			capture_method TEXT,
+			error TEXT,
+			created_at TEXT DEFAULT (datetime('now')),
+			updated_at TEXT DEFAULT (datetime('now'))
+		)
+	`).run();
+
+	await env.DB.prepare(`
+		CREATE INDEX IF NOT EXISTS idx_infinitypay_orders_phone
+		ON infinitypay_orders(phone_number)
+	`).run();
+
 	schemaReady = true;
 };
 
@@ -300,6 +361,104 @@ const getStatusRow = async (env: Env, requestId: string): Promise<StatusRow | nu
 		if (!fallback) return null;
 		return { ...fallback, error: null };
 	}
+};
+
+const toInfinityPayOrderResponse = (row: InfinityPayOrderRow) => ({
+	order_nsu: row.order_nsu,
+	phone_number: row.phone_number || '',
+	services: parseServicesJson(row.services_json),
+	status: String(row.status || '').trim() || 'pending',
+	paid: Number(row.paid || 0) === 1,
+	handle: row.handle || undefined,
+	transaction_nsu: row.transaction_nsu || undefined,
+	slug: row.slug || undefined,
+	receipt_url: row.receipt_url || undefined,
+	capture_method: row.capture_method || undefined,
+	error: row.error || undefined,
+	created_at: row.created_at || undefined,
+	updated_at: row.updated_at || undefined,
+});
+
+const upsertInfinityPayOrderContext = async (
+	env: Env,
+	input: {
+		orderNsu: string;
+		phoneNumber: string;
+		services: string[];
+		handle?: string;
+	},
+): Promise<void> => {
+	await env.DB.prepare(
+		'INSERT OR IGNORE INTO infinitypay_orders (order_nsu, phone_number, services_json, status, paid, handle, error) VALUES (?, ?, ?, ?, ?, ?, ?)',
+	)
+		.bind(
+			input.orderNsu,
+			input.phoneNumber,
+			JSON.stringify(input.services),
+			'pending',
+			0,
+			input.handle || null,
+			null,
+		)
+		.run();
+
+	await env.DB.prepare(
+		"UPDATE infinitypay_orders SET phone_number = ?, services_json = ?, handle = COALESCE(?, handle), updated_at = datetime('now') WHERE order_nsu = ?",
+	)
+		.bind(input.phoneNumber, JSON.stringify(input.services), input.handle || null, input.orderNsu)
+		.run();
+};
+
+const getInfinityPayOrderRow = async (env: Env, orderNsu: string): Promise<InfinityPayOrderRow | null> => {
+	return await env.DB
+		.prepare(
+			'SELECT order_nsu, phone_number, services_json, status, paid, handle, transaction_nsu, slug, receipt_url, capture_method, error, created_at, updated_at FROM infinitypay_orders WHERE order_nsu = ?',
+		)
+		.bind(orderNsu)
+		.first<InfinityPayOrderRow>();
+};
+
+const persistInfinityPayPaymentCheckResult = async (
+	env: Env,
+	input: {
+		orderNsu: string;
+		handle: string;
+		transactionNsu: string;
+		slug: string;
+		paid: boolean;
+		status: string;
+		error: string | null;
+	},
+): Promise<void> => {
+	await env.DB.prepare(
+		'INSERT OR IGNORE INTO infinitypay_orders (order_nsu, phone_number, services_json, status, paid, handle, transaction_nsu, slug, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+	)
+		.bind(
+			input.orderNsu,
+			'',
+			'[]',
+			input.status || (input.paid ? 'PAID' : 'PENDING'),
+			input.paid ? 1 : 0,
+			input.handle || null,
+			input.transactionNsu || null,
+			input.slug || null,
+			input.error || null,
+		)
+		.run();
+
+	await env.DB.prepare(
+		"UPDATE infinitypay_orders SET handle = COALESCE(?, handle), transaction_nsu = ?, slug = ?, status = ?, paid = ?, error = ?, updated_at = datetime('now') WHERE order_nsu = ?",
+	)
+		.bind(
+			input.handle || null,
+			input.transactionNsu || null,
+			input.slug || null,
+			input.status || (input.paid ? 'PAID' : 'PENDING'),
+			input.paid ? 1 : 0,
+			input.error || null,
+			input.orderNsu,
+		)
+		.run();
 };
 
 const clickByText = async (page: Page, values: string[]): Promise<boolean> => {
@@ -485,7 +644,7 @@ const runAutomation = async (
 };
 
 const resolveExpectedAuthToken = (pathname: string, env: Env): string => {
-	if (pathname === '/api/infinitypay/payment-check') {
+	if (pathname.startsWith('/api/infinitypay/')) {
 		return env.INFINITY_PAY_PAYMENT_CHECK_TOKEN?.trim() || env.VIKI_WEBHOOK_TOKEN?.trim() || '';
 	}
 	return env.VIKI_WEBHOOK_TOKEN?.trim() || '';
@@ -525,10 +684,112 @@ export default {
 
 		await ensureSchema(env);
 
-		if (request.method === 'POST' && url.pathname === '/api/infinitypay/payment-check') {
+		if (request.method === 'POST' && url.pathname === INFINITY_PAY_ORDER_REGISTER_PATH) {
+			try {
+				const body = await request.json().catch(() => ({} as Record<string, unknown>));
+				const orderNsu = normalizeId((body as Record<string, unknown>)?.order_nsu || (body as Record<string, unknown>)?.orderNsu);
+				const phoneNumber = normalizePhoneNumber((body as Record<string, unknown>)?.phone_number || (body as Record<string, unknown>)?.phoneNumber);
+				const services = normalizeServices((body as Record<string, unknown>)?.services);
+				const handle = String((body as Record<string, unknown>)?.handle || '').trim();
+
+				if (!orderNsu) {
+					return withJson(
+						{
+							success: false,
+							message: 'order_nsu invalido',
+						},
+						400,
+					);
+				}
+
+				if (!phoneNumber || phoneNumber.length < 8) {
+					return withJson(
+						{
+							success: false,
+							message: 'phone_number invalido',
+						},
+						400,
+					);
+				}
+
+				if (services.length === 0) {
+					return withJson(
+						{
+							success: false,
+							message: 'services vazio',
+						},
+						400,
+					);
+				}
+
+				await upsertInfinityPayOrderContext(env, {
+					orderNsu,
+					phoneNumber,
+					services,
+					handle,
+				});
+
+				const row = await getInfinityPayOrderRow(env, orderNsu);
+				if (!row) {
+					return withJson(
+						{
+							success: false,
+							message: 'Falha ao recuperar pedido apos registro',
+						},
+						500,
+					);
+				}
+
+				return withJson({
+					success: true,
+					message: 'Pedido InfinityPay registrado no backend.',
+					order: toInfinityPayOrderResponse(row),
+				});
+			} catch (error) {
+				const errorMessage = error instanceof Error ? error.message : 'Erro ao registrar pedido InfinityPay';
+				return withJson(
+					{
+						success: false,
+						message: errorMessage,
+					},
+					500,
+				);
+			}
+		}
+
+		if (request.method === 'GET' && url.pathname === INFINITY_PAY_ORDER_LOOKUP_PATH) {
+			const orderNsu = normalizeId(url.searchParams.get('order_nsu'));
+			if (!orderNsu) {
+				return withJson(
+					{
+						success: false,
+						message: 'order_nsu ausente ou invalido',
+					},
+					400,
+				);
+			}
+
+			const row = await getInfinityPayOrderRow(env, orderNsu);
+			if (!row) {
+				return withJson(
+					{
+						success: false,
+						message: 'Pedido InfinityPay nao encontrado',
+					},
+					404,
+				);
+			}
+
+			return withJson({
+				success: true,
+				order: toInfinityPayOrderResponse(row),
+			});
+		}
+
+		if (request.method === 'POST' && url.pathname === INFINITY_PAY_PAYMENT_CHECK_PATH) {
 			const body = await request.json().catch(() => ({} as Record<string, unknown>));
 			const handle = String((body as Record<string, unknown>)?.handle || '').trim();
-			const orderNsu = String((body as Record<string, unknown>)?.order_nsu || (body as Record<string, unknown>)?.orderNsu || '').trim();
+			const orderNsu = normalizeId((body as Record<string, unknown>)?.order_nsu || (body as Record<string, unknown>)?.orderNsu);
 			const transactionNsu = String((body as Record<string, unknown>)?.transaction_nsu || (body as Record<string, unknown>)?.transactionNsu || '').trim();
 			const slug = String((body as Record<string, unknown>)?.slug || '').trim();
 
@@ -571,6 +832,15 @@ export default {
 
 				if (!upstream.ok || !apiSuccess) {
 					const apiMessage = String(upstreamBody?.error || upstreamBody?.message || '').trim();
+					await persistInfinityPayPaymentCheckResult(env, {
+						orderNsu,
+						handle,
+						transactionNsu,
+						slug,
+						paid: false,
+						status: status || 'FAILED',
+						error: apiMessage || `Falha ao validar pagamento (HTTP ${upstream.status}).`,
+					});
 					return withJson(
 						{
 							success: false,
@@ -583,6 +853,16 @@ export default {
 					);
 				}
 
+				await persistInfinityPayPaymentCheckResult(env, {
+					orderNsu,
+					handle,
+					transactionNsu,
+					slug,
+					paid,
+					status: status || (paid ? 'PAID' : 'PENDING'),
+					error: null,
+				});
+
 				return withJson({
 					success: true,
 					paid,
@@ -591,6 +871,15 @@ export default {
 				});
 			} catch (error) {
 				const errorMessage = error instanceof Error ? error.message : 'Falha de rede no backend de pagamento';
+				await persistInfinityPayPaymentCheckResult(env, {
+					orderNsu,
+					handle,
+					transactionNsu,
+					slug,
+					paid: false,
+					status: 'ERROR',
+					error: errorMessage,
+				});
 				return withJson(
 					{
 						success: false,

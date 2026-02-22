@@ -8,7 +8,10 @@ const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJ
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const INFINITY_PAY_PAYMENT_CHECK_URL = 'https://api.infinitepay.io/invoices/public/checkout/payment_check';
-const INFINITY_PAY_PAYMENT_CHECK_PATH = '/api/infinitypay/payment-check';
+const INFINITY_PAY_API_BASE_PATH = '/api/infinitypay';
+const INFINITY_PAY_PAYMENT_CHECK_PATH = `${INFINITY_PAY_API_BASE_PATH}/payment-check`;
+const INFINITY_PAY_ORDER_REGISTER_PATH = `${INFINITY_PAY_API_BASE_PATH}/order-register`;
+const INFINITY_PAY_ORDER_LOOKUP_PATH = `${INFINITY_PAY_API_BASE_PATH}/order`;
 const INFINITY_PAY_PAYMENT_CHECK_WEBHOOK =
   ((import.meta as any).env?.VITE_INFINITY_PAY_PAYMENT_CHECK_WEBHOOK as string | undefined)?.trim() || '';
 const INFINITY_PAY_PAYMENT_CHECK_TOKEN = (
@@ -17,33 +20,81 @@ const INFINITY_PAY_PAYMENT_CHECK_TOKEN = (
   || ''
 ).trim();
 
-const getInfinityPayPaymentCheckEndpoint = (): string => {
+const getInfinityPayWebhookBase = (): string => {
   if (INFINITY_PAY_PAYMENT_CHECK_WEBHOOK) {
     const webhook = INFINITY_PAY_PAYMENT_CHECK_WEBHOOK.trim();
-
-    // Accept both a full endpoint URL and a worker base URL.
     if (/^https?:\/\//i.test(webhook)) {
       try {
         const parsed = new URL(webhook);
-        if (parsed.pathname === '/' || !parsed.pathname.trim()) {
-          parsed.pathname = INFINITY_PAY_PAYMENT_CHECK_PATH;
+        const path = String(parsed.pathname || '/').trim();
+        if (!path || path === '/') {
+          parsed.pathname = INFINITY_PAY_API_BASE_PATH;
           return parsed.toString().replace(/\/$/, '');
         }
-        return webhook;
+
+        const infinityPathIndex = path.indexOf(INFINITY_PAY_API_BASE_PATH);
+        if (infinityPathIndex >= 0) {
+          parsed.pathname = INFINITY_PAY_API_BASE_PATH;
+          return parsed.toString().replace(/\/$/, '');
+        }
+
+        if (path.endsWith('/payment-check')) {
+          parsed.pathname = path.slice(0, -'/payment-check'.length) || '/';
+          return parsed.toString().replace(/\/$/, '');
+        }
+
+        return webhook.replace(/\/$/, '');
       } catch {
-        return webhook;
+        return webhook.replace(/\/$/, '');
       }
     }
 
-    if (webhook.startsWith('/')) return webhook;
-    return `${webhook.replace(/\/+$/, '')}${INFINITY_PAY_PAYMENT_CHECK_PATH}`;
+    if (webhook.startsWith('/')) {
+      const normalizedRelative = webhook.replace(/\/+$/, '');
+      if (normalizedRelative.endsWith('/payment-check')) {
+        return normalizedRelative.slice(0, -'/payment-check'.length) || '/';
+      }
+      return normalizedRelative;
+    }
+
+    const normalizedRaw = webhook.replace(/\/+$/, '');
+    if (normalizedRaw.endsWith('/payment-check')) {
+      return normalizedRaw.slice(0, -'/payment-check'.length);
+    }
+    return normalizedRaw;
   }
 
-  if ((import.meta as any).env?.DEV) return INFINITY_PAY_PAYMENT_CHECK_PATH;
-  return INFINITY_PAY_PAYMENT_CHECK_URL;
+  if ((import.meta as any).env?.DEV) return INFINITY_PAY_API_BASE_PATH;
+  return '';
 };
 
-const getInfinityPayPaymentCheckHeaders = (): Record<string, string> => ({
+const buildInfinityPayEndpointFromBase = (base: string, path: string): string => {
+  if (!base) return '';
+  if (base.startsWith('/')) return path;
+  const normalizedPath = path.startsWith(INFINITY_PAY_API_BASE_PATH)
+    ? path.slice(INFINITY_PAY_API_BASE_PATH.length)
+    : path;
+  const pathWithSlash = normalizedPath.startsWith('/') ? normalizedPath : `/${normalizedPath}`;
+  return `${base.replace(/\/+$/, '')}${pathWithSlash}`;
+};
+
+const getInfinityPayPaymentCheckEndpoint = (): string => {
+  const base = getInfinityPayWebhookBase();
+  const endpoint = buildInfinityPayEndpointFromBase(base, INFINITY_PAY_PAYMENT_CHECK_PATH);
+  return endpoint || INFINITY_PAY_PAYMENT_CHECK_URL;
+};
+
+const getInfinityPayOrderRegisterEndpoint = (): string => {
+  const base = getInfinityPayWebhookBase();
+  return buildInfinityPayEndpointFromBase(base, INFINITY_PAY_ORDER_REGISTER_PATH);
+};
+
+const getInfinityPayOrderLookupEndpoint = (): string => {
+  const base = getInfinityPayWebhookBase();
+  return buildInfinityPayEndpointFromBase(base, INFINITY_PAY_ORDER_LOOKUP_PATH);
+};
+
+const getInfinityPayBackendHeaders = (): Record<string, string> => ({
   'Content-Type': 'application/json',
   ...(INFINITY_PAY_PAYMENT_CHECK_TOKEN ? { Authorization: `Bearer ${INFINITY_PAY_PAYMENT_CHECK_TOKEN}` } : {})
 });
@@ -445,6 +496,151 @@ const calculateNextSubscriptionStart = (dateStr: string, months: number): Date =
   return next;
 };
 
+export interface InfinityPayOrderContext {
+  orderNsu: string;
+  phoneNumber: string;
+  services: string[];
+  status?: string;
+  paid?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface InfinityPayOrderContextRegisterPayload {
+  orderNsu: string;
+  phoneNumber: string;
+  services: string[];
+  handle?: string;
+}
+
+export interface InfinityPayOrderContextResult {
+  success: boolean;
+  message?: string;
+  order?: InfinityPayOrderContext;
+  raw?: any;
+}
+
+const normalizeInfinityServices = (services: unknown): string[] => {
+  if (!Array.isArray(services)) return [];
+  return services
+    .map((service) => String(service || '').trim())
+    .filter(Boolean);
+};
+
+export const registerInfinityPayOrderContext = async (
+  payload: InfinityPayOrderContextRegisterPayload
+): Promise<InfinityPayOrderContextResult> => {
+  const endpoint = getInfinityPayOrderRegisterEndpoint();
+  if (!endpoint) {
+    return {
+      success: false,
+      message: 'Endpoint de backend para registro de pedido InfinityPay nao configurado.'
+    };
+  }
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: getInfinityPayBackendHeaders(),
+      body: JSON.stringify({
+        order_nsu: payload.orderNsu,
+        phone_number: payload.phoneNumber,
+        services: normalizeInfinityServices(payload.services),
+        handle: payload.handle
+      })
+    });
+
+    const rawText = await response.text().catch(() => '');
+    let body: any = null;
+    try {
+      body = rawText ? JSON.parse(rawText) : null;
+    } catch {
+      body = rawText ? { message: rawText.slice(0, 220) } : null;
+    }
+
+    if (!response.ok || body?.success === false) {
+      const message = String(body?.message || body?.error || '').trim();
+      return {
+        success: false,
+        message: message || `Falha ao registrar pedido InfinityPay (HTTP ${response.status}).`,
+        raw: body
+      };
+    }
+
+    return {
+      success: true,
+      message: String(body?.message || '').trim() || 'Pedido InfinityPay registrado no backend.',
+      raw: body
+    };
+  } catch (e: any) {
+    return {
+      success: false,
+      message: String(e?.message || 'Erro ao registrar pedido InfinityPay no backend.')
+    };
+  }
+};
+
+export const getInfinityPayOrderContext = async (orderNsu: string): Promise<InfinityPayOrderContextResult> => {
+  const endpoint = getInfinityPayOrderLookupEndpoint();
+  if (!endpoint) {
+    return {
+      success: false,
+      message: 'Endpoint de backend para consulta de pedido InfinityPay nao configurado.'
+    };
+  }
+
+  try {
+    const separator = endpoint.includes('?') ? '&' : '?';
+    const response = await fetch(`${endpoint}${separator}order_nsu=${encodeURIComponent(orderNsu)}`, {
+      method: 'GET',
+      headers: getInfinityPayBackendHeaders()
+    });
+
+    const rawText = await response.text().catch(() => '');
+    let body: any = null;
+    try {
+      body = rawText ? JSON.parse(rawText) : null;
+    } catch {
+      body = rawText ? { message: rawText.slice(0, 220) } : null;
+    }
+
+    if (!response.ok || body?.success === false) {
+      const message = String(body?.message || body?.error || '').trim();
+      return {
+        success: false,
+        message: message || `Falha ao consultar pedido InfinityPay (HTTP ${response.status}).`,
+        raw: body
+      };
+    }
+
+    const orderSource = (body?.order || body) as any;
+    const parsedOrder: InfinityPayOrderContext = {
+      orderNsu: String(orderSource?.order_nsu || orderSource?.orderNsu || orderNsu || '').trim(),
+      phoneNumber: String(orderSource?.phone_number || orderSource?.phoneNumber || '').trim(),
+      services: normalizeInfinityServices(orderSource?.services),
+      status: typeof orderSource?.status === 'string' ? orderSource.status : undefined,
+      paid: typeof orderSource?.paid === 'boolean'
+        ? orderSource.paid
+        : (typeof orderSource?.paid === 'number' ? orderSource.paid === 1 : undefined),
+      createdAt: typeof orderSource?.created_at === 'string' ? orderSource.created_at : orderSource?.createdAt,
+      updatedAt: typeof orderSource?.updated_at === 'string' ? orderSource.updated_at : orderSource?.updatedAt
+    };
+
+    if (!parsedOrder.orderNsu) parsedOrder.orderNsu = String(orderNsu || '').trim();
+
+    return {
+      success: true,
+      order: parsedOrder,
+      raw: body
+    };
+  } catch (e: any) {
+    return {
+      success: false,
+      message: String(e?.message || 'Erro ao consultar pedido InfinityPay no backend.')
+    };
+  }
+};
+
 export interface InfinityPayPaymentCheckRequest {
   handle: string;
   orderNsu: string;
@@ -466,7 +662,7 @@ export const checkInfinityPayPaymentStatus = async (
   try {
     const response = await fetch(getInfinityPayPaymentCheckEndpoint(), {
       method: 'POST',
-      headers: getInfinityPayPaymentCheckHeaders(),
+      headers: getInfinityPayBackendHeaders(),
       body: JSON.stringify({
         handle: payload.handle,
         order_nsu: payload.orderNsu,

@@ -3,6 +3,7 @@ import { X, Check, Receipt, Gift, Sparkles, CreditCard, Copy, MessageCircle } fr
 import { User } from '../types';
 import { getServicePrice } from '../services/pricingConfig';
 import { copyTextToClipboard } from '../services/clipboard';
+import { registerInfinityPayOrderContext } from '../services/clientService';
 
 interface CheckoutModalProps {
     onClose: () => void;
@@ -107,7 +108,7 @@ const CheckoutModal: React.FC<CheckoutModalProps> = ({ onClose, user, type = 're
         return key ? SERVICE_INFO[key] : [];
     }, [renewalList]);
 
-    const handleInfinityPayCheckout = () => {
+    const handleInfinityPayCheckout = async () => {
         const renewableServices = renewalList.filter((service) => !service.includes('Contribuicao Voluntaria'));
         if (checkoutData.orderNsu && renewableServices.length > 0) {
             try {
@@ -121,6 +122,19 @@ const CheckoutModal: React.FC<CheckoutModalProps> = ({ onClose, user, type = 're
                 );
             } catch (e) {
                 console.warn('Nao foi possivel salvar pedido pendente do InfinityPay.', e);
+            }
+
+            try {
+                const registerResult = await registerInfinityPayOrderContext({
+                    orderNsu: checkoutData.orderNsu,
+                    phoneNumber: user.phoneNumber,
+                    services: renewableServices
+                });
+                if (!registerResult.success) {
+                    console.warn('Nao foi possivel registrar pedido InfinityPay no backend:', registerResult.message);
+                }
+            } catch (e) {
+                console.warn('Falha inesperada ao registrar pedido InfinityPay no backend.', e);
             }
         }
 

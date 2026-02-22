@@ -46,6 +46,8 @@ Frontend React + Vite focado em:
 ## Backend de validacao InfinityPay
 
 - Endpoint esperado pelo frontend: `POST /api/infinitypay/payment-check` (ou URL configurada em `VITE_INFINITY_PAY_PAYMENT_CHECK_WEBHOOK`).
+- Endpoint para registrar pedido (renovacao fora do navegador original): `POST /api/infinitypay/order-register`.
+- Endpoint para consultar pedido por `order_nsu`: `GET /api/infinitypay/order?order_nsu=...`.
 - Configure o mesmo token no frontend e no Worker:
   - Frontend: `VITE_INFINITY_PAY_PAYMENT_CHECK_TOKEN=<seu_token>`
   - Worker Cloudflare (recomendado como secret): `INFINITY_PAY_PAYMENT_CHECK_TOKEN=<seu_token>`
@@ -57,6 +59,10 @@ Frontend React + Vite focado em:
   - `order_nsu`
   - `transaction_nsu`
   - `slug`
+- Payload de `order-register`:
+  - `order_nsu`
+  - `phone_number`
+  - `services` (array)
 - O projeto ja inclui implementacao para:
   - dev local no `vite.config.ts`
   - Cloudflare Worker em `viki-worker/src/index.ts`

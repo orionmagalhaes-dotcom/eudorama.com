@@ -18,6 +18,7 @@ import {
   updateLastActive,
   supabase,
   checkInfinityPayPaymentStatus,
+  getInfinityPayOrderContext,
   renewClientSubscriptionsAfterInfinityPayment
 } from './services/clientService';
 import { Heart, X, CheckCircle2, MessageCircle, Gift, Sparkles, Home, Tv2, Palette, LogOut, AlertTriangle } from 'lucide-react';
@@ -40,6 +41,7 @@ const INFINITY_PAY_ORDER_STORAGE_PREFIX = 'eudorama_ip_order_';
 const INFINITY_PAY_CHECK_RETRY_ATTEMPTS = 4;
 const INFINITY_PAY_CHECK_RETRY_DELAY_MS = 1800;
 const INFINITY_PAY_NETWORK_FAILURE_HINTS = ['failed to fetch', 'networkerror', 'load failed', 'fetch failed'];
+const normalizePhoneDigits = (value: string) => String(value || '').replace(/\D/g, '');
 
 const getUserNoticeKey = (base: string, phoneNumber: string) => `${base}:${phoneNumber}`;
 
@@ -272,6 +274,41 @@ const App: React.FC = () => {
         }
       } catch (e) {
         console.warn('Falha ao recuperar pedido pendente do InfinityPay:', e);
+      }
+
+      if (servicesToRenew.length === 0) {
+        const orderLookup = await getInfinityPayOrderContext(orderNsu);
+        if (orderLookup.success && orderLookup.order) {
+          const backendPhone = normalizePhoneDigits(orderLookup.order.phoneNumber || '');
+          const currentPhone = normalizePhoneDigits(currentUser.phoneNumber || '');
+          const sameOwner = !!backendPhone && !!currentPhone && backendPhone === currentPhone;
+
+          if (sameOwner) {
+            servicesToRenew = (orderLookup.order.services || [])
+              .map((service) => String(service || '').trim())
+              .filter((service) => service.length > 0);
+
+            if (servicesToRenew.length > 0) {
+              try {
+                localStorage.setItem(
+                  pendingKey,
+                  JSON.stringify({
+                    phoneNumber: currentUser.phoneNumber,
+                    services: servicesToRenew,
+                    createdAt: new Date().toISOString(),
+                    source: 'backend_order_lookup'
+                  })
+                );
+              } catch (e) {
+                console.warn('Falha ao salvar pedido recuperado do backend no armazenamento local.', e);
+              }
+            }
+          } else if (backendPhone && currentPhone && backendPhone !== currentPhone) {
+            console.warn('Pedido InfinityPay pertence a outro cliente e nao sera renovado neste login.');
+          }
+        } else if (orderLookup.message) {
+          console.warn('Nao foi possivel recuperar pedido InfinityPay no backend:', orderLookup.message);
+        }
       }
 
       let paymentCheck = await checkInfinityPayPaymentStatus({

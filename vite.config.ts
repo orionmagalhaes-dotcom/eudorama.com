@@ -5,6 +5,25 @@ import { createInitialJobStatus, runVikiTvAutomationJob, type VikiTvAutomationJo
 
 const vikiAutomationJobs = new Map<string, VikiTvAutomationJobStatus>();
 const INFINITY_PAY_PAYMENT_CHECK_URL = 'https://api.infinitepay.io/invoices/public/checkout/payment_check';
+const INFINITY_PAY_PAYMENT_CHECK_PATH = '/api/infinitypay/payment-check';
+const INFINITY_PAY_ORDER_REGISTER_PATH = '/api/infinitypay/order-register';
+const INFINITY_PAY_ORDER_LOOKUP_PATH = '/api/infinitypay/order';
+const infinityPayOrders = new Map<
+  string,
+  {
+    order_nsu: string;
+    phone_number: string;
+    services: string[];
+    status: string;
+    paid: boolean;
+    handle?: string;
+    transaction_nsu?: string;
+    slug?: string;
+    error?: string;
+    created_at: string;
+    updated_at: string;
+  }
+>();
 
 const readJsonBody = async (req: any): Promise<any> => {
   const chunks: Buffer[] = [];
@@ -23,6 +42,12 @@ const sendJson = (res: any, status: number, body: unknown) => {
   res.end(JSON.stringify(body));
 };
 
+const normalizePhoneNumber = (value: unknown): string => String(value || '').replace(/\D/g, '');
+const normalizeServices = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.map((item) => String(item || '').trim()).filter((item) => item.length > 0)
+    : [];
+
 const vikiAutomationDevPlugin = () => ({
   name: 'viki-tv-automation-dev-api',
   configureServer(server: any) {
@@ -31,7 +56,81 @@ const vikiAutomationDevPlugin = () => ({
       const url = String(req.url || '');
       const pathOnly = url.split('?')[0];
 
-      if (method === 'POST' && pathOnly === '/api/infinitypay/payment-check') {
+      if (method === 'POST' && pathOnly === INFINITY_PAY_ORDER_REGISTER_PATH) {
+        try {
+          const body = await readJsonBody(req);
+          const orderNsu = String(body?.order_nsu || body?.orderNsu || '').trim();
+          const phoneNumber = normalizePhoneNumber(body?.phone_number || body?.phoneNumber);
+          const services = normalizeServices(body?.services);
+          const handle = String(body?.handle || '').trim();
+
+          if (!orderNsu) {
+            sendJson(res, 400, { success: false, message: 'order_nsu invalido' });
+            return;
+          }
+
+          if (!phoneNumber || phoneNumber.length < 8) {
+            sendJson(res, 400, { success: false, message: 'phone_number invalido' });
+            return;
+          }
+
+          if (services.length === 0) {
+            sendJson(res, 400, { success: false, message: 'services vazio' });
+            return;
+          }
+
+          const now = new Date().toISOString();
+          const previous = infinityPayOrders.get(orderNsu);
+          infinityPayOrders.set(orderNsu, {
+            order_nsu: orderNsu,
+            phone_number: phoneNumber,
+            services,
+            status: previous?.status || 'pending',
+            paid: previous?.paid || false,
+            handle: handle || previous?.handle,
+            transaction_nsu: previous?.transaction_nsu,
+            slug: previous?.slug,
+            error: previous?.error,
+            created_at: previous?.created_at || now,
+            updated_at: now
+          });
+
+          sendJson(res, 200, {
+            success: true,
+            message: 'Pedido InfinityPay registrado no backend local.',
+            order: infinityPayOrders.get(orderNsu)
+          });
+          return;
+        } catch (e: any) {
+          sendJson(res, 500, { success: false, message: e?.message || 'Erro interno ao registrar pedido InfinityPay.' });
+          return;
+        }
+      }
+
+      if (method === 'GET' && pathOnly === INFINITY_PAY_ORDER_LOOKUP_PATH) {
+        try {
+          const parsed = new URL(url, 'http://localhost');
+          const orderNsu = String(parsed.searchParams.get('order_nsu') || '').trim();
+          if (!orderNsu) {
+            sendJson(res, 400, { success: false, message: 'order_nsu ausente ou invalido' });
+            return;
+          }
+
+          const order = infinityPayOrders.get(orderNsu);
+          if (!order) {
+            sendJson(res, 404, { success: false, message: 'Pedido InfinityPay nao encontrado' });
+            return;
+          }
+
+          sendJson(res, 200, { success: true, order });
+          return;
+        } catch (e: any) {
+          sendJson(res, 500, { success: false, message: e?.message || 'Erro interno ao consultar pedido InfinityPay.' });
+          return;
+        }
+      }
+
+      if (method === 'POST' && pathOnly === INFINITY_PAY_PAYMENT_CHECK_PATH) {
         try {
           const body = await readJsonBody(req);
           const handle = String(body?.handle || '').trim();
@@ -77,9 +176,24 @@ const vikiAutomationDevPlugin = () => ({
           const paidFromFlag = typeof upstreamBody?.paid === 'boolean' ? upstreamBody.paid : null;
           const paidFromStatus = ['PAID', 'APPROVED', 'CONFIRMED', 'CAPTURED'].includes(status);
           const paid = paidFromFlag ?? paidFromStatus;
+          const previousOrder = infinityPayOrders.get(orderNsu);
 
           if (!upstreamResponse.ok || !apiSuccess) {
             const apiMessage = String(upstreamBody?.error || upstreamBody?.message || '').trim();
+            const now = new Date().toISOString();
+            infinityPayOrders.set(orderNsu, {
+              order_nsu: orderNsu,
+              phone_number: previousOrder?.phone_number || '',
+              services: previousOrder?.services || [],
+              status: status || 'FAILED',
+              paid: false,
+              handle: handle || previousOrder?.handle,
+              transaction_nsu: transactionNsu,
+              slug,
+              error: apiMessage || `Falha ao validar pagamento (HTTP ${upstreamResponse.status}).`,
+              created_at: previousOrder?.created_at || now,
+              updated_at: now
+            });
             sendJson(res, upstreamResponse.ok ? 200 : upstreamResponse.status, {
               success: false,
               paid: false,
@@ -89,6 +203,21 @@ const vikiAutomationDevPlugin = () => ({
             });
             return;
           }
+
+          const now = new Date().toISOString();
+          infinityPayOrders.set(orderNsu, {
+            order_nsu: orderNsu,
+            phone_number: previousOrder?.phone_number || '',
+            services: previousOrder?.services || [],
+            status: status || (paid ? 'PAID' : 'PENDING'),
+            paid,
+            handle: handle || previousOrder?.handle,
+            transaction_nsu: transactionNsu,
+            slug,
+            error: '',
+            created_at: previousOrder?.created_at || now,
+            updated_at: now
+          });
 
           sendJson(res, 200, {
             success: true,
