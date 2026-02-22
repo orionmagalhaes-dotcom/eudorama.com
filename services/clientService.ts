@@ -12,6 +12,7 @@ const INFINITY_PAY_API_BASE_PATH = '/api/infinitypay';
 const INFINITY_PAY_PAYMENT_CHECK_PATH = `${INFINITY_PAY_API_BASE_PATH}/payment-check`;
 const INFINITY_PAY_ORDER_REGISTER_PATH = `${INFINITY_PAY_API_BASE_PATH}/order-register`;
 const INFINITY_PAY_ORDER_LOOKUP_PATH = `${INFINITY_PAY_API_BASE_PATH}/order`;
+const INFINITY_PAY_DEFAULT_WORKER_BASE = 'https://viki-worker.orionmagalhaes.workers.dev/api/infinitypay';
 const INFINITY_PAY_PAYMENT_CHECK_WEBHOOK =
   ((import.meta as any).env?.VITE_INFINITY_PAY_PAYMENT_CHECK_WEBHOOK as string | undefined)?.trim() || '';
 const INFINITY_PAY_PAYMENT_CHECK_TOKEN = (
@@ -65,7 +66,7 @@ const getInfinityPayWebhookBase = (): string => {
   }
 
   if ((import.meta as any).env?.DEV) return INFINITY_PAY_API_BASE_PATH;
-  return '';
+  return INFINITY_PAY_DEFAULT_WORKER_BASE;
 };
 
 const buildInfinityPayEndpointFromBase = (base: string, path: string): string => {

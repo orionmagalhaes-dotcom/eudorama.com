@@ -40,7 +40,15 @@ const INFINITY_PAY_HANDLE = (import.meta as any).env?.VITE_INFINITY_PAY_HANDLE |
 const INFINITY_PAY_ORDER_STORAGE_PREFIX = 'eudorama_ip_order_';
 const INFINITY_PAY_CHECK_RETRY_ATTEMPTS = 4;
 const INFINITY_PAY_CHECK_RETRY_DELAY_MS = 1800;
-const INFINITY_PAY_NETWORK_FAILURE_HINTS = ['failed to fetch', 'networkerror', 'load failed', 'fetch failed'];
+const INFINITY_PAY_NETWORK_FAILURE_HINTS = [
+  'failed to fetch',
+  'networkerror',
+  'load failed',
+  'fetch failed',
+  'falha de rede',
+  'erro de rede',
+  'network request failed'
+];
 const normalizePhoneDigits = (value: string) => String(value || '').replace(/\D/g, '');
 
 const getUserNoticeKey = (base: string, phoneNumber: string) => `${base}:${phoneNumber}`;
@@ -258,6 +266,9 @@ const App: React.FC = () => {
       }
 
       let servicesToRenew: string[] = [];
+      let hasLocalOrderContext = false;
+      let hasBackendOrderContext = false;
+      let backendOrderPaid = false;
       try {
         const pendingRaw = localStorage.getItem(pendingKey);
         if (pendingRaw) {
@@ -270,45 +281,61 @@ const App: React.FC = () => {
             servicesToRenew = pendingData.services
               .map((service: any) => String(service || '').trim())
               .filter((service: string) => service.length > 0);
+            hasLocalOrderContext = servicesToRenew.length > 0;
           }
         }
       } catch (e) {
         console.warn('Falha ao recuperar pedido pendente do InfinityPay:', e);
       }
 
-      if (servicesToRenew.length === 0) {
+      const hydrateOrderFromBackend = async () => {
         const orderLookup = await getInfinityPayOrderContext(orderNsu);
         if (orderLookup.success && orderLookup.order) {
           const backendPhone = normalizePhoneDigits(orderLookup.order.phoneNumber || '');
           const currentPhone = normalizePhoneDigits(currentUser.phoneNumber || '');
           const sameOwner = !!backendPhone && !!currentPhone && backendPhone === currentPhone;
 
-          if (sameOwner) {
+          if (!sameOwner) {
+            if (backendPhone && currentPhone && backendPhone !== currentPhone) {
+              console.warn('Pedido InfinityPay pertence a outro cliente e nao sera renovado neste login.');
+            }
+            return;
+          }
+
+          hasBackendOrderContext = true;
+          backendOrderPaid = orderLookup.order.paid === true;
+
+          if (servicesToRenew.length === 0) {
             servicesToRenew = (orderLookup.order.services || [])
               .map((service) => String(service || '').trim())
               .filter((service) => service.length > 0);
-
-            if (servicesToRenew.length > 0) {
-              try {
-                localStorage.setItem(
-                  pendingKey,
-                  JSON.stringify({
-                    phoneNumber: currentUser.phoneNumber,
-                    services: servicesToRenew,
-                    createdAt: new Date().toISOString(),
-                    source: 'backend_order_lookup'
-                  })
-                );
-              } catch (e) {
-                console.warn('Falha ao salvar pedido recuperado do backend no armazenamento local.', e);
-              }
-            }
-          } else if (backendPhone && currentPhone && backendPhone !== currentPhone) {
-            console.warn('Pedido InfinityPay pertence a outro cliente e nao sera renovado neste login.');
           }
-        } else if (orderLookup.message) {
+
+          if (servicesToRenew.length > 0) {
+            try {
+              localStorage.setItem(
+                pendingKey,
+                JSON.stringify({
+                  phoneNumber: currentUser.phoneNumber,
+                  services: servicesToRenew,
+                  createdAt: new Date().toISOString(),
+                  source: 'backend_order_lookup'
+                })
+              );
+            } catch (e) {
+              console.warn('Falha ao salvar pedido recuperado do backend no armazenamento local.', e);
+            }
+          }
+          return;
+        }
+
+        if (orderLookup.message) {
           console.warn('Nao foi possivel recuperar pedido InfinityPay no backend:', orderLookup.message);
         }
+      };
+
+      if (servicesToRenew.length === 0) {
+        await hydrateOrderFromBackend();
       }
 
       let paymentCheck = await checkInfinityPayPaymentStatus({
@@ -324,7 +351,8 @@ const App: React.FC = () => {
         const shouldRetryFailure = !paymentCheck.success && (
           msg.includes('failed check') ||
           msg.includes('temporar') ||
-          msg.includes('timeout')
+          msg.includes('timeout') ||
+          isLikelyInfinityNetworkFailure(msg)
         );
         const shouldRetryPending = paymentCheck.success && !paymentCheck.paid;
         const shouldRetry = shouldRetryFailure || shouldRetryPending;
@@ -339,12 +367,28 @@ const App: React.FC = () => {
         });
       }
 
+      if ((!paymentCheck.success || !paymentCheck.paid) && !hasBackendOrderContext) {
+        await hydrateOrderFromBackend();
+      }
+
+      if (!paymentCheck.success && backendOrderPaid) {
+        paymentCheck = {
+          ...paymentCheck,
+          success: true,
+          paid: true,
+          status: String(paymentCheck.status || 'PAID_BACKEND_CONTEXT')
+        };
+      }
+
       if (!paymentCheck.success) {
         const hasReceiptEvidence = typeof receiptUrl === 'string' && receiptUrl.trim().startsWith('http');
+        const hasCheckoutReturnEvidence = hasReceiptEvidence || (!!transactionNsu && !!slug);
         const hasPendingServices = servicesToRenew.length > 0;
+        const hasTrustedOrderContext = hasLocalOrderContext || hasBackendOrderContext;
         const canFallbackWithReturnData =
-          hasReceiptEvidence &&
+          hasCheckoutReturnEvidence &&
           hasPendingServices &&
+          hasTrustedOrderContext &&
           isLikelyInfinityNetworkFailure(paymentCheck.message || '');
 
         if (canFallbackWithReturnData) {
