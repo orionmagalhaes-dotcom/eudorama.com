@@ -472,10 +472,14 @@ export const checkInfinityPayPaymentStatus = async (
       raw: body
     };
   } catch (e: any) {
+    const rawMessage = String(e?.message || '').trim();
+    const isNetworkFailure = /failed to fetch|networkerror|load failed|fetch failed/i.test(rawMessage);
     return {
       success: false,
       paid: false,
-      message: e?.message || 'Erro ao validar pagamento no InfinityPay.'
+      message: isNetworkFailure
+        ? 'Falha de rede ao validar pagamento no InfinityPay.'
+        : (rawMessage || 'Erro ao validar pagamento no InfinityPay.')
     };
   }
 };

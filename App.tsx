@@ -39,6 +39,7 @@ const INFINITY_PAY_HANDLE = (import.meta as any).env?.VITE_INFINITY_PAY_HANDLE |
 const INFINITY_PAY_ORDER_STORAGE_PREFIX = 'eudorama_ip_order_';
 const INFINITY_PAY_CHECK_RETRY_ATTEMPTS = 4;
 const INFINITY_PAY_CHECK_RETRY_DELAY_MS = 1800;
+const INFINITY_PAY_NETWORK_FAILURE_HINTS = ['failed to fetch', 'networkerror', 'load failed', 'fetch failed'];
 
 const getUserNoticeKey = (base: string, phoneNumber: string) => `${base}:${phoneNumber}`;
 
@@ -75,6 +76,10 @@ const App: React.FC = () => {
   const [isPwaInstalled, setIsPwaInstalled] = useState(false);
   const lastRefreshRef = useRef<number>(0);
   const infinityPaymentProcessingRef = useRef<Set<string>>(new Set());
+  const isLikelyInfinityNetworkFailure = useCallback((message: string) => {
+    const normalized = String(message || '').toLowerCase();
+    return INFINITY_PAY_NETWORK_FAILURE_HINTS.some((hint) => normalized.includes(hint));
+  }, []);
 
   const handleInstallPwa = useCallback(async (): Promise<PwaInstallResult> => {
     if (isPwaInstalled) return 'already_installed';
@@ -221,6 +226,8 @@ const App: React.FC = () => {
     const orderNsu = url.searchParams.get('order_nsu');
     const transactionNsu = url.searchParams.get('transaction_nsu');
     const slug = url.searchParams.get('slug');
+    const receiptUrl = url.searchParams.get('receipt_url');
+    const captureMethod = url.searchParams.get('capture_method');
     if (!orderNsu || !transactionNsu || !slug) return;
     if (infinityPaymentProcessingRef.current.has(orderNsu)) return;
 
@@ -273,6 +280,7 @@ const App: React.FC = () => {
         transactionNsu,
         slug
       });
+      let usedReturnParamsFallback = false;
 
       for (let attempt = 1; attempt < INFINITY_PAY_CHECK_RETRY_ATTEMPTS; attempt++) {
         const msg = String(paymentCheck.message || '').toLowerCase();
@@ -292,6 +300,25 @@ const App: React.FC = () => {
           transactionNsu,
           slug
         });
+      }
+
+      if (!paymentCheck.success) {
+        const hasReceiptEvidence = typeof receiptUrl === 'string' && receiptUrl.trim().startsWith('http');
+        const hasPendingServices = servicesToRenew.length > 0;
+        const canFallbackWithReturnData =
+          hasReceiptEvidence &&
+          hasPendingServices &&
+          isLikelyInfinityNetworkFailure(paymentCheck.message || '');
+
+        if (canFallbackWithReturnData) {
+          usedReturnParamsFallback = true;
+          paymentCheck = {
+            ...paymentCheck,
+            success: true,
+            paid: true,
+            status: String(captureMethod || paymentCheck.status || 'RETURN_PARAMS_FALLBACK')
+          };
+        }
       }
 
       if (!paymentCheck.success) {
@@ -325,7 +352,9 @@ const App: React.FC = () => {
       localStorage.removeItem(pendingKey);
       await handleRefreshSession(true);
       setToast({
-        message: `Pagamento confirmado e renovacao aplicada: ${renewalResult.renewedServices.join(', ')}`,
+        message: usedReturnParamsFallback
+          ? `Pagamento confirmado pelo retorno do checkout e renovacao aplicada: ${renewalResult.renewedServices.join(', ')}`
+          : `Pagamento confirmado e renovacao aplicada: ${renewalResult.renewedServices.join(', ')}`,
         type: 'success'
       });
       clearInfinityPayQueryParams();
@@ -334,7 +363,7 @@ const App: React.FC = () => {
     processInfinityPayReturn().finally(() => {
       infinityPaymentProcessingRef.current.delete(orderNsu);
     });
-  }, [currentUser?.phoneNumber, isAdminMode, handleRefreshSession]);
+  }, [currentUser?.phoneNumber, isAdminMode, handleRefreshSession, isLikelyInfinityNetworkFailure]);
 
   useEffect(() => {
     if (currentUser && (currentUser.name === 'Dorameira' || !currentUser.name)) setShowNameModal(true);
