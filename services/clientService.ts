@@ -269,6 +269,7 @@ export const processUserLogin = (userRows: ClientDBRow[]): { user: User | null, 
 export const saveClientToDB = async (client: Partial<ClientDBRow>): Promise<{ success: boolean; msg: string }> => {
   try {
     const payload = { ...client };
+    const hasSubscriptionsInPayload = Object.prototype.hasOwnProperty.call(payload, 'subscriptions');
 
     // FETCH OLD DATA IF UPDATING
     let oldData: ClientDBRow | null = null;
@@ -292,7 +293,12 @@ export const saveClientToDB = async (client: Partial<ClientDBRow>): Promise<{ su
     }
 
     if (!payload.id || payload.id === '') delete payload.id;
-    if (!Array.isArray(payload.subscriptions)) payload.subscriptions = [];
+    if (hasSubscriptionsInPayload && !Array.isArray(payload.subscriptions)) {
+      payload.subscriptions = normalizeClientSubscriptionsForUpdate(
+        payload.subscriptions,
+        payload.duration_months || oldData?.duration_months || 1
+      );
+    }
     const { error } = await supabase.from('clients').upsert(payload);
 
     if (error) throw error;
@@ -338,7 +344,8 @@ export const saveClientToDB = async (client: Partial<ClientDBRow>): Promise<{ su
         }
       } else {
         const oldSubs = (oldData.subscriptions || []) as string[];
-        const newSubs = (payload.subscriptions || []) as string[];
+        const hasSubscriptionsUpdate = Array.isArray(payload.subscriptions);
+        const newSubs = hasSubscriptionsUpdate ? (payload.subscriptions as string[]) : oldSubs;
 
         // Helper to parse subscription string: Service|Date|Paid|Duration
         const parseSub = (s: string) => {
@@ -361,35 +368,37 @@ export const saveClientToDB = async (client: Partial<ClientDBRow>): Promise<{ su
         let changesLogged = false;
 
         // Check for Additions and Updates
-        for (const [service, newDetails] of newMap.entries()) {
-          if (!newDetails) continue;
-          const oldDetails = oldMap.get(service);
+        if (hasSubscriptionsUpdate) {
+          for (const [service, newDetails] of newMap.entries()) {
+            if (!newDetails) continue;
+            const oldDetails = oldMap.get(service);
 
-          if (!oldDetails) {
-            // Added
-            await logHistory('Assinatura Adicionada', `Cliente ${clientName} adquiriu ${service} (${newDetails.duration * 30} dias).`);
-            changesLogged = true;
-          } else {
-            // Existing - Check for changes
-            if (newDetails.duration !== oldDetails.duration || newDetails.date !== oldDetails.date) {
-              // Renewal / Change Duration
-              await logHistory('Assinatura Renovada', `Cliente ${clientName} renovou ${service} por ${newDetails.duration * 30} dias.`);
+            if (!oldDetails) {
+              // Added
+              await logHistory('Assinatura Adicionada', `Cliente ${clientName} adquiriu ${service} (${newDetails.duration * 30} dias).`);
               changesLogged = true;
-            } else if (newDetails.paid !== oldDetails.paid) {
-              // Payment Status Change
-              const status = newDetails.paid ? 'PAGO' : 'PENDENTE';
-              await logHistory('Pagamento Atualizado', `Status de pagamento de ${service} para ${clientName} alterado para ${status}.`);
-              changesLogged = true;
+            } else {
+              // Existing - Check for changes
+              if (newDetails.duration !== oldDetails.duration || newDetails.date !== oldDetails.date) {
+                // Renewal / Change Duration
+                await logHistory('Assinatura Renovada', `Cliente ${clientName} renovou ${service} por ${newDetails.duration * 30} dias.`);
+                changesLogged = true;
+              } else if (newDetails.paid !== oldDetails.paid) {
+                // Payment Status Change
+                const status = newDetails.paid ? 'PAGO' : 'PENDENTE';
+                await logHistory('Pagamento Atualizado', `Status de pagamento de ${service} para ${clientName} alterado para ${status}.`);
+                changesLogged = true;
+              }
             }
           }
-        }
 
-        // Check for Removals
-        for (const [service, oldDetails] of oldMap.entries()) {
-          if (!newMap.has(service)) {
-            const durationDays = (oldDetails?.duration || 1) * 30;
-            await logHistory('Assinatura Removida', `Cliente ${clientName} cancelou/removeu a assinatura de ${service} (${durationDays} dias).`);
-            changesLogged = true;
+          // Check for Removals
+          for (const [service, oldDetails] of oldMap.entries()) {
+            if (!newMap.has(service)) {
+              const durationDays = (oldDetails?.duration || 1) * 30;
+              await logHistory('Assinatura Removida', `Cliente ${clientName} cancelou/removeu a assinatura de ${service} (${durationDays} dias).`);
+              changesLogged = true;
+            }
           }
         }
 
