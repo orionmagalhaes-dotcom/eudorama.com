@@ -53,6 +53,43 @@ const normalizePhoneKey = (value: string | undefined | null) => {
     return digits || raw;
 };
 
+const getToleranceEndDate = (raw?: string | null) => {
+    if (!raw) return null;
+    const toleranceDate = new Date(raw);
+    if (Number.isNaN(toleranceDate.getTime())) return null;
+    toleranceDate.setHours(23, 59, 59, 999);
+    return toleranceDate;
+};
+
+const isToleranceActive = (raw?: string | null, nowRef?: Date) => {
+    const toleranceDate = getToleranceEndDate(raw);
+    if (!toleranceDate) return false;
+    const now = nowRef ? new Date(nowRef) : new Date();
+    return toleranceDate.getTime() >= now.getTime();
+};
+
+const calculateExpiry = (dateStr: string, months: number) => {
+    const date = new Date(dateStr);
+    if (Number.isNaN(date.getTime())) return new Date();
+    date.setDate(date.getDate() + ((months || 1) * 30));
+    return date;
+};
+
+const getDaysRemaining = (expiryDate: Date) => {
+    const now = new Date();
+    const expiry = new Date(expiryDate);
+    expiry.setHours(0, 0, 0, 0);
+    now.setHours(0, 0, 0, 0);
+    return Math.ceil((expiry.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+};
+
+const isSubscriptionActiveNow = (startDate: string, duration: number, toleranceRaw?: string | null, nowRef?: Date) => {
+    const expiryDate = calculateExpiry(startDate, duration);
+    const daysLeft = getDaysRemaining(expiryDate);
+    if (daysLeft >= 0) return true;
+    return isToleranceActive(toleranceRaw, nowRef);
+};
+
 const getServiceCredentials = (credentialsList: AppCredential[], serviceLower: string) => {
     return credentialsList
         .filter(c => {
@@ -69,8 +106,13 @@ const getActiveClientsForService = (clients: DistributionClientRow[], serviceLow
             if (c.deleted) return false;
             const subs = normalizeSubscriptions(c.subscriptions || [], c.duration_months || 1);
             return subs.some(sub => {
-                const subService = (sub.split('|')[0] || '').trim().toLowerCase();
-                return subService && (subService.includes(serviceLower) || serviceLower.includes(subService));
+                const parts = sub.split('|');
+                const subService = (parts[0] || '').trim().toLowerCase();
+                if (!subService || (!subService.includes(serviceLower) && !serviceLower.includes(subService))) return false;
+                const startDate = parts[1] || '1970-01-01T00:00:00.000Z';
+                const duration = parseInt(parts[3] || String(c.duration_months || 1));
+                const toleranceUntil = parts[4] || '';
+                return isSubscriptionActiveNow(startDate, duration, toleranceUntil);
             });
         })
         .sort((a, b) => normalizePhoneKey(a.phone_number).localeCompare(normalizePhoneKey(b.phone_number)) || String(a.id || '').localeCompare(String(b.id || '')));
@@ -294,8 +336,13 @@ export const getClientsUsingCredential = async (credential: AppCredential, clien
             if (c.deleted) return false;
             const subscriptions = normalizeSubscriptions(c.subscriptions || [], c.duration_months || 1);
             return subscriptions.some(sub => {
-                const subService = (sub.split('|')[0] || '').trim().toLowerCase();
-                return subService && (subService.includes(credServiceLower) || credServiceLower.includes(subService));
+                const parts = sub.split('|');
+                const subService = (parts[0] || '').trim().toLowerCase();
+                if (!subService || (!subService.includes(credServiceLower) && !credServiceLower.includes(subService))) return false;
+                const startDate = parts[1] || c.purchase_date;
+                const duration = parseInt(parts[3] || String(c.duration_months || 1));
+                const toleranceUntil = parts[4] || '';
+                return isSubscriptionActiveNow(startDate, duration, toleranceUntil);
             });
         })
         .sort((a, b) => normalizePhoneKey(a.phone_number).localeCompare(normalizePhoneKey(b.phone_number)) || String(a.id || '').localeCompare(String(b.id || '')));

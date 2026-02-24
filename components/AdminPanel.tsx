@@ -97,6 +97,40 @@ const getDaysRemaining = (expiryDate: Date) => {
     return Math.ceil((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 };
 
+const getToleranceEndDate = (raw?: string | null) => {
+    if (!raw) return null;
+    const toleranceDate = new Date(raw);
+    if (Number.isNaN(toleranceDate.getTime())) return null;
+    toleranceDate.setHours(23, 59, 59, 999);
+    return toleranceDate;
+};
+
+const isToleranceActive = (raw?: string | null, nowRef?: Date) => {
+    const toleranceDate = getToleranceEndDate(raw);
+    if (!toleranceDate) return false;
+    const now = nowRef ? new Date(nowRef) : new Date();
+    return toleranceDate.getTime() >= now.getTime();
+};
+
+const isSubscriptionActiveNow = (startDate: string, duration: number, toleranceRaw?: string | null, nowRef?: Date) => {
+    const expiryDate = calculateExpiry(startDate, duration);
+    const daysLeft = getDaysRemaining(new Date(expiryDate));
+    if (daysLeft >= 0) return true;
+    return isToleranceActive(toleranceRaw, nowRef);
+};
+
+const isExpiredBeyondGrace = (startDate: string, duration: number, toleranceRaw?: string | null, graceDays: number = 3, nowRef?: Date) => {
+    if (isToleranceActive(toleranceRaw, nowRef)) return false;
+    const now = nowRef ? new Date(nowRef) : new Date();
+    now.setHours(0, 0, 0, 0);
+    const cutoff = new Date(now);
+    cutoff.setDate(cutoff.getDate() - graceDays);
+
+    const expiryDate = calculateExpiry(startDate, duration);
+    expiryDate.setHours(0, 0, 0, 0);
+    return expiryDate.getTime() < cutoff.getTime();
+};
+
 const safeDateMs = (value?: string | null) => {
     if (!value) return 0;
     const ms = new Date(value).getTime();
@@ -322,12 +356,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             const [creds, allClients, logs, settings] = await Promise.all([fetchCredentials(), getAllClients(), getHistoryLogs(), getHistorySettings()]);
 
             // --- AUTO CLEANUP LOGIC ---
-            // 1. Remove subscriptions expired > 5 days ago
-            // 2. Trash clients with no active subs (if they had some before and now act empty)
+            // 1. Remove subscriptions expired > 3 days ago (except those in tolerance)
+            // 2. Trash clients with no remaining subscriptions
 
             const now = new Date();
-            const fiveDaysAgo = new Date();
-            fiveDaysAgo.setDate(now.getDate() - 5);
+            const threeDaysAgo = new Date();
+            threeDaysAgo.setDate(now.getDate() - 3);
 
             const updates: Promise<any>[] = [];
 
@@ -338,11 +372,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 if (client.deleted) {
                     const hasActiveSub = subs.some(s => {
                         const parts = s.split('|');
+                        const startDate = parts[1] || client.purchase_date;
                         const duration = parseInt(parts[3] || '1');
-                        const expiry = calculateExpiry(parts[1], duration);
-                        // If it expires in the future (or very recently), it's active.
-                        // Using a looser check here to be safe: Expiry > fiveDaysAgo
-                        return expiry.getTime() >= fiveDaysAgo.getTime();
+                        const toleranceRaw = parts[4] || '';
+
+                        if (isSubscriptionActiveNow(startDate, duration, toleranceRaw, now)) return true;
+
+                        const expiry = calculateExpiry(startDate, duration);
+                        expiry.setHours(0, 0, 0, 0);
+                        const threeDaysAgoStart = new Date(threeDaysAgo);
+                        threeDaysAgoStart.setHours(0, 0, 0, 0);
+                        return expiry.getTime() >= threeDaysAgoStart.getTime();
                     });
 
                     if (hasActiveSub) {
@@ -358,11 +398,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 let changed = false;
                 const activeSubs = subs.filter(s => {
                     const parts = s.split('|');
+                    const startDate = parts[1] || client.purchase_date;
                     const duration = parseInt(parts[3] || '1');
-                    const expiry = calculateExpiry(parts[1], duration);
+                    const toleranceRaw = parts[4] || '';
 
-                    // IF expiry is BEFORE fiveDaysAgo, remove it.
-                    if (expiry.getTime() < fiveDaysAgo.getTime()) {
+                    if (isExpiredBeyondGrace(startDate, duration, toleranceRaw, 3, now)) {
                         changed = true;
                         return false; // Remove
                     }
@@ -372,9 +412,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 if (changed) {
                     if (activeSubs.length === 0) {
                         // Move to trash if no subs left
-                        // KEEP the original subscriptions so admin can see history in trash
                         console.log(`[CLEANUP] Movendo ${client.client_name} para lixeira (Sem assinaturas).`);
-                        updates.push(saveClientToDB({ ...client, deleted: true }));
+                        updates.push(saveClientToDB({ ...client, subscriptions: [], deleted: true }));
                     } else {
                         // Just update subs
                         console.log(`[CLEANUP] Removendo assinaturas antigas de ${client.client_name}.`);
@@ -663,7 +702,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 if (!nameLower.includes(serviceLower)) continue;
                 const startDate = parts[1] || client.purchase_date;
                 const duration = parseInt(parts[3] || String(client.duration_months || 1));
-                return { serviceName: name, startDate, duration };
+                const toleranceUntil = parts[4] || '';
+                if (!isSubscriptionActiveNow(startDate, duration, toleranceUntil)) continue;
+                return { serviceName: name, startDate, duration, toleranceUntil };
             }
             return null;
         };
@@ -678,8 +719,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                     if (c.deleted) return false;
                     const subscriptions = normalizeSubscriptions(c.subscriptions || [], c.duration_months);
                     return subscriptions.some(sub => {
-                        const serviceName = (sub.split('|')[0] || '').trim().toLowerCase();
-                        return serviceName && (serviceName.includes(serviceLower) || serviceLower.includes(serviceName));
+                        const parts = sub.split('|');
+                        const serviceName = (parts[0] || '').trim().toLowerCase();
+                        if (!serviceName || (!serviceName.includes(serviceLower) && !serviceLower.includes(serviceName))) return false;
+                        const startDate = parts[1] || c.purchase_date;
+                        const duration = parseInt(parts[3] || String(c.duration_months || 1));
+                        const toleranceUntil = parts[4] || '';
+                        return isSubscriptionActiveNow(startDate, duration, toleranceUntil);
                     });
                 })
                 .sort((a, b) => normalizePhoneKey(a.phone_number).localeCompare(normalizePhoneKey(b.phone_number)) || (a.id || '').localeCompare(b.id || ''));
@@ -718,7 +764,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
                 const expiryDate = calculateExpiry(detail.startDate, detail.duration);
                 const daysLeft = getDaysRemaining(expiryDate);
-                if (daysLeft < 0 && new Date(assigned.publishedAt).getTime() > expiryDate.getTime()) return;
 
                 if (!details[assigned.id]) {
                     details[assigned.id] = {
@@ -793,7 +838,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 if (!name.toLowerCase().includes(serviceLower)) continue;
                 const startDate = parts[1] || client.purchase_date;
                 const duration = parseInt(parts[3] || String(client.duration_months || 1));
-                return { startDate, duration };
+                const toleranceUntil = parts[4] || '';
+                return { startDate, duration, toleranceUntil };
             }
             return null;
         };
@@ -806,6 +852,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             if (!detail) return 'Assinatura removida ou alterada';
             const expiryDate = calculateExpiry(detail.startDate, detail.duration);
             const daysLeft = getDaysRemaining(expiryDate);
+            if (daysLeft < 0 && !isToleranceActive(detail.toleranceUntil)) return 'Assinatura vencida';
             if (daysLeft < 0 && new Date(entry.credentialPublishedAt).getTime() > expiryDate.getTime()) return 'Assinatura venceu antes desta credencial';
             return 'Sem acesso por outra regra';
         };
@@ -969,8 +1016,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                     if (c.deleted) return false;
                     const subscriptions = normalizeSubscriptions(c.subscriptions || [], c.duration_months);
                     return subscriptions.some(sub => {
-                        const serviceName = (sub.split('|')[0] || '').trim().toLowerCase();
-                        return serviceName && (serviceName.includes(serviceLower) || serviceLower.includes(serviceName));
+                        const parts = sub.split('|');
+                        const serviceName = (parts[0] || '').trim().toLowerCase();
+                        if (!serviceName || (!serviceName.includes(serviceLower) && !serviceLower.includes(serviceName))) return false;
+                        const startDate = parts[1] || c.purchase_date;
+                        const duration = parseInt(parts[3] || String(c.duration_months || 1));
+                        const toleranceUntil = parts[4] || '';
+                        return isSubscriptionActiveNow(startDate, duration, toleranceUntil);
                     });
                 })
                 .sort((a, b) => normalizePhoneKey(a.phone_number).localeCompare(normalizePhoneKey(b.phone_number)) || (a.id || '').localeCompare(b.id || ''));
