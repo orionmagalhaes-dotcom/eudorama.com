@@ -103,6 +103,12 @@ const safeDateMs = (value?: string | null) => {
     return Number.isNaN(ms) ? 0 : ms;
 };
 
+const normalizePhoneKey = (value?: string | null) => {
+    const raw = String(value || '').trim();
+    const digits = raw.replace(/\D/g, '');
+    return digits || raw;
+};
+
 const getExpiringSortMeta = (client: ClientDBRow) => {
     const subs = normalizeSubscriptions(client.subscriptions || [], client.duration_months);
     const expiring = subs
@@ -148,13 +154,17 @@ const getCredentialHealth = (service: string, publishedAt: string, currentUsers:
     const serviceLower = service.toLowerCase();
     const limit = getCapacityLimit(service);
     let expiryLimit = 30;
-    if (serviceLower.includes('viki')) expiryLimit = 14;
-    else if (serviceLower.includes('kocowa')) expiryLimit = 25;
+    if (serviceLower.includes('kocowa')) expiryLimit = 25;
     const daysRemaining = expiryLimit - daysActive;
     if (daysRemaining < 0) return { label: 'Vencida', color: 'text-red-600 bg-red-50 border-red-200', icon: <AlertTriangle size={14} /> };
-    // Superlotada: at or above the capacity limit
+
+    if (serviceLower.includes('viki')) {
+        if (currentUsers >= 8) return { label: 'Superlotada', color: 'text-orange-600 bg-orange-50 border-orange-200', icon: <UsersRound size={14} /> };
+        if (currentUsers >= 7) return { label: 'Cheia', color: 'text-amber-700 bg-amber-50 border-amber-200', icon: <UsersRound size={14} /> };
+    }
+
     if (currentUsers >= limit && limit < 9000) return { label: 'Superlotada', color: 'text-orange-600 bg-orange-50 border-orange-200', icon: <UsersRound size={14} /> };
-    return { label: 'Saudável', color: 'text-green-600 bg-green-50 border-green-200', icon: <CheckCircle2 size={14} /> };
+    return { label: 'Saudavel', color: 'text-green-600 bg-green-50 border-green-200', icon: <CheckCircle2 size={14} /> };
 };
 
 const CREDENTIAL_ASSIGNMENT_SNAPSHOT_KEY = 'credential_assignment_snapshot_v2';
@@ -644,12 +654,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         const visibleServiceCreds = sortedCredentials.filter(c => c.isVisible && !(c.email || '').toLowerCase().includes('demo'));
         if (visibleServiceCreds.length === 0) return { details, assignments };
 
-        const getAssignedCredential = (client: ClientDBRow, serviceCreds: AppCredential[]) => {
-            const phoneHash = client.phone_number.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-            const credIndex = phoneHash % serviceCreds.length;
-            return serviceCreds[credIndex];
-        };
-
         const getSubscriptionDetail = (subscriptions: string[], client: ClientDBRow, serviceLower: string) => {
             for (const sub of subscriptions) {
                 const parts = sub.split('|');
@@ -665,6 +669,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         };
 
         const sortedClients = [...clients].sort((a, b) => (a.id || '').localeCompare(b.id || ''));
+        const rankMapByService = new Map<string, Map<string, number>>();
+        const getRankMapForService = (serviceLower: string) => {
+            const cached = rankMapByService.get(serviceLower);
+            if (cached) return cached;
+            const clientsForService = sortedClients
+                .filter(c => {
+                    if (c.deleted) return false;
+                    const subscriptions = normalizeSubscriptions(c.subscriptions || [], c.duration_months);
+                    return subscriptions.some(sub => {
+                        const serviceName = (sub.split('|')[0] || '').trim().toLowerCase();
+                        return serviceName && (serviceName.includes(serviceLower) || serviceLower.includes(serviceName));
+                    });
+                })
+                .sort((a, b) => normalizePhoneKey(a.phone_number).localeCompare(normalizePhoneKey(b.phone_number)) || (a.id || '').localeCompare(b.id || ''));
+
+            const next = new Map<string, number>();
+            clientsForService.forEach((serviceClient, index) => next.set(serviceClient.id, index));
+            rankMapByService.set(serviceLower, next);
+            return next;
+        };
+
         sortedClients.forEach(client => {
             const subscriptions = normalizeSubscriptions(client.subscriptions || [], client.duration_months);
             if (subscriptions.length === 0) return;
@@ -685,7 +710,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                     .sort((a, b) => new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime());
                 if (serviceCreds.length === 0) return;
 
-                const assigned = getAssignedCredential(client, serviceCreds);
+                const rankMap = getRankMapForService(serviceLower);
+                const rank = rankMap.get(client.id);
+                if (rank === undefined) return;
+                const assigned = serviceCreds[rank % serviceCreds.length];
                 if (!assigned) return;
 
                 const expiryDate = calculateExpiry(detail.startDate, detail.duration);
@@ -709,7 +737,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         startDate: detail.startDate,
                         expiryDate,
                         daysLeft,
-                        reason: 'Distribuicao automatica (hash do telefone)',
+                        reason: 'Distribuicao automatica balanceada',
                         serviceName: detail.serviceName
                     });
 
@@ -931,6 +959,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             !c.deleted &&
             ((c.client_name?.toLowerCase().includes(query)) || (c.phone_number.includes(query)))
         );
+        const rankMapByService = new Map<string, Map<string, number>>();
+        const getRankMapForService = (serviceLower: string) => {
+            const cached = rankMapByService.get(serviceLower);
+            if (cached) return cached;
+
+            const clientsForThisService = clients
+                .filter(c => {
+                    if (c.deleted) return false;
+                    const subscriptions = normalizeSubscriptions(c.subscriptions || [], c.duration_months);
+                    return subscriptions.some(sub => {
+                        const serviceName = (sub.split('|')[0] || '').trim().toLowerCase();
+                        return serviceName && (serviceName.includes(serviceLower) || serviceLower.includes(serviceName));
+                    });
+                })
+                .sort((a, b) => normalizePhoneKey(a.phone_number).localeCompare(normalizePhoneKey(b.phone_number)) || (a.id || '').localeCompare(b.id || ''));
+
+            const map = new Map<string, number>();
+            clientsForThisService.forEach((serviceClient, index) => map.set(serviceClient.id, index));
+            rankMapByService.set(serviceLower, map);
+            return map;
+        };
 
         return matchedClients.map(client => {
             const subs = normalizeSubscriptions(client.subscriptions || [], client.duration_months);
@@ -941,17 +990,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 const expiry = calculateExpiry(parts[1], parseInt(parts[3] || '1'));
                 const daysLeft = getDaysRemaining(expiry);
                 const serviceCreds = credentials
-                    .filter(c => c.isVisible && c.service.toLowerCase().includes(serviceLower))
+                    .filter(c => c.isVisible && !(c.email || '').toLowerCase().includes('demo') && matchesCredentialService(c.service, serviceLower))
                     .sort((a, b) => new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime());
 
                 let assignedLogin = "Não vinculada";
                 let assignedPassword = "-";
                 if (serviceCreds.length > 0) {
-                    const clientsForThisService = clients
-                        .filter(c => !c.deleted && normalizeSubscriptions(c.subscriptions || [], client.duration_months).some(s => s.toLowerCase().includes(serviceLower)))
-                        .sort((a, b) => a.phone_number.localeCompare(b.phone_number));
-                    const rank = clientsForThisService.findIndex(c => c.id === client.id);
-                    if (rank !== -1) {
+                    const rank = getRankMapForService(serviceLower).get(client.id);
+                    if (rank !== undefined) {
                         const credIndex = rank % serviceCreds.length;
                         assignedLogin = serviceCreds[credIndex].email;
                         assignedPassword = serviceCreds[credIndex].password || "-";

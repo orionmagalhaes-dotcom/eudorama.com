@@ -64,8 +64,8 @@ export const formatCurrency = (value: number): string => {
 
 // --- LIMITES DE CAPACIDADE POR CONTA ---
 export const CAPACITY_LIMITS: Record<string, number> = {
-    'viki': 7,
-    'viki pass': 7,
+    'viki': 8,
+    'viki pass': 8,
     'kocowa': 7,
     'kocowa+': 7,
     'iqiyi': 15,
