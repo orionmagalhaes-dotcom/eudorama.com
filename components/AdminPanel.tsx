@@ -211,6 +211,7 @@ type CredentialClientEntry = {
     startDate: string;
     expiryDate: Date;
     daysLeft: number;
+    isActive: boolean;
     reason: string;
     serviceName: string;
 };
@@ -360,8 +361,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             // 2. Trash clients with no remaining subscriptions
 
             const now = new Date();
-            const threeDaysAgo = new Date();
-            threeDaysAgo.setDate(now.getDate() - 3);
 
             const updates: Promise<any>[] = [];
 
@@ -375,14 +374,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         const startDate = parts[1] || client.purchase_date;
                         const duration = parseInt(parts[3] || '1');
                         const toleranceRaw = parts[4] || '';
-
-                        if (isSubscriptionActiveNow(startDate, duration, toleranceRaw, now)) return true;
-
-                        const expiry = calculateExpiry(startDate, duration);
-                        expiry.setHours(0, 0, 0, 0);
-                        const threeDaysAgoStart = new Date(threeDaysAgo);
-                        threeDaysAgoStart.setHours(0, 0, 0, 0);
-                        return expiry.getTime() >= threeDaysAgoStart.getTime();
+                        return isSubscriptionActiveNow(startDate, duration, toleranceRaw, now);
                     });
 
                     if (hasActiveSub) {
@@ -694,6 +686,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         if (visibleServiceCreds.length === 0) return { details, assignments };
 
         const getSubscriptionDetail = (subscriptions: string[], client: ClientDBRow, serviceLower: string) => {
+            let fallback: { serviceName: string; startDate: string; duration: number; toleranceUntil: string; isActive: boolean } | null = null;
             for (const sub of subscriptions) {
                 const parts = sub.split('|');
                 const name = (parts[0] || '').trim();
@@ -703,16 +696,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 const startDate = parts[1] || client.purchase_date;
                 const duration = parseInt(parts[3] || String(client.duration_months || 1));
                 const toleranceUntil = parts[4] || '';
-                if (!isSubscriptionActiveNow(startDate, duration, toleranceUntil)) continue;
-                return { serviceName: name, startDate, duration, toleranceUntil };
+                const isActive = isSubscriptionActiveNow(startDate, duration, toleranceUntil);
+                const current = { serviceName: name, startDate, duration, toleranceUntil, isActive };
+                if (isActive) return current;
+                if (!fallback) fallback = current;
             }
-            return null;
+            return fallback;
         };
 
         const sortedClients = [...clients].sort((a, b) => (a.id || '').localeCompare(b.id || ''));
-        const rankMapByService = new Map<string, Map<string, number>>();
-        const getRankMapForService = (serviceLower: string) => {
-            const cached = rankMapByService.get(serviceLower);
+        const activeRankMapByService = new Map<string, Map<string, number>>();
+        const allRankMapByService = new Map<string, Map<string, number>>();
+        const getRankMapForService = (serviceLower: string, includeInactive: boolean) => {
+            const targetMap = includeInactive ? allRankMapByService : activeRankMapByService;
+            const cached = targetMap.get(serviceLower);
             if (cached) return cached;
             const clientsForService = sortedClients
                 .filter(c => {
@@ -725,6 +722,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         const startDate = parts[1] || c.purchase_date;
                         const duration = parseInt(parts[3] || String(c.duration_months || 1));
                         const toleranceUntil = parts[4] || '';
+                        if (includeInactive) return true;
                         return isSubscriptionActiveNow(startDate, duration, toleranceUntil);
                     });
                 })
@@ -732,7 +730,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
             const next = new Map<string, number>();
             clientsForService.forEach((serviceClient, index) => next.set(serviceClient.id, index));
-            rankMapByService.set(serviceLower, next);
+            targetMap.set(serviceLower, next);
             return next;
         };
 
@@ -756,10 +754,31 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                     .sort((a, b) => new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime());
                 if (serviceCreds.length === 0) return;
 
-                const rankMap = getRankMapForService(serviceLower);
-                const rank = rankMap.get(client.id);
-                if (rank === undefined) return;
-                const assigned = serviceCreds[rank % serviceCreds.length];
+                const associationKey = `${client.id}::${serviceLower}`;
+                const previous = credentialAssignmentSnapshot[associationKey];
+                let assigned: AppCredential | undefined;
+                let previousVersionNotFound = false;
+
+                if (detail.isActive) {
+                    const rankMap = getRankMapForService(serviceLower, false);
+                    const rank = rankMap.get(client.id);
+                    if (rank !== undefined) assigned = serviceCreds[rank % serviceCreds.length];
+                }
+
+                if (!assigned && previous) {
+                    const byVersion = serviceCreds.find(c => getCredentialVersionKey(c) === previous.credentialVersion);
+                    if (byVersion) assigned = byVersion;
+                    else previousVersionNotFound = true;
+                }
+
+                if (!assigned) {
+                    const shouldUseFallbackRank = detail.isActive || !previous || !previousVersionNotFound;
+                    if (shouldUseFallbackRank) {
+                        const fallbackRank = getRankMapForService(serviceLower, true).get(client.id);
+                        if (fallbackRank !== undefined) assigned = serviceCreds[fallbackRank % serviceCreds.length];
+                    }
+                }
+
                 if (!assigned) return;
 
                 const expiryDate = calculateExpiry(detail.startDate, detail.duration);
@@ -775,6 +794,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 }
 
                 if (!client.deleted) {
+                    const entryReason = detail.isActive
+                        ? (daysLeft < 0 ? 'Ativa em tolerancia' : 'Distribuicao automatica balanceada')
+                        : 'Cliente inativo (assinatura vencida)';
                     details[assigned.id].entries.push({
                         clientId: client.id,
                         name: client.client_name || 'Sem Nome',
@@ -782,11 +804,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         startDate: detail.startDate,
                         expiryDate,
                         daysLeft,
-                        reason: 'Distribuicao automatica balanceada',
+                        isActive: detail.isActive,
+                        reason: entryReason,
                         serviceName: detail.serviceName
                     });
 
-                    const associationKey = `${client.id}::${serviceLower}`;
                     assignments[associationKey] = {
                         clientId: client.id,
                         clientName: client.client_name || 'Sem Nome',
@@ -799,7 +821,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                     };
                 }
 
-                if (daysLeft < 0 && !details[assigned.id].hasExpired) {
+                if (!detail.isActive && daysLeft < 0 && !details[assigned.id].hasExpired) {
                     details[assigned.id].hasExpired = true;
                     details[assigned.id].expiredClient = { name: client.client_name || 'Sem Nome', phoneNumber: client.phone_number, expiryDate, daysLeft };
                 }
@@ -807,7 +829,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         });
 
         return { details, assignments };
-    }, [clients, credentials, credentialExitHistory]);
+    }, [clients, credentials, credentialAssignmentSnapshot, credentialExitHistory]);
 
     const credentialClientDetails = credentialAssignmentData.details;
     const currentCredentialAssignments = credentialAssignmentData.assignments;
@@ -2042,7 +2064,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                         {(creds as AppCredential[]).map(c => {
                                             const details = credentialClientDetails[c.id];
                                             const entries = details?.entries || [];
-                                            const count = entries.length;
+                                            const count = entries.filter(entry => entry.isActive).length;
                                             const health = getCredentialHealth(c.service, c.publishedAt, count);
                                             const isExpanded = !!expandedCreds[c.id];
                                             const hasExpired = details?.hasExpired;
@@ -2087,8 +2109,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                                         <div key={`${entry.clientId}-${idx}`} className="bg-white/80 dark:bg-slate-900/70 rounded-xl p-3 border border-indigo-100 flex flex-col gap-1.5">
                                                                             <div className="flex justify-between items-center">
                                                                                 <div className="text-xs font-black text-gray-900 dark:text-white">{entry.name}</div>
-                                                                                <div className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-lg border ${entry.daysLeft < 0 ? 'bg-red-50 text-red-600 border-red-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>
-                                                                                    {entry.daysLeft < 0 ? 'Vencida' : 'Ativa'}
+                                                                                <div className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-lg border ${!entry.isActive ? 'bg-red-50 text-red-600 border-red-100' : entry.daysLeft < 0 ? 'bg-amber-50 text-amber-700 border-amber-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>
+                                                                                    {!entry.isActive ? 'Inativa' : entry.daysLeft < 0 ? 'Tolerancia' : 'Ativa'}
                                                                                 </div>
                                                                             </div>
                                                                             <div className="text-[10px] font-bold text-indigo-400 flex items-center gap-1.5"><Phone size={12} /> {entry.phoneNumber}</div>
