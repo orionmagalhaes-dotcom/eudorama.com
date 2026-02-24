@@ -40,7 +40,6 @@ const toLocalInput = (isoString: string) => {
         return localDate.toISOString().slice(0, 16);
     } catch (e) { return ''; }
 };
-
 const toDateInput = (isoString: string) => {
     if (!isoString) return '';
     try {
@@ -225,6 +224,7 @@ type CredentialExitEntry = {
     serviceName: string;
     reason: string;
     leftAt: string;
+    expiredAt?: string;
 };
 
 type CredentialAssignmentCurrentEntry = {
@@ -236,6 +236,7 @@ type CredentialAssignmentCurrentEntry = {
     credentialId: string;
     credentialVersion: string;
     credentialPublishedAt: string;
+    expiryDateIso?: string;
 };
 
 type CredentialAssignmentSnapshotEntry = CredentialAssignmentCurrentEntry & {
@@ -817,7 +818,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         serviceName: detail.serviceName,
                         credentialId: assigned.id,
                         credentialVersion: getCredentialVersionKey(assigned),
-                        credentialPublishedAt: assigned.publishedAt
+                        credentialPublishedAt: assigned.publishedAt,
+                        expiryDateIso: expiryDate.toISOString()
                     };
                 }
 
@@ -866,17 +868,34 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             return null;
         };
 
-        const getExitReason = (entry: CredentialAssignmentSnapshotEntry) => {
+        const getExitInfo = (entry: CredentialAssignmentSnapshotEntry): { reason: string; expiredAt?: string } => {
+            const snapshotExpiryIso = entry.expiryDateIso;
+            if (snapshotExpiryIso) {
+                const snapshotExpiry = new Date(snapshotExpiryIso);
+                if (!Number.isNaN(snapshotExpiry.getTime())) {
+                    const daysLeft = getDaysRemaining(new Date(snapshotExpiry));
+                    if (daysLeft < 0) return { reason: 'Assinatura vencida', expiredAt: snapshotExpiry.toISOString() };
+                }
+            }
+
             const client = clientsById.get(entry.clientId);
-            if (!client) return 'Cliente removido do banco';
-            if (client.deleted) return 'Cliente excluido da credencial (lixeira)';
+            if (!client) return { reason: 'Cliente removido do banco', expiredAt: snapshotExpiryIso };
+
             const detail = getSubscriptionDetail(client, entry.serviceLower);
-            if (!detail) return 'Assinatura removida ou alterada';
+            if (!detail) {
+                if (client.deleted) return { reason: 'Cliente excluido da credencial (lixeira)', expiredAt: snapshotExpiryIso };
+                return { reason: 'Assinatura removida ou alterada', expiredAt: snapshotExpiryIso };
+            }
+
             const expiryDate = calculateExpiry(detail.startDate, detail.duration);
-            const daysLeft = getDaysRemaining(expiryDate);
-            if (daysLeft < 0 && !isToleranceActive(detail.toleranceUntil)) return 'Assinatura vencida';
-            if (daysLeft < 0 && new Date(entry.credentialPublishedAt).getTime() > expiryDate.getTime()) return 'Assinatura venceu antes desta credencial';
-            return 'Sem acesso por outra regra';
+            const expiryIso = expiryDate.toISOString();
+            const daysLeft = getDaysRemaining(new Date(expiryDate));
+            if (daysLeft < 0 && !isToleranceActive(detail.toleranceUntil)) return { reason: 'Assinatura vencida', expiredAt: expiryIso };
+            if (daysLeft < 0 && new Date(entry.credentialPublishedAt).getTime() > expiryDate.getTime()) {
+                return { reason: 'Assinatura venceu antes desta credencial', expiredAt: expiryIso };
+            }
+            if (client.deleted) return { reason: 'Cliente excluido da credencial (lixeira)', expiredAt: snapshotExpiryIso || expiryIso };
+            return { reason: 'Sem acesso por outra regra', expiredAt: snapshotExpiryIso || expiryIso };
         };
 
         const nextExitHistory: Record<string, CredentialExitEntry[]> = { ...credentialExitHistory };
@@ -889,6 +908,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             const existing = Array.isArray(nextExitHistory[previousEntry.credentialVersion]) ? nextExitHistory[previousEntry.credentialVersion] : [];
             if (existing.some(item => item.eventKey === eventKey)) return;
 
+            const exitInfo = getExitInfo(previousEntry);
             const event: CredentialExitEntry = {
                 eventKey,
                 clientId: previousEntry.clientId,
@@ -896,8 +916,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 phoneNumber: previousEntry.phoneNumber,
                 serviceLower: previousEntry.serviceLower,
                 serviceName: previousEntry.serviceName || previousEntry.serviceLower,
-                reason: getExitReason(previousEntry),
-                leftAt: nowIso
+                reason: exitInfo.reason,
+                leftAt: nowIso,
+                expiredAt: exitInfo.expiredAt
             };
             nextExitHistory[previousEntry.credentialVersion] = [event, ...existing];
             exitHistoryChanged = true;
@@ -2070,6 +2091,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                             const hasExpired = details?.hasExpired;
                                             const expiredClient = details?.expiredClient;
                                             const exitedEntries = details?.exitedEntries || [];
+                                            const exitedExpiredAlert = exitedEntries.find(entry => {
+                                                if (!entry.expiredAt) return false;
+                                                return getDaysRemaining(new Date(entry.expiredAt)) < 0;
+                                            });
+                                            const exitedExpiredDays = exitedExpiredAlert?.expiredAt
+                                                ? Math.max(1, Math.abs(getDaysRemaining(new Date(exitedExpiredAlert.expiredAt))))
+                                                : 0;
+                                            const currentExpiredDays = expiredClient
+                                                ? Math.max(1, Math.abs(expiredClient.daysLeft))
+                                                : 0;
                                             const sortedEntries = [...entries].sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
                                             return (
                                                 <div key={c.id} className="bg-white dark:bg-slate-900 p-6 rounded-3xl shadow-sm border border-indigo-50 dark:border-slate-800">
@@ -2083,12 +2114,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                             <button onClick={async () => { if (confirm("Excluir conta?")) { await deleteCredential(c.id); loadData(); } }} className="text-gray-300 hover:text-red-500"><Trash2 size={18} /></button>
                                                         </div>
                                                     </div>
-                                                    {hasExpired && expiredClient && (
+                                                    {exitedExpiredAlert ? (
                                                         <div className="mb-4 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-200 rounded-2xl p-3 text-[10px] font-black uppercase flex items-center gap-2 border border-red-100">
                                                             <AlertTriangle size={14} />
-                                                            <span>Cliente vencido nesta credencial: {expiredClient.name} • venceu em {expiredClient.expiryDate.toLocaleDateString()}</span>
+                                                            <span>Cliente que saiu desta credencial: {exitedExpiredAlert.name} - plano vencido ha {exitedExpiredDays} dias</span>
                                                         </div>
-                                                    )}
+                                                    ) : hasExpired && expiredClient ? (
+                                                        <div className="mb-4 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-200 rounded-2xl p-3 text-[10px] font-black uppercase flex items-center gap-2 border border-red-100">
+                                                            <AlertTriangle size={14} />
+                                                            <span>Cliente vencido nesta credencial: {expiredClient.name} - plano vencido ha {currentExpiredDays} dias</span>
+                                                        </div>
+                                                    ) : null}
                                                     <p className="font-bold text-lg text-gray-800 dark:text-white break-all">{c.email}</p>
                                                     <p className="font-mono text-sm text-indigo-400 dark:text-indigo-300 mt-1 bg-indigo-50/50 dark:bg-indigo-900/30 p-2 rounded-lg inline-block">{c.password}</p>
                                                     <div className="mt-5 pt-4 border-t border-indigo-50 dark:border-slate-800 flex justify-between items-center text-xs font-bold text-gray-400 dark:text-gray-500">
@@ -2140,7 +2176,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                                                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[9px] font-black uppercase text-red-400">
                                                                                     <div className="flex items-center gap-1.5"><Clock size={12} /> Saiu: {new Date(entry.leftAt).toLocaleString()}</div>
                                                                                     <div className="flex items-center gap-1.5"><Users size={12} /> {entry.serviceName}</div>
-                                                                                    <div className="flex items-center gap-1.5"><AlertTriangle size={12} /> {entry.reason}</div>
+                                                                                    <div className="flex items-center gap-1.5">
+                                                                                        <AlertTriangle size={12} />
+                                                                                        {entry.expiredAt && getDaysRemaining(new Date(entry.expiredAt)) < 0
+                                                                                            ? `Plano vencido ha ${Math.max(1, Math.abs(getDaysRemaining(new Date(entry.expiredAt))))} dias`
+                                                                                            : entry.reason}
+                                                                                    </div>
                                                                                 </div>
                                                                             </div>
                                                                         ))}
