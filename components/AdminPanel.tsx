@@ -157,6 +157,81 @@ const getCredentialHealth = (service: string, publishedAt: string, currentUsers:
     return { label: 'Saudável', color: 'text-green-600 bg-green-50 border-green-200', icon: <CheckCircle2 size={14} /> };
 };
 
+const CREDENTIAL_ASSIGNMENT_SNAPSHOT_KEY = 'credential_assignment_snapshot_v2';
+const CREDENTIAL_EXIT_HISTORY_KEY = 'credential_exit_history_v2';
+
+type CredentialClientEntry = {
+    clientId: string;
+    name: string;
+    phoneNumber: string;
+    startDate: string;
+    expiryDate: Date;
+    daysLeft: number;
+    reason: string;
+    serviceName: string;
+};
+
+type CredentialExitEntry = {
+    eventKey: string;
+    clientId: string;
+    name: string;
+    phoneNumber: string;
+    serviceLower: string;
+    serviceName: string;
+    reason: string;
+    leftAt: string;
+};
+
+type CredentialAssignmentCurrentEntry = {
+    clientId: string;
+    clientName: string;
+    phoneNumber: string;
+    serviceLower: string;
+    serviceName: string;
+    credentialId: string;
+    credentialVersion: string;
+    credentialPublishedAt: string;
+};
+
+type CredentialAssignmentSnapshotEntry = CredentialAssignmentCurrentEntry & {
+    assignedAt: string;
+};
+
+type CredentialCardDetails = {
+    versionKey: string;
+    entries: CredentialClientEntry[];
+    exitedEntries: CredentialExitEntry[];
+    hasExpired: boolean;
+    expiredClient?: { name: string; phoneNumber: string; expiryDate: Date; daysLeft: number };
+};
+
+const getCredentialVersionKey = (credential: Pick<AppCredential, 'id' | 'publishedAt'>) => {
+    return `${credential.id}::${safeDateMs(credential.publishedAt)}`;
+};
+
+const matchesCredentialService = (credentialService: string, serviceLower: string) => {
+    const dbService = (credentialService || '').toLowerCase().trim();
+    const subService = (serviceLower || '').toLowerCase().trim();
+    if (!dbService || !subService) return false;
+    return dbService.includes(subService) || subService.includes(dbService);
+};
+
+const parseHistoryMap = <T,>(rawValue: string | undefined, fallback: T): T => {
+    if (!rawValue) return fallback;
+    try {
+        const parsed = JSON.parse(rawValue);
+        if (!parsed || typeof parsed !== 'object') return fallback;
+        return parsed as T;
+    } catch {
+        return fallback;
+    }
+};
+
+const buildAssignmentSignature = (map: Record<string, { credentialVersion: string }>) => {
+    const keys = Object.keys(map).sort();
+    return keys.map(k => `${k}|${map[k].credentialVersion}`).join('||');
+};
+
 export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const [activeTab, setActiveTab] = useState<'clients' | 'credentials' | 'buscar_login' | 'danger' | 'finances' | 'trash' | 'history'>('clients');
     const [clientFilterStatus, setClientFilterStatus] = useState<'all' | 'expiring' | 'debtor' | 'tolerance'>('all');
@@ -206,6 +281,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const [historyLogs, setHistoryLogs] = useState<any[]>([]);
     const [retentionDays, setRetentionDays] = useState('7');
     const [historyLoading, setHistoryLoading] = useState(false);
+    const [credentialAssignmentSnapshot, setCredentialAssignmentSnapshot] = useState<Record<string, CredentialAssignmentSnapshotEntry>>({});
+    const [credentialExitHistory, setCredentialExitHistory] = useState<Record<string, CredentialExitEntry[]>>({});
+    const [credentialTrackingReady, setCredentialTrackingReady] = useState(false);
+    const reconcileSignatureRef = useRef('');
 
     // Ad Spend State (persisted in localStorage)
     const [adSpendEnabled, setAdSpendEnabled] = useState<boolean>(() => {
@@ -230,7 +309,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const loadData = async () => {
         setLoading(true);
         try {
-            const [creds, allClients, logs] = await Promise.all([fetchCredentials(), getAllClients(), getHistoryLogs()]);
+            const [creds, allClients, logs, settings] = await Promise.all([fetchCredentials(), getAllClients(), getHistoryLogs(), getHistorySettings()]);
 
             // --- AUTO CLEANUP LOGIC ---
             // 1. Remove subscriptions expired > 5 days ago
@@ -305,6 +384,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
             setCredentials(creds.filter(c => c.service !== 'SYSTEM_CONFIG'));
             setHistoryLogs(logs);
+            setCredentialAssignmentSnapshot(parseHistoryMap<Record<string, CredentialAssignmentSnapshotEntry>>(settings[CREDENTIAL_ASSIGNMENT_SNAPSHOT_KEY], {}));
+            setCredentialExitHistory(parseHistoryMap<Record<string, CredentialExitEntry[]>>(settings[CREDENTIAL_EXIT_HISTORY_KEY], {}));
+            setCredentialTrackingReady(true);
         } catch (e) { console.error(e); }
         setLoading(false);
     };
@@ -519,33 +601,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     }, [clients, projectionMonths, statsReferenceDate, historyLogs, credentials, adSpendEnabled, adSpendPerDay]);
 
 
-    const credentialUsage = useMemo<Record<string, number>>(() => {
-        const usage: Record<string, number> = {};
-        if (credentials.length === 0 || clients.length === 0) return usage;
-        clients.filter(c => !c.deleted).forEach(client => {
-            const subs = normalizeSubscriptions(client.subscriptions || [], client.duration_months);
-            subs.forEach(sub => {
-                const parts = sub.split('|');
-                const sName = parts[0].trim().toLowerCase();
-                const serviceCreds = credentials
-                    .filter(c => c.isVisible && c.service.toLowerCase().includes(sName))
-                    .sort((a, b) => new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime());
-                if (serviceCreds.length > 0) {
-                    const clientsForService = clients
-                        .filter(c => !c.deleted && normalizeSubscriptions(c.subscriptions || [], client.duration_months).some(s => s.toLowerCase().includes(sName)))
-                        .sort((a, b) => a.phone_number.localeCompare(b.phone_number));
-                    const rank = clientsForService.findIndex(c => c.id === client.id);
-                    if (rank !== -1) {
-                        const credIndex = rank % serviceCreds.length;
-                        const assigned = serviceCreds[credIndex];
-                        if (assigned) usage[assigned.id] = (usage[assigned.id] || 0) + 1;
-                    }
-                }
-            });
-        });
-        return usage;
-    }, [clients, credentials]);
-
     const groupedCredentials = useMemo<Record<string, AppCredential[]>>(() => {
         const groups: Record<string, AppCredential[]> = {};
         const sorted = [...credentials].sort((a, b) => {
@@ -567,35 +622,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         return d.toLocaleDateString();
     };
 
-    const credentialClientDetails = useMemo(() => {
-        const result: Record<string, { entries: Array<{ clientId: string; name: string; phoneNumber: string; startDate: string; expiryDate: Date; daysLeft: number; reason: string; serviceName: string }>; hasExpired: boolean; expiredClient?: { name: string; phoneNumber: string; expiryDate: Date; daysLeft: number } }> = {};
-        if (credentials.length === 0 || clients.length === 0) return result;
+    const credentialAssignmentData = useMemo(() => {
+        const details: Record<string, CredentialCardDetails> = {};
+        const assignments: Record<string, CredentialAssignmentCurrentEntry> = {};
+        if (credentials.length === 0 || clients.length === 0) return { details, assignments };
 
-        const serviceKeys = new Set<string>();
-        clients.forEach(client => {
-            const subs = normalizeSubscriptions(client.subscriptions || [], client.duration_months);
-            subs.forEach(sub => {
-                const parts = sub.split('|');
-                const name = (parts[0] || '').trim();
-                if (name) serviceKeys.add(name.toLowerCase());
-            });
+        const sortedCredentials = [...credentials]
+            .sort((a, b) => new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime());
+
+        sortedCredentials.forEach(credential => {
+            const versionKey = getCredentialVersionKey(credential);
+            const persistedExits = Array.isArray(credentialExitHistory[versionKey]) ? credentialExitHistory[versionKey] : [];
+            details[credential.id] = {
+                versionKey,
+                entries: [],
+                exitedEntries: [...persistedExits].sort((a, b) => new Date(b.leftAt).getTime() - new Date(a.leftAt).getTime()),
+                hasExpired: false
+            };
         });
 
-        const getSubscriptionDetail = (client: ClientDBRow, serviceLower: string) => {
-            const subs = normalizeSubscriptions(client.subscriptions || [], client.duration_months);
-            for (const sub of subs) {
-                const parts = sub.split('|');
-                const name = (parts[0] || '').trim();
-                if (!name) continue;
-                const nameLower = name.toLowerCase();
-                if (nameLower.includes(serviceLower)) {
-                    const startDate = parts[1] || client.purchase_date;
-                    const duration = parseInt(parts[3] || String(client.duration_months || 1));
-                    return { serviceName: name, startDate, duration };
-                }
-            }
-            return null;
-        };
+        const visibleServiceCreds = sortedCredentials.filter(c => c.isVisible && !(c.email || '').toLowerCase().includes('demo'));
+        if (visibleServiceCreds.length === 0) return { details, assignments };
 
         const getAssignedCredential = (client: ClientDBRow, serviceCreds: AppCredential[]) => {
             const phoneHash = client.phone_number.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
@@ -603,42 +650,182 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             return serviceCreds[credIndex];
         };
 
-        serviceKeys.forEach(serviceLower => {
-            const serviceCreds = credentials
-                .filter(c => c.isVisible && !(c.email || '').toLowerCase().includes('demo') && c.service.toLowerCase().includes(serviceLower))
-                .sort((a, b) => new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime());
-            if (serviceCreds.length === 0) return;
+        const getSubscriptionDetail = (subscriptions: string[], client: ClientDBRow, serviceLower: string) => {
+            for (const sub of subscriptions) {
+                const parts = sub.split('|');
+                const name = (parts[0] || '').trim();
+                if (!name) continue;
+                const nameLower = name.toLowerCase();
+                if (!nameLower.includes(serviceLower)) continue;
+                const startDate = parts[1] || client.purchase_date;
+                const duration = parseInt(parts[3] || String(client.duration_months || 1));
+                return { serviceName: name, startDate, duration };
+            }
+            return null;
+        };
 
-            clients.forEach(client => {
-                const detail = getSubscriptionDetail(client, serviceLower);
+        const sortedClients = [...clients].sort((a, b) => (a.id || '').localeCompare(b.id || ''));
+        sortedClients.forEach(client => {
+            const subscriptions = normalizeSubscriptions(client.subscriptions || [], client.duration_months);
+            if (subscriptions.length === 0) return;
+
+            const serviceKeys = new Set<string>();
+            subscriptions.forEach(sub => {
+                const parts = sub.split('|');
+                const name = (parts[0] || '').trim().toLowerCase();
+                if (name) serviceKeys.add(name);
+            });
+
+            serviceKeys.forEach(serviceLower => {
+                const detail = getSubscriptionDetail(subscriptions, client, serviceLower);
                 if (!detail) return;
+
+                const serviceCreds = visibleServiceCreds
+                    .filter(c => matchesCredentialService(c.service, serviceLower))
+                    .sort((a, b) => new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime());
+                if (serviceCreds.length === 0) return;
+
                 const assigned = getAssignedCredential(client, serviceCreds);
                 if (!assigned) return;
+
                 const expiryDate = calculateExpiry(detail.startDate, detail.duration);
                 const daysLeft = getDaysRemaining(expiryDate);
                 if (daysLeft < 0 && new Date(assigned.publishedAt).getTime() > expiryDate.getTime()) return;
-                if (!result[assigned.id]) result[assigned.id] = { entries: [], hasExpired: false };
+
+                if (!details[assigned.id]) {
+                    details[assigned.id] = {
+                        versionKey: getCredentialVersionKey(assigned),
+                        entries: [],
+                        exitedEntries: [],
+                        hasExpired: false
+                    };
+                }
+
                 if (!client.deleted) {
-                    result[assigned.id].entries.push({
+                    details[assigned.id].entries.push({
                         clientId: client.id,
                         name: client.client_name || 'Sem Nome',
                         phoneNumber: client.phone_number,
                         startDate: detail.startDate,
                         expiryDate,
                         daysLeft,
-                        reason: 'Distribuição automática (hash do telefone)',
+                        reason: 'Distribuicao automatica (hash do telefone)',
                         serviceName: detail.serviceName
                     });
+
+                    const associationKey = `${client.id}::${serviceLower}`;
+                    assignments[associationKey] = {
+                        clientId: client.id,
+                        clientName: client.client_name || 'Sem Nome',
+                        phoneNumber: client.phone_number,
+                        serviceLower,
+                        serviceName: detail.serviceName,
+                        credentialId: assigned.id,
+                        credentialVersion: getCredentialVersionKey(assigned),
+                        credentialPublishedAt: assigned.publishedAt
+                    };
                 }
-                if (daysLeft < 0 && !result[assigned.id].hasExpired) {
-                    result[assigned.id].hasExpired = true;
-                    result[assigned.id].expiredClient = { name: client.client_name || 'Sem Nome', phoneNumber: client.phone_number, expiryDate, daysLeft };
+
+                if (daysLeft < 0 && !details[assigned.id].hasExpired) {
+                    details[assigned.id].hasExpired = true;
+                    details[assigned.id].expiredClient = { name: client.client_name || 'Sem Nome', phoneNumber: client.phone_number, expiryDate, daysLeft };
                 }
             });
         });
 
-        return result;
-    }, [clients, credentials]);
+        return { details, assignments };
+    }, [clients, credentials, credentialExitHistory]);
+
+    const credentialClientDetails = credentialAssignmentData.details;
+    const currentCredentialAssignments = credentialAssignmentData.assignments;
+
+    useEffect(() => {
+        if (!credentialTrackingReady) return;
+
+        const previousSnapshot = credentialAssignmentSnapshot || {};
+        const currentAssignments = currentCredentialAssignments || {};
+        const previousSignature = buildAssignmentSignature(previousSnapshot);
+        const currentSignature = buildAssignmentSignature(currentAssignments);
+        const reconcileSignature = `${previousSignature}>>${currentSignature}`;
+
+        if (reconcileSignatureRef.current === reconcileSignature) return;
+        reconcileSignatureRef.current = reconcileSignature;
+        if (previousSignature === currentSignature) return;
+
+        const nowIso = new Date().toISOString();
+        const clientsById = new Map<string, ClientDBRow>();
+        clients.forEach(client => clientsById.set(client.id, client));
+
+        const getSubscriptionDetail = (client: ClientDBRow, serviceLower: string) => {
+            const subscriptions = normalizeSubscriptions(client.subscriptions || [], client.duration_months);
+            for (const sub of subscriptions) {
+                const parts = sub.split('|');
+                const name = (parts[0] || '').trim();
+                if (!name) continue;
+                if (!name.toLowerCase().includes(serviceLower)) continue;
+                const startDate = parts[1] || client.purchase_date;
+                const duration = parseInt(parts[3] || String(client.duration_months || 1));
+                return { startDate, duration };
+            }
+            return null;
+        };
+
+        const getExitReason = (entry: CredentialAssignmentSnapshotEntry) => {
+            const client = clientsById.get(entry.clientId);
+            if (!client) return 'Cliente removido do banco';
+            if (client.deleted) return 'Cliente excluido da credencial (lixeira)';
+            const detail = getSubscriptionDetail(client, entry.serviceLower);
+            if (!detail) return 'Assinatura removida ou alterada';
+            const expiryDate = calculateExpiry(detail.startDate, detail.duration);
+            const daysLeft = getDaysRemaining(expiryDate);
+            if (daysLeft < 0 && new Date(entry.credentialPublishedAt).getTime() > expiryDate.getTime()) return 'Assinatura venceu antes desta credencial';
+            return 'Sem acesso por outra regra';
+        };
+
+        const nextExitHistory: Record<string, CredentialExitEntry[]> = { ...credentialExitHistory };
+        let exitHistoryChanged = false;
+
+        Object.entries(previousSnapshot).forEach(([associationKey, previousEntry]) => {
+            if (currentAssignments[associationKey]) return;
+
+            const eventKey = `${associationKey}::${previousEntry.credentialVersion}::${previousEntry.assignedAt}`;
+            const existing = Array.isArray(nextExitHistory[previousEntry.credentialVersion]) ? nextExitHistory[previousEntry.credentialVersion] : [];
+            if (existing.some(item => item.eventKey === eventKey)) return;
+
+            const event: CredentialExitEntry = {
+                eventKey,
+                clientId: previousEntry.clientId,
+                name: previousEntry.clientName || 'Sem Nome',
+                phoneNumber: previousEntry.phoneNumber,
+                serviceLower: previousEntry.serviceLower,
+                serviceName: previousEntry.serviceName || previousEntry.serviceLower,
+                reason: getExitReason(previousEntry),
+                leftAt: nowIso
+            };
+            nextExitHistory[previousEntry.credentialVersion] = [event, ...existing];
+            exitHistoryChanged = true;
+        });
+
+        const nextSnapshot: Record<string, CredentialAssignmentSnapshotEntry> = {};
+        Object.entries(currentAssignments).forEach(([associationKey, currentEntry]) => {
+            const previous = previousSnapshot[associationKey];
+            nextSnapshot[associationKey] = {
+                ...currentEntry,
+                assignedAt: previous && previous.credentialVersion === currentEntry.credentialVersion ? previous.assignedAt : nowIso
+            };
+        });
+
+        const snapshotChanged = buildAssignmentSignature(nextSnapshot) !== previousSignature;
+        if (!snapshotChanged && !exitHistoryChanged) return;
+
+        if (snapshotChanged) setCredentialAssignmentSnapshot(nextSnapshot);
+        if (exitHistoryChanged) setCredentialExitHistory(nextExitHistory);
+
+        (async () => {
+            if (snapshotChanged) await updateHistorySetting(CREDENTIAL_ASSIGNMENT_SNAPSHOT_KEY, JSON.stringify(nextSnapshot));
+            if (exitHistoryChanged) await updateHistorySetting(CREDENTIAL_EXIT_HISTORY_KEY, JSON.stringify(nextExitHistory));
+        })().catch(console.error);
+    }, [clients, credentialAssignmentSnapshot, credentialExitHistory, credentialTrackingReady, currentCredentialAssignments]);
 
     const filteredClients = useMemo<ClientDBRow[]>(() => {
         const hasSearch = clientSearch && clientSearch.trim().length > 0;
@@ -1755,13 +1942,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                     <h4 className="text-xs font-black text-indigo-400 uppercase tracking-widest px-2">{serviceName}</h4>
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                         {(creds as AppCredential[]).map(c => {
-                                            const count = credentialUsage[c.id] || 0;
-                                            const health = getCredentialHealth(c.service, c.publishedAt, count);
                                             const details = credentialClientDetails[c.id];
+                                            const entries = details?.entries || [];
+                                            const count = entries.length;
+                                            const health = getCredentialHealth(c.service, c.publishedAt, count);
                                             const isExpanded = !!expandedCreds[c.id];
                                             const hasExpired = details?.hasExpired;
                                             const expiredClient = details?.expiredClient;
-                                            const entries = details?.entries || [];
+                                            const exitedEntries = details?.exitedEntries || [];
                                             const sortedEntries = [...entries].sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
                                             return (
                                                 <div key={c.id} className="bg-white dark:bg-slate-900 p-6 rounded-3xl shadow-sm border border-indigo-50 dark:border-slate-800">
@@ -1815,6 +2003,30 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                                     ))
                                                                 )}
                                                             </div>
+                                                            {exitedEntries.length > 0 && (
+                                                                <div className="mt-4 pt-3 border-t border-indigo-100 space-y-2">
+                                                                    <div className="flex justify-between items-center">
+                                                                        <span className="text-[10px] font-black uppercase text-red-400">Saidas desta credencial</span>
+                                                                        <span className="text-[10px] font-black uppercase text-red-500">{exitedEntries.length} registros</span>
+                                                                    </div>
+                                                                    <div className="space-y-2">
+                                                                        {exitedEntries.map((entry, idx) => (
+                                                                            <div key={`${entry.eventKey}-${idx}`} className="bg-red-50/70 rounded-xl p-3 border border-red-100 flex flex-col gap-1.5">
+                                                                                <div className="flex justify-between items-center">
+                                                                                    <div className="text-xs font-black text-gray-900 dark:text-white">{entry.name}</div>
+                                                                                    <div className="text-[9px] font-black uppercase px-2 py-0.5 rounded-lg border bg-red-50 text-red-600 border-red-200">Saiu</div>
+                                                                                </div>
+                                                                                <div className="text-[10px] font-bold text-red-400 flex items-center gap-1.5"><Phone size={12} /> {entry.phoneNumber}</div>
+                                                                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[9px] font-black uppercase text-red-400">
+                                                                                    <div className="flex items-center gap-1.5"><Clock size={12} /> Saiu: {new Date(entry.leftAt).toLocaleString()}</div>
+                                                                                    <div className="flex items-center gap-1.5"><Users size={12} /> {entry.serviceName}</div>
+                                                                                    <div className="flex items-center gap-1.5"><AlertTriangle size={12} /> {entry.reason}</div>
+                                                                                </div>
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                </div>
+                                                            )}
                                                         </div>
                                                     )}
                                                 </div>
@@ -2055,3 +2267,4 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         </div>
     );
 };
+
