@@ -6,7 +6,6 @@ import CheckoutModal from './components/CheckoutModal';
 import NameModal from './components/NameModal';
 import Toast from './components/Toast';
 import PriceAdjustmentBanner from './components/PriceAdjustmentBanner';
-import NewAppBanner from './components/NewAppBanner';
 import { User, Dorama } from './types';
 import {
   addDoramaToDB,
@@ -26,7 +25,7 @@ import { Heart, X, CheckCircle2, MessageCircle, Gift, Sparkles, Home, Tv2, Palet
 const AdminLogin = lazy(() => import('./components/AdminLogin'));
 const AdminPanel = lazy(() => import('./components/AdminPanel').then(mod => ({ default: mod.AdminPanel })));
 
-type UserNotice = 'price' | 'new_app';
+type UserNotice = 'price';
 type PwaInstallResult = 'prompted' | 'already_installed' | 'ios_manual' | 'unsupported';
 
 interface BeforeInstallPromptEvent extends Event {
@@ -35,7 +34,6 @@ interface BeforeInstallPromptEvent extends Event {
 }
 
 const PRICE_NOTICE_KEY = 'eudorama_notice_price_2026_seen';
-const NEW_APP_NOTICE_KEY = 'eudorama_notice_new_app_seen';
 const INFINITY_PAY_HANDLE = (import.meta as any).env?.VITE_INFINITY_PAY_HANDLE || 'orion_magalhaes';
 const INFINITY_PAY_ORDER_STORAGE_PREFIX = 'eudorama_ip_order_';
 const INFINITY_PAY_CHECK_RETRY_ATTEMPTS = 4;
@@ -452,16 +450,12 @@ const App: React.FC = () => {
 
   const getPendingNotice = useCallback((phoneNumber: string): UserNotice | null => {
     const hasSeenPrice = sessionStorage.getItem(getUserNoticeKey(PRICE_NOTICE_KEY, phoneNumber)) === 'true';
-    const hasSeenNewApp = sessionStorage.getItem(getUserNoticeKey(NEW_APP_NOTICE_KEY, phoneNumber)) === 'true';
     if (!hasSeenPrice) return 'price';
-    if (!hasSeenNewApp) return 'new_app';
     return null;
   }, []);
 
   const markNoticeAsSeen = useCallback((notice: UserNotice, phoneNumber: string) => {
-    const key = notice === 'price'
-      ? getUserNoticeKey(PRICE_NOTICE_KEY, phoneNumber)
-      : getUserNoticeKey(NEW_APP_NOTICE_KEY, phoneNumber);
+    const key = getUserNoticeKey(PRICE_NOTICE_KEY, phoneNumber);
     sessionStorage.setItem(key, 'true');
   }, []);
 
@@ -495,7 +489,6 @@ const App: React.FC = () => {
   const handleLogout = () => {
     if (currentUser?.phoneNumber) {
       sessionStorage.removeItem(getUserNoticeKey(PRICE_NOTICE_KEY, currentUser.phoneNumber));
-      sessionStorage.removeItem(getUserNoticeKey(NEW_APP_NOTICE_KEY, currentUser.phoneNumber));
     }
 
     setCurrentUser(null);
@@ -508,12 +501,6 @@ const App: React.FC = () => {
   const handleClosePriceNotice = () => {
     if (!currentUser) return;
     markNoticeAsSeen('price', currentUser.phoneNumber);
-    setActiveNotice(getPendingNotice(currentUser.phoneNumber));
-  };
-
-  const handleCloseNewAppNotice = () => {
-    if (!currentUser) return;
-    markNoticeAsSeen('new_app', currentUser.phoneNumber);
     setActiveNotice(getPendingNotice(currentUser.phoneNumber));
   };
 
@@ -884,10 +871,6 @@ const App: React.FC = () => {
       <PriceAdjustmentBanner
         isOpen={activeNotice === 'price'}
         onClose={handleClosePriceNotice}
-      />
-      <NewAppBanner
-        isOpen={activeNotice === 'new_app'}
-        onClose={handleCloseNewAppNotice}
       />
     </div>
   );
