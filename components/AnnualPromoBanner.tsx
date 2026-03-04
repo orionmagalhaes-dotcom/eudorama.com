@@ -13,17 +13,17 @@ const PROMO_WHATSAPP_MESSAGE = encodeURIComponent(
 const PROMO_APPS = [
   {
     name: 'Viki Pass',
-    detail: 'Doramas asiaticos premium sem anuncios.',
+    detail: 'Premium',
     color: 'text-rose-700 border-rose-200 bg-rose-50'
   },
   {
     name: 'Kocowa+',
-    detail: 'Variedades e conteudo coreano oficial.',
+    detail: 'Coreano',
     color: 'text-sky-700 border-sky-200 bg-sky-50'
   },
   {
     name: 'Dramabox',
-    detail: 'Series curtas e dramas para maratonar.',
+    detail: 'Series',
     color: 'text-violet-700 border-violet-200 bg-violet-50'
   }
 ] as const;
@@ -41,19 +41,19 @@ const AnnualPromoBanner: React.FC<AnnualPromoBannerProps> = ({ isOpen, onClose }
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[110] bg-black/75 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in">
-      <div className="relative w-full max-w-md rounded-[2rem] shadow-2xl overflow-hidden animate-scale-up">
+    <div className="fixed inset-0 z-[110] bg-black/75 backdrop-blur-md flex items-center justify-center p-3 sm:p-4 animate-fade-in">
+      <div className="relative w-full max-w-md rounded-[1.5rem] sm:rounded-[2rem] shadow-2xl overflow-hidden animate-scale-up max-h-[92vh]">
         <div className="absolute inset-0 bg-gradient-to-br from-orange-500 via-rose-500 to-fuchsia-600" />
         <div className="absolute -top-10 -right-10 w-36 h-36 bg-yellow-300/30 blur-2xl rounded-full" />
         <div className="absolute -bottom-10 -left-8 w-32 h-32 bg-white/20 blur-2xl rounded-full" />
 
-        <div className="relative p-6 space-y-5">
+        <div className="relative p-4 sm:p-6 space-y-3 sm:space-y-5 overflow-y-auto max-h-[92vh]">
           <div className="flex items-start justify-between gap-3">
-            <div className="space-y-2">
+            <div className="space-y-1.5 sm:space-y-2">
               <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-white/20 text-white text-[10px] font-black uppercase tracking-wider border border-white/30">
                 <Flame size={12} /> Promocao relampago
               </span>
-              <h3 className="text-2xl font-black text-white leading-tight">Combo Anual com 3 Apps Juntos</h3>
+              <h3 className="text-xl sm:text-2xl font-black text-white leading-tight">Combo Anual com 3 Apps Juntos</h3>
               <p className="text-[11px] font-black text-yellow-100 uppercase tracking-wide flex items-center gap-1.5">
                 <CalendarDays size={13} /> Valida ate 10/03/2026
               </p>
@@ -63,24 +63,27 @@ const AnnualPromoBanner: React.FC<AnnualPromoBannerProps> = ({ isOpen, onClose }
             </button>
           </div>
 
-          <div className="rounded-2xl border border-white/30 bg-white/10 p-3">
+          <div className="rounded-2xl border border-white/30 bg-white/10 p-2.5 sm:p-3">
             <p className="text-white text-[11px] font-black uppercase tracking-wider text-center">
               Voce leva no combo anual
             </p>
-            <div className="mt-3 grid grid-cols-1 gap-2">
+            <div className="mt-2.5 grid grid-cols-3 gap-1.5 sm:gap-2">
               {PROMO_APPS.map((app) => (
                 <div
                   key={app.name}
-                  className={`rounded-xl border p-2.5 ${app.color}`}
+                  className={`rounded-xl border p-2 ${app.color}`}
                 >
-                  <p className="text-xs font-black uppercase">{app.name}</p>
-                  <p className="text-[10px] font-bold mt-0.5 leading-snug">{app.detail}</p>
+                  <p className="text-[10px] sm:text-xs font-black uppercase leading-tight">{app.name}</p>
+                  <p className="text-[9px] sm:text-[10px] font-bold mt-0.5 leading-tight">{app.detail}</p>
                 </div>
               ))}
             </div>
+            <p className="mt-2 text-center text-[10px] font-bold text-white/90 leading-tight">
+              Doramas premium, conteudo coreano e series para maratonar.
+            </p>
           </div>
 
-          <div className="bg-white rounded-2xl p-4 shadow-lg space-y-3 border border-white/80">
+          <div className="bg-white rounded-2xl p-3 sm:p-4 shadow-lg space-y-2.5 sm:space-y-3 border border-white/80">
             <p className="text-[10px] font-black text-gray-500 uppercase tracking-widest flex items-center gap-1">
               <Sparkles size={12} className="text-orange-500" /> Oferta do Combo Anual
             </p>
@@ -88,7 +91,7 @@ const AnnualPromoBanner: React.FC<AnnualPromoBannerProps> = ({ isOpen, onClose }
             <div className="flex items-end justify-between">
               <div>
                 <p className="text-[10px] font-black text-gray-400 uppercase">Pagamento no PIX</p>
-                <p className="text-4xl leading-none font-black text-emerald-600 mt-1">R$ 199</p>
+                <p className="text-3xl sm:text-4xl leading-none font-black text-emerald-600 mt-1">R$ 199</p>
               </div>
               <span className="px-2.5 py-1 rounded-lg bg-red-50 border border-red-100 text-red-600 text-[10px] font-black uppercase tracking-wide">
                 Apenas 3 vagas disponiveis
@@ -96,14 +99,14 @@ const AnnualPromoBanner: React.FC<AnnualPromoBannerProps> = ({ isOpen, onClose }
             </div>
 
             <div className="flex items-center justify-between border-t border-gray-100 pt-3">
-              <span className="text-sm font-bold text-gray-700 flex items-center gap-1.5">
+              <span className="text-xs sm:text-sm font-bold text-gray-700 flex items-center gap-1.5">
                 <CreditCard size={14} /> Cartao (ate 12x)
               </span>
-              <span className="text-2xl font-black text-indigo-600">R$ 249</span>
+              <span className="text-xl sm:text-2xl font-black text-indigo-600">R$ 249</span>
             </div>
           </div>
 
-          <div className="rounded-2xl border border-emerald-200 bg-emerald-50/95 px-4 py-3">
+          <div className="rounded-2xl border border-emerald-200 bg-emerald-50/95 px-3.5 py-2.5 sm:px-4 sm:py-3">
             <p className="text-[11px] font-bold text-emerald-900 leading-tight flex items-start gap-1.5">
               <ShieldCheck size={15} className="mt-0.5 shrink-0" />
               Se voce ja tiver plano ativo, os dias serao adicionados para voce nao perder nenhum dia ja pago.
@@ -112,7 +115,7 @@ const AnnualPromoBanner: React.FC<AnnualPromoBannerProps> = ({ isOpen, onClose }
 
           <button
             onClick={handleOpenWhatsApp}
-            className="w-full bg-green-500 hover:bg-green-600 text-white py-4 rounded-2xl font-black text-sm uppercase tracking-wide flex items-center justify-center gap-2 shadow-xl shadow-green-300/50 active:scale-95 transition-all"
+            className="w-full bg-green-500 hover:bg-green-600 text-white py-3 sm:py-4 rounded-2xl font-black text-xs sm:text-sm uppercase tracking-wide flex items-center justify-center gap-2 shadow-xl shadow-green-300/50 active:scale-95 transition-all"
           >
             <MessageCircle size={18} />
             Garantir Promocao no WhatsApp
