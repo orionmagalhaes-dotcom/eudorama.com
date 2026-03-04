@@ -6,6 +6,7 @@ import CheckoutModal from './components/CheckoutModal';
 import NameModal from './components/NameModal';
 import Toast from './components/Toast';
 import PriceAdjustmentBanner from './components/PriceAdjustmentBanner';
+import AnnualPromoBanner from './components/AnnualPromoBanner';
 import { User, Dorama } from './types';
 import {
   addDoramaToDB,
@@ -25,7 +26,7 @@ import { Heart, X, CheckCircle2, MessageCircle, Gift, Sparkles, Home, Tv2, Palet
 const AdminLogin = lazy(() => import('./components/AdminLogin'));
 const AdminPanel = lazy(() => import('./components/AdminPanel').then(mod => ({ default: mod.AdminPanel })));
 
-type UserNotice = 'price';
+type UserNotice = 'annual_promo' | 'price';
 type PwaInstallResult = 'prompted' | 'already_installed' | 'ios_manual' | 'unsupported';
 
 interface BeforeInstallPromptEvent extends Event {
@@ -34,6 +35,7 @@ interface BeforeInstallPromptEvent extends Event {
 }
 
 const PRICE_NOTICE_KEY = 'eudorama_notice_price_2026_seen';
+const ANNUAL_PROMO_DISPLAY_END_AT = new Date(2026, 2, 11, 23, 59, 59, 999).getTime(); // 11/03/2026 23:59:59 local
 const INFINITY_PAY_HANDLE = (import.meta as any).env?.VITE_INFINITY_PAY_HANDLE || 'orion_magalhaes';
 const INFINITY_PAY_ORDER_STORAGE_PREFIX = 'eudorama_ip_order_';
 const INFINITY_PAY_CHECK_RETRY_ATTEMPTS = 4;
@@ -48,6 +50,7 @@ const INFINITY_PAY_NETWORK_FAILURE_HINTS = [
   'network request failed'
 ];
 const normalizePhoneDigits = (value: string) => String(value || '').replace(/\D/g, '');
+const isAnnualPromoDisplayActive = () => Date.now() <= ANNUAL_PROMO_DISPLAY_END_AT;
 
 const getUserNoticeKey = (base: string, phoneNumber: string) => `${base}:${phoneNumber}`;
 
@@ -448,13 +451,16 @@ const App: React.FC = () => {
     if (currentUser && (currentUser.name === 'Dorameira' || !currentUser.name)) setShowNameModal(true);
   }, [currentUser?.name]);
 
-  const getPendingNotice = useCallback((phoneNumber: string): UserNotice | null => {
+  const getPendingNotice = useCallback((phoneNumber: string, options?: { skipAnnualPromo?: boolean }): UserNotice | null => {
+    const skipAnnualPromo = options?.skipAnnualPromo === true;
+    if (!skipAnnualPromo && isAnnualPromoDisplayActive()) return 'annual_promo';
+
     const hasSeenPrice = sessionStorage.getItem(getUserNoticeKey(PRICE_NOTICE_KEY, phoneNumber)) === 'true';
     if (!hasSeenPrice) return 'price';
     return null;
   }, []);
 
-  const markNoticeAsSeen = useCallback((notice: UserNotice, phoneNumber: string) => {
+  const markNoticeAsSeen = useCallback((phoneNumber: string) => {
     const key = getUserNoticeKey(PRICE_NOTICE_KEY, phoneNumber);
     sessionStorage.setItem(key, 'true');
   }, []);
@@ -500,8 +506,13 @@ const App: React.FC = () => {
 
   const handleClosePriceNotice = () => {
     if (!currentUser) return;
-    markNoticeAsSeen('price', currentUser.phoneNumber);
+    markNoticeAsSeen(currentUser.phoneNumber);
     setActiveNotice(getPendingNotice(currentUser.phoneNumber));
+  };
+
+  const handleCloseAnnualPromoNotice = () => {
+    if (!currentUser) return;
+    setActiveNotice(getPendingNotice(currentUser.phoneNumber, { skipAnnualPromo: true }));
   };
 
   const handleNameSaved = (newName: string) => {
@@ -868,6 +879,10 @@ const App: React.FC = () => {
         </nav>
       </div>
 
+      <AnnualPromoBanner
+        isOpen={activeNotice === 'annual_promo'}
+        onClose={handleCloseAnnualPromoNotice}
+      />
       <PriceAdjustmentBanner
         isOpen={activeNotice === 'price'}
         onClose={handleClosePriceNotice}

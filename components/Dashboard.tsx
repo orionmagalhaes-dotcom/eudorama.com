@@ -275,10 +275,9 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
 
                 const itemIsDebtor = details ? details.isDebtor : false;
 
-                // STRICT BLOCKING: Block if expired > 1 day AND not in tolerance AND not override
-                // Tolerance always allows access, even for debtors
-                // User can see credentials on expiry day and 1 day after (daysLeft 0, -1)
-                const isBlocked = (daysLeft < -1 && !isInTolerance && !user.overrideExpiration);
+                // Block credential visibility immediately after expiration.
+                // Expiration day (daysLeft === 0) still shows credentials.
+                const isBlocked = (daysLeft < 0 && !user.overrideExpiration);
 
                 // Check for updates
                 if (result.credential) {
