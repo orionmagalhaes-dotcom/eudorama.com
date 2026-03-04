@@ -1,4 +1,4 @@
-const CACHE_NAME = 'eudorama-pwa-v1';
+const CACHE_NAME = 'eudorama-pwa-v2026-03-04';
 const OFFLINE_FALLBACK_URL = '/';
 
 self.addEventListener('install', (event) => {
