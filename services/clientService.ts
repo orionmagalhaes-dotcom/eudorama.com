@@ -506,6 +506,80 @@ const calculateNextSubscriptionStart = (dateStr: string, months: number): Date =
   return next;
 };
 
+const normalizeServiceKey = (value?: string | null) => String(value || '').trim().toLowerCase();
+
+type ChargeWhatsappEntry = {
+  service: string;
+  chargedAt?: string;
+  subscriptionStartAt?: string;
+};
+
+const parseChargeWhatsappEntries = (raw: any): Record<string, ChargeWhatsappEntry> => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+
+  const normalized: Record<string, ChargeWhatsappEntry> = {};
+  Object.entries(raw as Record<string, any>).forEach(([key, value]) => {
+    if (!value || typeof value !== 'object') return;
+
+    const serviceRaw = String((value as any).service || key || '').trim();
+    const serviceKey = normalizeServiceKey(serviceRaw);
+    if (!serviceKey) return;
+
+    normalized[serviceKey] = {
+      service: serviceRaw,
+      chargedAt: String((value as any).chargedAt || '').trim(),
+      subscriptionStartAt: String((value as any).subscriptionStartAt || '').trim()
+    };
+  });
+
+  return normalized;
+};
+
+const clearChargeTrackingForRenewedServices = (
+  gameProgress: any,
+  renewedServices: string[]
+): { nextProgress: any; hasPendingCharges: boolean } => {
+  const clearKeys = new Set((renewedServices || []).map((service) => normalizeServiceKey(service)).filter(Boolean));
+  if (clearKeys.size === 0) {
+    const currentServices = Array.isArray(gameProgress?._charge_whatsapp_services)
+      ? gameProgress._charge_whatsapp_services.map((service: any) => String(service || '').trim()).filter(Boolean)
+      : [];
+    return { nextProgress: gameProgress || {}, hasPendingCharges: currentServices.length > 0 };
+  }
+
+  const current = gameProgress || {};
+  const previousServices = Array.isArray(current._charge_whatsapp_services)
+    ? current._charge_whatsapp_services.map((service: any) => String(service || '').trim()).filter(Boolean)
+    : [];
+
+  const nextServices = previousServices.filter((service: string) => !clearKeys.has(normalizeServiceKey(service)));
+  const nextEntryMap = parseChargeWhatsappEntries(current._charge_whatsapp_entries);
+  Object.keys(nextEntryMap).forEach((key) => {
+    if (clearKeys.has(key)) delete nextEntryMap[key];
+  });
+
+  const trackedServices = Object.values(nextEntryMap).map((entry) => String(entry.service || '').trim()).filter(Boolean);
+  const mergedServices = Array.from(new Set([...nextServices, ...trackedServices]));
+
+  const nextProgress: Record<string, any> = {
+    ...current,
+    _charge_whatsapp_services: mergedServices,
+    _charge_whatsapp_entries: nextEntryMap
+  };
+
+  if (mergedServices.length === 0) {
+    delete nextProgress._charge_whatsapp_last_service;
+    delete nextProgress._charge_whatsapp_last_at;
+  } else if (nextProgress._charge_whatsapp_last_service && clearKeys.has(normalizeServiceKey(nextProgress._charge_whatsapp_last_service))) {
+    nextProgress._charge_whatsapp_last_service = mergedServices[mergedServices.length - 1];
+  }
+
+  return {
+    nextProgress,
+    hasPendingCharges: mergedServices.length > 0
+  };
+};
+
 export interface InfinityPayOrderContext {
   orderNsu: string;
   phoneNumber: string;
@@ -795,10 +869,13 @@ export const renewClientSubscriptionsAfterInfinityPayment = async (
     });
 
     const hasDebtorServices = updatedSubs.some((sub) => (sub.split('|')[2] || '0') !== '1');
+    const { nextProgress, hasPendingCharges } = clearChargeTrackingForRenewedServices(client.game_progress || {}, renewedServices);
     const saveResult = await saveClientToDB({
       ...client,
       subscriptions: updatedSubs,
-      is_debtor: hasDebtorServices
+      is_debtor: hasDebtorServices,
+      game_progress: nextProgress,
+      is_contacted: hasPendingCharges
     });
 
     if (!saveResult.success) {

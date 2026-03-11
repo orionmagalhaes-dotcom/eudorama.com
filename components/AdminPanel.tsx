@@ -2,14 +2,29 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { AppCredential, ClientDBRow, User } from '../types';
 import { fetchCredentials, saveCredential, deleteCredential } from '../services/credentialService';
-import { getAllClients, saveClientToDB, resetAllClientPasswords, hardDeleteAllClients, getHistoryLogs, clearHistoryLogs, updateHistorySetting, getHistorySettings, enforceHistoryRetention, supabase } from '../services/clientService';
+import {
+    getAllClients,
+    saveClientToDB,
+    resetAllClientPasswords,
+    hardDeleteAllClients,
+    getHistoryLogs,
+    clearHistoryLogs,
+    updateHistorySetting,
+    getHistorySettings,
+    enforceHistoryRetention,
+    submitVikiTvAutomationRequest,
+    getVikiTvAutomationStatus,
+    type VikiTvAutomationStep,
+    type VikiTvAutomationExecutionStatus,
+    supabase
+} from '../services/clientService';
 import {
     Plus, Trash2, Edit2, LogOut, Users, Search, AlertTriangle, X, ShieldAlert, Key,
     Clock, CheckCircle2, RefreshCw, Phone, Mail, Lock, Loader2, Eye, EyeOff,
     Calendar, Download, Upload, Shield, LayoutGrid, SortAsc, SortDesc, RotateCw,
     ShieldCheck, UsersRound, ArrowUpRight, ArrowDownRight, MessageCircle,
     Sun, Moon, Fingerprint, Copy, Check, Zap, BarChart3, TrendingUp, Wallet, PieChart, Undo2, TrendingDown, Settings2,
-    Activity, Banknote, CreditCard, Eraser, ListFilter, ArrowUpDown, Wifi, Filter, ChevronRight, History
+    Activity, Banknote, CreditCard, Eraser, ListFilter, ArrowUpDown, Wifi, Filter, ChevronRight, History, Tv2
 } from 'lucide-react';
 
 // --- PROPS INTERFACE ---
@@ -24,6 +39,56 @@ const PLAN_OPTIONS: { label: string; value: string }[] = [
     { label: '6 Meses', value: '6' },
     { label: '12 Meses', value: '12' },
 ];
+
+type VikiTvModel = 'samsung' | 'lg' | 'android';
+const VIKI_TV_OPTIONS: { id: VikiTvModel; label: string; url: string }[] = [
+    { id: 'samsung', label: 'Samsung TV', url: 'https://www.viki.com/samsungtv' },
+    { id: 'lg', label: 'LG TV', url: 'https://www.viki.com/lgtv' },
+    { id: 'android', label: 'Android TV', url: 'https://www.viki.com/androidtv' }
+];
+
+const normalizeVikiCodeInput = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 6);
+const isValidVikiTvCode = (value: string) => /^[a-z0-9]{6}$/.test(value);
+
+type VikiTvUiExecutionStatus = 'idle' | VikiTvAutomationExecutionStatus;
+const VIKI_TV_TERMINAL_STATUSES = new Set<VikiTvUiExecutionStatus>(['success', 'failed']);
+
+const getVikiExecutionBadge = (status: VikiTvUiExecutionStatus) => {
+    if (status === 'success') return { label: 'Conexao concluida', className: 'bg-emerald-100 text-emerald-700' };
+    if (status === 'failed') return { label: 'Nao concluida', className: 'bg-red-100 text-red-700' };
+    if (status === 'running') return { label: 'Conectando', className: 'bg-blue-100 text-blue-700' };
+    if (status === 'queued') return { label: 'Preparando', className: 'bg-amber-100 text-amber-700' };
+    return { label: 'Pronto', className: 'bg-gray-100 text-gray-600' };
+};
+
+const getVikiStepBadge = (status: VikiTvAutomationStep['status']) => {
+    if (status === 'success') return { label: 'Feito', className: 'text-emerald-700 bg-emerald-100' };
+    if (status === 'failed') return { label: 'Problema', className: 'text-red-700 bg-red-100' };
+    if (status === 'running') return { label: 'Em andamento', className: 'text-blue-700 bg-blue-100' };
+    return { label: 'Aguardando', className: 'text-gray-600 bg-gray-100' };
+};
+
+const getFriendlyStepLabel = (step: VikiTvAutomationStep | null) => {
+    if (!step) return '';
+    if (step.key === 'validation' || step.key === 'request' || step.key === 'dispatch') return 'Preparando a conexao';
+    if (step.key === 'login') return 'Entrando na Viki';
+    if (step.key === 'code') return 'Enviando o codigo da TV';
+    if (step.key === 'logout') return 'Finalizando a conexao';
+    return step.label;
+};
+
+const getFriendlyProgressMessage = (
+    executionStatus: VikiTvUiExecutionStatus,
+    currentStep: VikiTvAutomationStep | null
+) => {
+    if (executionStatus === 'idle') return 'Escolha sua TV, digite o codigo e clique em "Conectar TV".';
+    if (executionStatus === 'queued') return 'Solicitacao recebida. Aguarde alguns segundos.';
+    if (executionStatus === 'running') {
+        if (!currentStep) return 'Estamos conectando a TV. Aguarde.';
+        return `${getFriendlyStepLabel(currentStep)}...`;
+    }
+    return '';
+};
 
 // CAPACITY_LIMITS moved to financeConfig.ts for single source of truth
 
@@ -142,6 +207,147 @@ const normalizePhoneKey = (value?: string | null) => {
     return digits || raw;
 };
 
+const normalizeServiceKey = (value?: string | null) => String(value || '').trim().toLowerCase();
+
+type ChargeWhatsappEntry = {
+    service: string;
+    chargedAt?: string;
+    subscriptionStartAt?: string;
+};
+
+const parseChargeWhatsappEntries = (raw: any): Record<string, ChargeWhatsappEntry> => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+
+    const normalized: Record<string, ChargeWhatsappEntry> = {};
+    Object.entries(raw as Record<string, any>).forEach(([key, value]) => {
+        if (!value || typeof value !== 'object') return;
+
+        const serviceRaw = String((value as any).service || key || '').trim();
+        const serviceKey = normalizeServiceKey(serviceRaw);
+        if (!serviceKey) return;
+
+        normalized[serviceKey] = {
+            service: serviceRaw,
+            chargedAt: String((value as any).chargedAt || '').trim(),
+            subscriptionStartAt: String((value as any).subscriptionStartAt || '').trim()
+        };
+    });
+
+    return normalized;
+};
+
+const getPendingChargeServices = (client: Partial<ClientDBRow>): string[] => {
+    const gp = client.game_progress || {};
+    const subscriptions = normalizeSubscriptions(client.subscriptions || [], client.duration_months || 1);
+    const currentStartByService = new Map<string, string>();
+
+    subscriptions.forEach((sub) => {
+        const parts = sub.split('|');
+        const serviceName = String(parts[0] || '').trim();
+        const serviceKey = normalizeServiceKey(serviceName);
+        if (!serviceKey || currentStartByService.has(serviceKey)) return;
+        currentStartByService.set(serviceKey, String(parts[1] || '').trim());
+    });
+
+    const entryMap = parseChargeWhatsappEntries(gp?._charge_whatsapp_entries);
+    const entryValues = Object.values(entryMap);
+    if (entryValues.length > 0) {
+        const pendingFromEntries = entryValues
+            .filter((entry) => {
+                const serviceKey = normalizeServiceKey(entry.service);
+                if (!serviceKey) return false;
+                const currentStart = currentStartByService.get(serviceKey);
+                if (!currentStart) return false;
+                const trackedStart = String(entry.subscriptionStartAt || '').trim();
+                if (!trackedStart) return true;
+                return trackedStart === currentStart;
+            })
+            .map((entry) => String(entry.service || '').trim())
+            .filter(Boolean);
+        return Array.from(new Set(pendingFromEntries));
+    }
+
+    const services = Array.isArray(gp?._charge_whatsapp_services) ? gp._charge_whatsapp_services : [];
+    const normalizedServices = services.map((service: any) => String(service || '').trim()).filter(Boolean);
+    if (normalizedServices.length > 0) {
+        return Array.from(new Set(normalizedServices));
+    }
+
+    const legacyLastService = String(gp?._charge_whatsapp_last_service || '').trim();
+    if (legacyLastService && client.is_contacted) {
+        return [legacyLastService];
+    }
+
+    return [];
+};
+
+const buildChargeTrackingPatchAfterRenewal = (
+    client: Partial<ClientDBRow>,
+    renewedServices: string[]
+): Partial<ClientDBRow> => {
+    const clearKeys = new Set((renewedServices || []).map((service) => normalizeServiceKey(service)).filter(Boolean));
+    if (clearKeys.size === 0) return {};
+
+    const currentProgress = client.game_progress || {};
+    const previousServices = Array.isArray(currentProgress._charge_whatsapp_services) ? currentProgress._charge_whatsapp_services : [];
+    const nextServices = previousServices
+        .map((service: any) => String(service || '').trim())
+        .filter((service: string) => service.length > 0 && !clearKeys.has(normalizeServiceKey(service)));
+
+    const nextEntryMap = parseChargeWhatsappEntries(currentProgress._charge_whatsapp_entries);
+    Object.keys(nextEntryMap).forEach((key) => {
+        if (clearKeys.has(key)) delete nextEntryMap[key];
+    });
+
+    const trackedServices = Object.values(nextEntryMap).map((entry) => String(entry.service || '').trim()).filter(Boolean);
+    const mergedServices = Array.from(new Set([...nextServices, ...trackedServices]));
+
+    const nextProgress: Record<string, any> = {
+        ...currentProgress,
+        _charge_whatsapp_services: mergedServices,
+        _charge_whatsapp_entries: nextEntryMap
+    };
+
+    if (mergedServices.length === 0) {
+        delete nextProgress._charge_whatsapp_last_service;
+        delete nextProgress._charge_whatsapp_last_at;
+    } else if (nextProgress._charge_whatsapp_last_service && clearKeys.has(normalizeServiceKey(nextProgress._charge_whatsapp_last_service))) {
+        nextProgress._charge_whatsapp_last_service = mergedServices[mergedServices.length - 1];
+    }
+
+    return {
+        game_progress: nextProgress,
+        is_contacted: mergedServices.length > 0
+    };
+};
+
+const getServicesWithUpdatedStartDate = (beforeSubs: string[], afterSubs: string[]): string[] => {
+    const beforeStartByService = new Map<string, string>();
+    beforeSubs.forEach((sub) => {
+        const parts = sub.split('|');
+        const serviceName = String(parts[0] || '').trim();
+        const serviceKey = normalizeServiceKey(serviceName);
+        if (!serviceKey || beforeStartByService.has(serviceKey)) return;
+        beforeStartByService.set(serviceKey, String(parts[1] || '').trim());
+    });
+
+    const changed = new Set<string>();
+    afterSubs.forEach((sub) => {
+        const parts = sub.split('|');
+        const serviceName = String(parts[0] || '').trim();
+        const serviceKey = normalizeServiceKey(serviceName);
+        if (!serviceKey) return;
+
+        const previousStart = beforeStartByService.get(serviceKey);
+        const currentStart = String(parts[1] || '').trim();
+        if (previousStart && currentStart && previousStart !== currentStart) {
+            changed.add(serviceName);
+        }
+    });
+
+    return Array.from(changed);
+};
+
 const getExpiringSortMeta = (client: ClientDBRow) => {
     const subs = normalizeSubscriptions(client.subscriptions || [], client.duration_months);
     const expiring = subs
@@ -172,10 +378,12 @@ const getChargeTagMeta = (client: Partial<ClientDBRow>) => {
     const gp = client.game_progress || {};
     const lastAt = gp?._charge_whatsapp_last_at || null;
     const lastAtMs = safeDateMs(lastAt);
-    const hasSent = Boolean(client.is_contacted || lastAtMs);
+    const pendingServices = getPendingChargeServices(client);
+    const hasSent = pendingServices.length > 0;
+    const baseLabel = hasSent && lastAtMs ? `Cobranca enviada em ${new Date(lastAtMs).toLocaleDateString()}` : 'Cobranca enviada';
     return {
         hasSent,
-        label: hasSent && lastAtMs ? `Cobranca enviada em ${new Date(lastAtMs).toLocaleDateString()}` : 'Cobranca enviada'
+        label: hasSent && pendingServices.length > 1 ? `${baseLabel} (${pendingServices.length})` : baseLabel
     };
 };
 
@@ -318,6 +526,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const [newSubService, setNewSubService] = useState(SERVICES[0]);
     const [newSubPlan, setNewSubPlan] = useState('1');
     const [daysToAddInputs, setDaysToAddInputs] = useState<Record<number, number>>({});
+    const [showAdminVikiTvModal, setShowAdminVikiTvModal] = useState(false);
+    const [adminVikiTvTarget, setAdminVikiTvTarget] = useState<{
+        clientId: string;
+        clientName: string;
+        phoneNumber: string;
+        serviceName: string;
+        credentialEmail: string;
+        credentialPassword: string;
+    } | null>(null);
+    const [selectedAdminVikiTvModel, setSelectedAdminVikiTvModel] = useState<VikiTvModel | null>(null);
+    const [adminVikiTvCode, setAdminVikiTvCode] = useState('');
+    const [adminVikiTvError, setAdminVikiTvError] = useState<string | null>(null);
+    const [adminVikiTvBackendMessage, setAdminVikiTvBackendMessage] = useState<string | null>(null);
+    const [isSubmittingAdminVikiTv, setIsSubmittingAdminVikiTv] = useState(false);
+    const [adminVikiTvRequestId, setAdminVikiTvRequestId] = useState<string | null>(null);
+    const [adminVikiTvExecutionStatus, setAdminVikiTvExecutionStatus] = useState<VikiTvUiExecutionStatus>('idle');
+    const [adminVikiTvSteps, setAdminVikiTvSteps] = useState<VikiTvAutomationStep[]>([]);
 
     const [clientForm, setClientForm] = useState<Partial<ClientDBRow>>({
         phone_number: '', client_name: '', subscriptions: [], duration_months: 1, is_debtor: false, purchase_date: toLocalInput(new Date().toISOString()), client_password: '', observation: ''
@@ -1098,16 +1323,223 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         assignedPassword = serviceCreds[credIndex].password || "-";
                     }
                 }
-                return { serviceName, login: assignedLogin, password: assignedPassword, daysLeft, isExpired: daysLeft < 0 };
+                const hasCredential = assignedLogin !== "NÃ£o vinculada" && assignedPassword !== "-";
+                return { serviceName, serviceLower, login: assignedLogin, password: assignedPassword, hasCredential, daysLeft, isExpired: daysLeft < 0 };
             });
-            return { clientName: client.client_name || "Sem Nome", phoneNumber: client.phone_number, accesses: subAccesses };
+            return { clientId: client.id, clientName: client.client_name || "Sem Nome", phoneNumber: client.phone_number, accesses: subAccesses };
         });
     }, [clients, credentials, loginSearchQuery]);
+
+    const adminVikiTvCurrentStep = useMemo(() => {
+        if (adminVikiTvSteps.length === 0) return null;
+
+        const runningStep = adminVikiTvSteps.find((step) => step.status === 'running');
+        if (runningStep) return runningStep;
+
+        const failedStep = [...adminVikiTvSteps].reverse().find((step) => step.status === 'failed');
+        if (failedStep) return failedStep;
+
+        const pendingStep = adminVikiTvSteps.find((step) => step.status === 'pending');
+        if (pendingStep) return pendingStep;
+
+        const lastSuccessStep = [...adminVikiTvSteps].reverse().find((step) => step.status === 'success');
+        return lastSuccessStep || adminVikiTvSteps[0];
+    }, [adminVikiTvSteps]);
+
+    const adminVikiTvProgressMessage = useMemo(
+        () => getFriendlyProgressMessage(adminVikiTvExecutionStatus, adminVikiTvCurrentStep),
+        [adminVikiTvExecutionStatus, adminVikiTvCurrentStep]
+    );
+    const isAdminVikiTvProcessing = isSubmittingAdminVikiTv || adminVikiTvExecutionStatus === 'queued' || adminVikiTvExecutionStatus === 'running';
+
+    const openAdminVikiTvModal = (target: {
+        clientId: string;
+        clientName: string;
+        phoneNumber: string;
+        serviceName: string;
+        credentialEmail: string;
+        credentialPassword: string;
+    }) => {
+        setAdminVikiTvTarget(target);
+        setSelectedAdminVikiTvModel(null);
+        setAdminVikiTvCode('');
+        setAdminVikiTvError(null);
+        setAdminVikiTvBackendMessage(null);
+        setIsSubmittingAdminVikiTv(false);
+        setAdminVikiTvRequestId(null);
+        setAdminVikiTvExecutionStatus('idle');
+        setAdminVikiTvSteps([]);
+        setShowAdminVikiTvModal(true);
+    };
+
+    const closeAdminVikiTvModal = () => {
+        setShowAdminVikiTvModal(false);
+        setAdminVikiTvTarget(null);
+        setSelectedAdminVikiTvModel(null);
+        setAdminVikiTvCode('');
+        setAdminVikiTvError(null);
+        setAdminVikiTvBackendMessage(null);
+        setIsSubmittingAdminVikiTv(false);
+        setAdminVikiTvRequestId(null);
+        setAdminVikiTvExecutionStatus('idle');
+        setAdminVikiTvSteps([]);
+    };
+
+    const handleAdminVikiTvCodeChange = (value: string) => {
+        setAdminVikiTvCode(normalizeVikiCodeInput(value));
+        if (adminVikiTvError) setAdminVikiTvError(null);
+    };
+
+    const handleStartAdminVikiTvFlow = async () => {
+        if (!adminVikiTvTarget) {
+            setAdminVikiTvError('Selecione um acesso Viki valido antes de continuar.');
+            return;
+        }
+
+        if (isAdminVikiTvProcessing) {
+            setAdminVikiTvError('Aguarde esta tentativa terminar antes de tentar novamente.');
+            return;
+        }
+
+        if (!selectedAdminVikiTvModel) {
+            setAdminVikiTvError('Escolha o modelo da TV para continuar.');
+            return;
+        }
+
+        if (!isValidVikiTvCode(adminVikiTvCode)) {
+            setAdminVikiTvError('Digite o codigo da TV com 6 digitos (letras e numeros).');
+            return;
+        }
+
+        const tvOption = VIKI_TV_OPTIONS.find(option => option.id === selectedAdminVikiTvModel);
+        if (!tvOption) {
+            setAdminVikiTvError('Modelo de TV invalido.');
+            return;
+        }
+
+        if (!adminVikiTvTarget.credentialEmail || !adminVikiTvTarget.credentialPassword) {
+            setAdminVikiTvError('Este acesso nao possui credenciais validas para automacao.');
+            return;
+        }
+
+        const submittedAt = new Date().toISOString();
+        const initialSteps: VikiTvAutomationStep[] = [
+            { key: 'validation', label: 'Validacao dos dados', status: 'success', updatedAt: submittedAt },
+            { key: 'request', label: 'Envio da solicitacao de automacao', status: 'running', updatedAt: submittedAt },
+            { key: 'login', label: 'Login automatico na Viki', status: 'pending' },
+            { key: 'code', label: 'Insercao do codigo informado', status: 'pending' },
+            { key: 'logout', label: 'Logout e finalizacao', status: 'pending' }
+        ];
+
+        try {
+            setIsSubmittingAdminVikiTv(true);
+            setAdminVikiTvError(null);
+            setAdminVikiTvBackendMessage(null);
+            setAdminVikiTvExecutionStatus('running');
+            setAdminVikiTvSteps(initialSteps);
+            setAdminVikiTvRequestId(null);
+
+            const response = await submitVikiTvAutomationRequest({
+                phoneNumber: adminVikiTvTarget.phoneNumber,
+                clientName: adminVikiTvTarget.clientName,
+                serviceName: adminVikiTvTarget.serviceName,
+                tvModel: selectedAdminVikiTvModel,
+                tvUrl: tvOption.url,
+                tvCode: adminVikiTvCode,
+                credentialEmail: adminVikiTvTarget.credentialEmail,
+                credentialPassword: adminVikiTvTarget.credentialPassword
+            });
+
+            setAdminVikiTvRequestId(response.requestId);
+            setAdminVikiTvExecutionStatus(response.executionStatus);
+            setAdminVikiTvSteps(response.steps && response.steps.length > 0 ? response.steps : initialSteps);
+            setAdminVikiTvBackendMessage(response.message);
+            setAdminVikiTvCode('');
+        } catch (error) {
+            console.error('Erro ao iniciar automacao Viki TV no admin:', error);
+            setAdminVikiTvBackendMessage('Nao foi possivel iniciar a conexao agora.');
+            setAdminVikiTvExecutionStatus('failed');
+            setAdminVikiTvSteps(prev => prev.length > 0
+                ? prev.map(step => step.key === 'request'
+                    ? { ...step, status: 'failed', details: 'Erro no envio da solicitacao', updatedAt: new Date().toISOString() }
+                    : step)
+                : [{ key: 'request', label: 'Envio da solicitacao de automacao', status: 'failed', details: 'Erro no envio da solicitacao', updatedAt: new Date().toISOString() }]
+            );
+        } finally {
+            setIsSubmittingAdminVikiTv(false);
+        }
+    };
+
+    useEffect(() => {
+        if (!showAdminVikiTvModal || !adminVikiTvRequestId) return;
+        if (VIKI_TV_TERMINAL_STATUSES.has(adminVikiTvExecutionStatus) || adminVikiTvExecutionStatus === 'idle') return;
+
+        let isActive = true;
+        let inFlight = false;
+        let timerId: number | undefined;
+
+        const pollStatus = async () => {
+            if (!isActive || inFlight) return;
+            inFlight = true;
+
+            try {
+                const status = await getVikiTvAutomationStatus(adminVikiTvRequestId);
+                if (!isActive || !status) return;
+
+                setAdminVikiTvExecutionStatus(status.executionStatus);
+                if (status.steps?.length > 0) setAdminVikiTvSteps(status.steps);
+                setAdminVikiTvBackendMessage(status.message);
+
+                if (status.executionStatus === 'success' || status.executionStatus === 'failed') {
+                    setAdminVikiTvError(null);
+                }
+
+                if (VIKI_TV_TERMINAL_STATUSES.has(status.executionStatus) && timerId) {
+                    isActive = false;
+                    window.clearInterval(timerId);
+                }
+            } finally {
+                inFlight = false;
+            }
+        };
+
+        void pollStatus();
+        timerId = window.setInterval(() => {
+            void pollStatus();
+        }, 5000);
+
+        return () => {
+            isActive = false;
+            if (timerId) window.clearInterval(timerId);
+        };
+    }, [showAdminVikiTvModal, adminVikiTvRequestId, adminVikiTvExecutionStatus]);
 
     const handleSaveClient = async () => {
         if (!clientForm.phone_number) return;
         setSavingClient(true);
-        const { success, msg } = await saveClientToDB(clientForm);
+        const normalizedFormSubs = normalizeSubscriptions(clientForm.subscriptions || [], clientForm.duration_months || 1);
+        const existingClient = clientForm.id ? clients.find((client) => client.id === clientForm.id) : null;
+        const renewedServices = existingClient
+            ? getServicesWithUpdatedStartDate(
+                normalizeSubscriptions(existingClient.subscriptions || [], existingClient.duration_months || 1),
+                normalizedFormSubs
+            )
+            : [];
+
+        const chargeTrackingPatch = renewedServices.length > 0
+            ? buildChargeTrackingPatchAfterRenewal(
+                { ...(existingClient || clientForm), subscriptions: normalizedFormSubs },
+                renewedServices
+            )
+            : {};
+
+        const payloadToSave: Partial<ClientDBRow> = {
+            ...clientForm,
+            subscriptions: normalizedFormSubs,
+            ...chargeTrackingPatch
+        };
+
+        const { success, msg } = await saveClientToDB(payloadToSave);
         if (success) {
             setClientModalOpen(false);
             loadData();
@@ -1168,7 +1600,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         const nextStartDate = calculateExpiry(parts[1], months);
         const nextIso = nextStartDate.toISOString();
         subs[subIndex] = `${serviceName}|${nextIso}|0|${months}||${nextIso}`;
-        await saveClientToDB({ ...client, subscriptions: subs });
+        const chargeTrackingPatch = buildChargeTrackingPatchAfterRenewal({ ...client, subscriptions: subs }, [serviceName]);
+        await saveClientToDB({ ...client, subscriptions: subs, ...chargeTrackingPatch });
         loadData();
     };
 
@@ -1313,7 +1746,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         enforceHistoryRetention();
     }, []);
 
-    const sendWhatsAppMessage = async (phone: string, name: string, service: string, expiryDate: Date, client?: Partial<ClientDBRow>) => {
+    const sendWhatsAppMessage = async (
+        phone: string,
+        name: string,
+        service: string,
+        expiryDate: Date,
+        client?: Partial<ClientDBRow>,
+        subscriptionStartAt?: string
+    ) => {
         const cleanPhone = phone.replace(/\D/g, '');
         const daysLeft = getDaysRemaining(expiryDate);
         let message = daysLeft < 0
@@ -1326,11 +1766,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         const nowIso = new Date().toISOString();
         const currentProgress = client.game_progress || {};
         const previousServices = Array.isArray(currentProgress._charge_whatsapp_services) ? currentProgress._charge_whatsapp_services : [];
+        const previousEntries = parseChargeWhatsappEntries(currentProgress._charge_whatsapp_entries);
+        const serviceKey = normalizeServiceKey(service);
+        if (serviceKey) {
+            previousEntries[serviceKey] = {
+                service,
+                chargedAt: nowIso,
+                subscriptionStartAt: String(subscriptionStartAt || '').trim()
+            };
+        }
         const nextProgress = {
             ...currentProgress,
             _charge_whatsapp_last_at: nowIso,
             _charge_whatsapp_last_service: service,
-            _charge_whatsapp_services: Array.from(new Set([...previousServices, service]))
+            _charge_whatsapp_services: Array.from(new Set([...previousServices, service])),
+            _charge_whatsapp_entries: previousEntries
         };
 
         setClients(prev => prev.map(c => c.id === client.id ? { ...c, is_contacted: true, game_progress: nextProgress } : c));
@@ -1413,7 +1863,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         </div>
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            {filteredClients.map((client) => (
+                            {filteredClients.map((client) => {
+                                const chargeTag = getChargeTagMeta(client);
+                                return (
                                 <div key={client.id} className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-indigo-50 dark:border-slate-800 flex flex-col hover:border-indigo-200 dark:hover:border-slate-700 transition-all">
                                     <div className="flex justify-between items-start mb-4">
                                         <div className="min-w-0">
@@ -1421,7 +1873,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                             <p className="text-xs font-bold text-indigo-400 mt-1 flex items-center gap-1.5">
                                                 <Phone size={12} /> {client.phone_number}
                                                 {client.deleted && <span className="bg-red-600 text-white px-2 py-0.5 rounded-md text-[9px] uppercase tracking-widest ml-2">Lixeira</span>}
-                                                {getChargeTagMeta(client).hasSent && <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-md text-[9px] uppercase tracking-widest ml-2">{getChargeTagMeta(client).label}</span>}
+                                                {chargeTag.hasSent && <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-md text-[9px] uppercase tracking-widest ml-2">{chargeTag.label}</span>}
                                                 {clientFilterStatus === 'expiring' && getExpiringSortMeta(client).inclusionMs > 0 && (
                                                     <span className="bg-amber-100 text-amber-700 px-2 py-0.5 rounded-md text-[9px] uppercase tracking-widest ml-2">
                                                         Incluido: {new Date(getExpiringSortMeta(client).inclusionMs).toLocaleDateString()}
@@ -1477,7 +1929,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                             </span>
                                                         </div>
                                                         <div className="flex gap-1.5">
-                                                            <button onClick={() => { void sendWhatsAppMessage(client.phone_number, client.client_name || 'Dorameira', serviceName, expiry, client); }} className="p-2.5 bg-white/50 dark:bg-slate-800/50 hover:bg-emerald-500 hover:text-white rounded-xl transition-all"><MessageCircle size={16} className="text-emerald-600 dark:text-emerald-400 hover:text-inherit" /></button>
+                                                            <button onClick={() => { void sendWhatsAppMessage(client.phone_number, client.client_name || 'Dorameira', serviceName, expiry, client, parts[1]); }} className="p-2.5 bg-white/50 dark:bg-slate-800/50 hover:bg-emerald-500 hover:text-white rounded-xl transition-all"><MessageCircle size={16} className="text-emerald-600 dark:text-emerald-400 hover:text-inherit" /></button>
                                                         </div>
                                                     </div>
                                                     <div className="flex gap-2">
@@ -1499,7 +1951,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                         })}
                                     </div>
                                 </div>
-                            ))}
+                                );
+                            })}
                         </div>
                     </div>
                 )}
@@ -2037,7 +2490,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                     </tr>
                                                 </thead>
                                                 <tbody>
-                                                    {res.accesses.map((acc, idx) => (
+                                                    {res.accesses.map((acc, idx) => {
+                                                        const isVikiAccess = acc.serviceLower.includes('viki');
+                                                        const canStartVikiAutomation = isVikiAccess && acc.hasCredential;
+
+                                                        return (
                                                         <tr key={idx} className={`group hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors ${acc.isExpired ? 'opacity-60' : ''}`}>
                                                             <td className="px-4 py-4 rounded-l-2xl bg-gray-50 dark:bg-slate-800/50">
                                                                 <span className="font-black text-sm text-gray-800 dark:text-gray-200">{acc.serviceName}</span>
@@ -2054,6 +2511,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                                 <span className="font-mono text-xs font-bold text-indigo-600 dark:text-indigo-400">{acc.password}</span>
                                                             </td>
                                                             <td className="px-4 py-4 rounded-r-2xl bg-gray-50 dark:bg-slate-800/50 text-right">
+                                                                <div className="flex items-center justify-end gap-2">
+                                                                    {isVikiAccess && (
+                                                                        <button
+                                                                            onClick={() => openAdminVikiTvModal({
+                                                                                clientId: res.clientId,
+                                                                                clientName: res.clientName,
+                                                                                phoneNumber: res.phoneNumber,
+                                                                                serviceName: acc.serviceName,
+                                                                                credentialEmail: acc.login,
+                                                                                credentialPassword: acc.password
+                                                                            })}
+                                                                            disabled={!canStartVikiAutomation}
+                                                                            className={`p-2 rounded-lg transition-all shadow-sm ${canStartVikiAutomation ? 'hover:bg-white text-blue-500 hover:text-blue-700' : 'text-gray-300 cursor-not-allowed'}`}
+                                                                            title={canStartVikiAutomation ? 'Conectar TV Viki com este acesso' : 'Acesso Viki sem credencial vinculada'}
+                                                                        >
+                                                                            <Tv2 size={16} />
+                                                                        </button>
+                                                                    )}
                                                                 <button
                                                                     onClick={() => copyToClipboard(`Login: ${acc.login} | Senha: ${acc.password}`, `copy-login-${i}-${idx}`)}
                                                                     className="p-2 hover:bg-white rounded-lg transition-all text-indigo-400 hover:text-indigo-600 shadow-sm"
@@ -2061,9 +2536,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                                 >
                                                                     {copiedId === `copy-login-${i}-${idx}` ? <Check size={16} className="text-green-500" /> : <Copy size={16} />}
                                                                 </button>
+                                                                </div>
                                                             </td>
                                                         </tr>
-                                                    ))}
+                                                        );
+                                                    })}
                                                 </tbody>
                                             </table>
                                         </div>
@@ -2375,6 +2852,92 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 )}
             </main>
 
+            {showAdminVikiTvModal && adminVikiTvTarget && (
+                <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+                    <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-[2rem] p-6 shadow-2xl space-y-4 border border-indigo-100 dark:border-slate-700">
+                        <div className="flex items-start justify-between gap-3">
+                            <div>
+                                <h3 className="text-lg font-black text-gray-900 dark:text-white leading-none">Conectar Viki na TV</h3>
+                                <p className="text-[11px] font-bold uppercase text-indigo-400 mt-1">{adminVikiTvTarget.clientName} - {adminVikiTvTarget.serviceName}</p>
+                                <p className="text-[11px] font-bold text-gray-500 mt-1">{adminVikiTvTarget.credentialEmail}</p>
+                            </div>
+                            <button onClick={closeAdminVikiTvModal} className="p-2 hover:bg-gray-100 dark:hover:bg-slate-800 rounded-full transition-colors">
+                                <X size={18} className="text-gray-400" />
+                            </button>
+                        </div>
+
+                        <div className="space-y-2">
+                            <p className="text-[11px] font-black uppercase text-gray-500">1. Modelo da TV</p>
+                            <div className="grid grid-cols-1 gap-2">
+                                {VIKI_TV_OPTIONS.map(option => (
+                                    <button
+                                        key={option.id}
+                                        onClick={() => {
+                                            setSelectedAdminVikiTvModel(option.id);
+                                            setAdminVikiTvError(null);
+                                        }}
+                                        className={`w-full text-left px-4 py-3 rounded-xl border text-sm font-bold transition-all ${selectedAdminVikiTvModel === option.id ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100'}`}
+                                    >
+                                        {option.label}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="space-y-2">
+                            <p className="text-[11px] font-black uppercase text-gray-500">2. Codigo da TV</p>
+                            <input
+                                value={adminVikiTvCode}
+                                onChange={(e) => handleAdminVikiTvCodeChange(e.target.value)}
+                                placeholder="ex: aaa000"
+                                className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-mono tracking-wider lowercase text-gray-900 outline-none focus:border-blue-500"
+                            />
+                            <p className="text-[11px] font-semibold text-gray-500">Use o codigo de 6 digitos que aparece no app da Viki na TV.</p>
+                        </div>
+
+                        <div className="bg-gray-50 rounded-xl p-3 border border-gray-100 space-y-3">
+                            <div className="flex items-center justify-between gap-2">
+                                <p className="text-[10px] font-black uppercase text-gray-600">Status da conexao</p>
+                                <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase ${getVikiExecutionBadge(adminVikiTvExecutionStatus).className}`}>
+                                    {getVikiExecutionBadge(adminVikiTvExecutionStatus).label}
+                                </span>
+                            </div>
+                            {adminVikiTvProgressMessage && (
+                                <p className="text-xs font-bold text-gray-600">{adminVikiTvProgressMessage}</p>
+                            )}
+                            {adminVikiTvCurrentStep && (
+                                <div className="bg-white border border-gray-100 rounded-lg px-3 py-2 space-y-1">
+                                    <p className="text-[10px] font-black uppercase text-gray-500">Etapa atual</p>
+                                    <div className="flex items-center justify-between gap-2">
+                                        <p className="text-[11px] font-bold text-gray-700">{getFriendlyStepLabel(adminVikiTvCurrentStep)}</p>
+                                        <span className={`px-2 py-1 rounded-md text-[9px] font-black uppercase ${getVikiStepBadge(adminVikiTvCurrentStep.status).className}`}>
+                                            {getVikiStepBadge(adminVikiTvCurrentStep.status).label}
+                                        </span>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {adminVikiTvError && (
+                            <p className="text-xs font-bold text-red-600 bg-red-50 border border-red-100 rounded-xl p-3">{adminVikiTvError}</p>
+                        )}
+                        {adminVikiTvBackendMessage && (
+                            <p className={`text-xs font-bold rounded-xl p-3 border ${adminVikiTvExecutionStatus === 'failed' ? 'text-red-700 bg-red-50 border-red-100' : adminVikiTvExecutionStatus === 'success' ? 'text-emerald-700 bg-emerald-50 border-emerald-100' : 'text-blue-700 bg-blue-50 border-blue-100'}`}>
+                                {adminVikiTvBackendMessage}
+                            </p>
+                        )}
+
+                        <button
+                            onClick={handleStartAdminVikiTvFlow}
+                            disabled={isAdminVikiTvProcessing}
+                            className={`w-full py-3 rounded-xl text-white font-black text-sm uppercase tracking-wide shadow-lg active:scale-95 transition-all ${isAdminVikiTvProcessing ? 'bg-blue-300 shadow-blue-100' : 'bg-blue-600 shadow-blue-200'}`}
+                        >
+                            {isAdminVikiTvProcessing ? 'Conectando TV...' : 'Conectar TV'}
+                        </button>
+                    </div>
+                </div>
+            )}
+
             {/* MODAL CLIENTE */}
             {clientModalOpen && (
                 <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
@@ -2396,7 +2959,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                         const expiryDate = calculateExpiry(startDate, duration);
                                         return (
                                             <div key={i} className="flex flex-col p-5 bg-gray-50 dark:bg-slate-800 rounded-3xl border border-indigo-50 dark:border-slate-700 gap-4 shadow-sm">
-                                                <div className="flex justify-between items-center"><p className="font-black text-gray-800 dark:text-white uppercase">{serviceName}</p><div className="flex gap-2"><button onClick={() => { void sendWhatsAppMessage(clientForm.phone_number || '', clientForm.client_name || 'Dorameira', serviceName, expiryDate, clientForm); }} className="p-2 text-emerald-500 hover:bg-emerald-50 rounded-xl" title="Mandar cobrança WhatsApp"><MessageCircle size={20} /></button><button onClick={() => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; n.splice(i, 1); setClientForm({ ...clientForm, subscriptions: n }); }} className="p-2 text-red-400 hover:bg-red-50 rounded-xl" title="Remover Assinatura"><Trash2 size={20} /></button></div></div>
+                                                <div className="flex justify-between items-center"><p className="font-black text-gray-800 dark:text-white uppercase">{serviceName}</p><div className="flex gap-2"><button onClick={() => { void sendWhatsAppMessage(clientForm.phone_number || '', clientForm.client_name || 'Dorameira', serviceName, expiryDate, clientForm, startDate); }} className="p-2 text-emerald-500 hover:bg-emerald-50 rounded-xl" title="Mandar cobrança WhatsApp"><MessageCircle size={20} /></button><button onClick={() => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; n.splice(i, 1); setClientForm({ ...clientForm, subscriptions: n }); }} className="p-2 text-red-400 hover:bg-red-50 rounded-xl" title="Remover Assinatura"><Trash2 size={20} /></button></div></div>
                                                 <div className="space-y-3"><div className="grid grid-cols-2 gap-3"><div className="space-y-1"><label className="text-[9px] font-black uppercase text-indigo-400 ml-1">Data de Início</label><input type="date" className="w-full bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-bold outline-none border border-indigo-50" value={toDateInput(startDate)} onChange={(e) => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; if (n[i]) { const p = n[i].split('|'); n[i] = `${p[0]}|${new Date(e.target.value).toISOString()}|${p[2]}|${p[3] || '1'}|${p[4] || ''}|${p[5] || p[1]}`; setClientForm({ ...clientForm, subscriptions: n }); } }} /></div><div className="space-y-1"><label className="text-[9px] font-black uppercase text-indigo-400 ml-1">Plano</label><div className="flex gap-1.5"><select className="flex-1 bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-black outline-none border border-indigo-50 h-[34px]" value={durationStr} onChange={(e) => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; if (n[i]) { const p = n[i].split('|'); n[i] = `${p[0]}|${p[1]}|${p[2]}|${e.target.value}|${p[4] || ''}|${p[5] || p[1]}`; setClientForm({ ...clientForm, subscriptions: n }); } }}>{PLAN_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}</select><button onClick={() => handleModalSmartRenew(i)} className="p-1.5 bg-indigo-600 text-white rounded-xl shadow-sm hover:bg-indigo-700 transition-all active:scale-90" title="Renovação Inteligente"><Zap size={16} /></button></div></div></div><div className="grid grid-cols-1 gap-2"><div className="bg-indigo-50/50 dark:bg-slate-900/50 p-2.5 rounded-xl border border-indigo-100/50 flex justify-between items-center"><span className="text-[9px] font-black text-indigo-400 uppercase">Fim</span><span className="text-xs font-black text-indigo-600">{expiryDate.toLocaleDateString()}</span></div></div><div className="flex gap-2 items-center mt-2"><input type="number" min="1" max="365" placeholder="Dias" className="w-20 bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-bold outline-none border border-emerald-200 focus:border-emerald-400 text-center" value={daysToAddInputs[i] || ''} onChange={(e) => setDaysToAddInputs({ ...daysToAddInputs, [i]: parseInt(e.target.value) || 0 })} /><button onClick={() => { handleModalAddDays(i, daysToAddInputs[i] || 0); setDaysToAddInputs({ ...daysToAddInputs, [i]: 0 }); }} className="flex-1 bg-emerald-500 text-white p-2 rounded-xl text-[10px] font-black uppercase hover:bg-emerald-600 transition-all flex items-center justify-center gap-1" title="Adicionar dias manualmente à assinatura"><Plus size={14} /> Adicionar Dias</button></div></div>
                                             </div>
                                         );
