@@ -94,6 +94,7 @@ const getFriendlyProgressMessage = (
 
 import { getServicePrice } from '../services/pricingConfig';
 import { getAccountCost, getCostSplit, getRevenueSplit, DEFAULT_AD_SPEND_PER_DAY, DAYS_IN_MONTH, formatCurrency, getCapacityLimit } from '../services/financeConfig';
+import { ChargeWhatsappAutomationPanel } from './ChargeWhatsappAutomationPanel';
 
 const toLocalInput = (isoString: string) => {
     if (!isoString) return '';
@@ -487,7 +488,7 @@ const buildAssignmentSignature = (map: Record<string, { credentialVersion: strin
 };
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
-    const [activeTab, setActiveTab] = useState<'clients' | 'credentials' | 'buscar_login' | 'danger' | 'finances' | 'trash' | 'history'>('clients');
+    const [activeTab, setActiveTab] = useState<'clients' | 'credentials' | 'buscar_login' | 'danger' | 'finances' | 'trash' | 'history' | 'charge_whatsapp'>('clients');
     const [clientFilterStatus, setClientFilterStatus] = useState<'all' | 'expiring' | 'debtor' | 'tolerance'>('all');
     const [clientSortByExpiry, setClientSortByExpiry] = useState(false);
     const [darkMode, setDarkMode] = useState(false);
@@ -1822,6 +1823,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         { id: 'credentials', icon: Key, label: 'Contas' },
                         { id: 'trash', icon: Trash2, label: 'Lixeira' },
                         { id: 'history', icon: History, label: 'Histórico' },
+                        { id: 'charge_whatsapp', icon: MessageCircle, label: 'Cobrança WhatsApp' },
                         { id: 'danger', icon: AlertTriangle, label: 'Segurança' }
                     ].map(tab => (
                         <button key={tab.id} onClick={() => setActiveTab(tab.id as any)} className={`flex-1 min-w-fit py-3 px-5 rounded-xl text-[10px] font-black uppercase transition-all flex flex-col sm:flex-row items-center justify-center gap-1.5 ${activeTab === tab.id ? 'bg-indigo-600 text-white shadow-md' : 'text-indigo-400 hover:bg-indigo-50 dark:hover:bg-slate-800'}`}>
@@ -2849,6 +2851,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                             </div>
                         )}
                     </div>
+                )}
+
+                {activeTab === 'charge_whatsapp' && (
+                    <ChargeWhatsappAutomationPanel clients={clients} />
                 )}
             </main>
 

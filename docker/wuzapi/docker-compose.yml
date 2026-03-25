@@ -1,0 +1,88 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: ${DB_NAME:-wuzapi}
+      POSTGRES_USER: ${DB_USER:-wuzapi}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-wuzapi}
+    volumes:
+      - wuzapi_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-wuzapi} -d ${DB_NAME:-wuzapi}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - wuzapi-network
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    hostname: rabbitmq
+    restart: always
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-wuzapi}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-wuzapi}
+      RABBITMQ_DEFAULT_VHOST: /
+    volumes:
+      - wuzapi_rabbitmq:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    ports:
+      - '5672:5672'
+      - '15672:15672'
+    networks:
+      - wuzapi-network
+
+  wuzapi:
+    image: asternic/wuzapi:latest
+    restart: on-failure
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ:-America/Sao_Paulo}
+      DB_HOST: db
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-wuzapi}
+      DB_USER: ${DB_USER:-wuzapi}
+      DB_PASSWORD: ${DB_PASSWORD:-wuzapi}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-wuzapi}:${RABBITMQ_PASSWORD:-wuzapi}@rabbitmq:5672/
+      RABBITMQ_QUEUE: ${RABBITMQ_QUEUE:-whatsapp_events}
+      WEBHOOK_FORMAT: ${WEBHOOK_FORMAT:-json}
+      SESSION_DEVICE_NAME: ${SESSION_DEVICE_NAME:-WuzAPI}
+      WUZAPI_ADMIN_TOKEN: ${WUZAPI_ADMIN_TOKEN}
+      WUZAPI_GLOBAL_ENCRYPTION_KEY: ${WUZAPI_GLOBAL_ENCRYPTION_KEY}
+      WUZAPI_GLOBAL_HMAC_KEY: ${WUZAPI_GLOBAL_HMAC_KEY:-}
+      WUZAPI_GLOBAL_WEBHOOK: ${WUZAPI_GLOBAL_WEBHOOK:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - '${WUZAPI_PORT:-8080}:8080'
+    networks:
+      - wuzapi-network
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      wuzapi:
+        condition: service_started
+    networks:
+      - wuzapi-network
+    profiles:
+      - cloudflare
+
+volumes:
+  wuzapi_db:
+  wuzapi_rabbitmq:
+
+networks:
+  wuzapi-network:
+    driver: bridge

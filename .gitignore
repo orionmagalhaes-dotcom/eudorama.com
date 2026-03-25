@@ -23,3 +23,11 @@ dist-ssr
 *.sln
 *.sw?
 
+# Local state for cobranca WhatsApp automation
+scripts/.cobranca-whatsapp-state.json
+scripts/.cobranca-whatsapp-state.json.tmp-*
+scripts/.cobranca-whatsapp.lock
+
+# Local env for WuzAPI docker example
+docker/wuzapi/.env
+

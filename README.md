@@ -67,3 +67,8 @@ Frontend React + Vite focado em:
 - O projeto ja inclui implementacao para:
   - dev local no `vite.config.ts`
   - Cloudflare Worker em `viki-worker/src/index.ts`
+
+## WuzAPI
+
+- Guia de Docker e Cloudflare Tunnel: `docker/wuzapi/README.md`
+- Stack local do WuzAPI: `docker/wuzapi/docker-compose.yml`
