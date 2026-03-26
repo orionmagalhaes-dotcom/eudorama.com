@@ -63,6 +63,10 @@ const IQIYI_MOBILE_HELP_VIDEO_SUPABASE_URL = 'https://mhiormzpctfoyjbrmxfz.supab
 const IQIYI_MOBILE_HELP_VIDEO_FALLBACK_URL = '/media/iqiyi/como-conectar-no-celular.mp4';
 const IQIYI_MOBILE_HELP_VIDEO_URL = import.meta.env['VITE_IQIYI_MOBILE_HELP_VIDEO_URL'] || IQIYI_MOBILE_HELP_VIDEO_SUPABASE_URL;
 
+const WETV_MOBILE_HELP_VIDEO_SUPABASE_URL = 'https://mhiormzpctfoyjbrmxfz.supabase.co/storage/v1/object/public/public-media/wetv/como-conectar-no-celular.mp4';
+const WETV_MOBILE_HELP_VIDEO_FALLBACK_URL = '/media/wetv/como-conectar-no-celular.mp4';
+const WETV_MOBILE_HELP_VIDEO_URL = import.meta.env['VITE_WETV_MOBILE_HELP_VIDEO_URL'] || WETV_MOBILE_HELP_VIDEO_FALLBACK_URL;
+
 const normalizeVikiCodeInput = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 6);
 const isValidVikiTvCode = (value: string) => /^[a-z0-9]{6}$/.test(value);
 
@@ -178,6 +182,9 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
     const [showIqiyiMobileGuideModal, setShowIqiyiMobileGuideModal] = useState(false);
     const [iqiyiMobileGuideVideoSrc, setIqiyiMobileGuideVideoSrc] = useState(IQIYI_MOBILE_HELP_VIDEO_URL);
     const [iqiyiMobileGuideVideoError, setIqiyiMobileGuideVideoError] = useState<string | null>(null);
+    const [showWetvMobileGuideModal, setShowWetvMobileGuideModal] = useState(false);
+    const [wetvMobileGuideVideoSrc, setWetvMobileGuideVideoSrc] = useState(WETV_MOBILE_HELP_VIDEO_URL);
+    const [wetvMobileGuideVideoError, setWetvMobileGuideVideoError] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const validServices = useMemo(() => (user.services || []).filter(s => s && s.trim().length > 0), [user.services]);
@@ -423,6 +430,25 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
         }
 
         setIqiyiMobileGuideVideoError('Nao foi possivel carregar o video agora. Tente novamente em alguns instantes.');
+    };
+
+    const openWetvMobileGuideModal = () => {
+        setWetvMobileGuideVideoSrc(WETV_MOBILE_HELP_VIDEO_URL);
+        setWetvMobileGuideVideoError(null);
+        setShowWetvMobileGuideModal(true);
+    };
+
+    const closeWetvMobileGuideModal = () => {
+        setShowWetvMobileGuideModal(false);
+    };
+
+    const handleWetvMobileGuideVideoError = () => {
+        if (wetvMobileGuideVideoSrc !== WETV_MOBILE_HELP_VIDEO_FALLBACK_URL) {
+            setWetvMobileGuideVideoSrc(WETV_MOBILE_HELP_VIDEO_FALLBACK_URL);
+            return;
+        }
+
+        setWetvMobileGuideVideoError('Nao foi possivel carregar o video agora. Tente novamente em alguns instantes.');
     };
 
     const handleVikiTvCodeChange = (value: string) => {
@@ -781,6 +807,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
 
                         <div className="overflow-hidden rounded-2xl border border-gray-200 bg-black">
                             <video
+                                key={vikiMobileGuideVideoSrc}
                                 className="w-full max-h-[70vh] bg-black"
                                 controls
                                 preload="metadata"
@@ -818,6 +845,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
 
                         <div className="overflow-hidden rounded-2xl border border-gray-200 bg-black">
                             <video
+                                key={iqiyiMobileGuideVideoSrc}
                                 className="w-full max-h-[70vh] bg-black"
                                 controls
                                 preload="metadata"
@@ -831,6 +859,44 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
 
                         {iqiyiMobileGuideVideoError && (
                             <p className="text-xs font-bold text-red-700 bg-red-50 border border-red-100 rounded-xl p-3">{iqiyiMobileGuideVideoError}</p>
+                        )}
+
+                        <p className="text-[11px] font-bold text-gray-600">
+                            Se o video nao abrir de primeira, aguarde alguns segundos e tente novamente.
+                        </p>
+                    </div>
+                </div>
+            )}
+
+            {showWetvMobileGuideModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+                    <div className="bg-white rounded-[2rem] p-5 max-w-xl w-full shadow-2xl space-y-4 animate-scale-up">
+                        <div className="flex items-start justify-between gap-3">
+                            <div>
+                                <h3 className="text-lg font-black text-gray-800 leading-none">Como conectar no celular</h3>
+                                <p className="text-xs text-gray-500 font-bold uppercase mt-1">WeTV</p>
+                            </div>
+                            <button onClick={closeWetvMobileGuideModal} className="p-1.5 hover:bg-gray-100 rounded-full transition-colors">
+                                <X size={18} className="text-gray-400" />
+                            </button>
+                        </div>
+
+                        <div className="overflow-hidden rounded-2xl border border-gray-200 bg-black">
+                            <video
+                                key={wetvMobileGuideVideoSrc}
+                                className="w-full max-h-[70vh] bg-black"
+                                controls
+                                preload="metadata"
+                                playsInline
+                                onError={handleWetvMobileGuideVideoError}
+                            >
+                                <source src={wetvMobileGuideVideoSrc} type="video/mp4" />
+                                Seu navegador nao suporta video HTML5.
+                            </video>
+                        </div>
+
+                        {wetvMobileGuideVideoError && (
+                            <p className="text-xs font-bold text-red-700 bg-red-50 border border-red-100 rounded-xl p-3">{wetvMobileGuideVideoError}</p>
                         )}
 
                         <p className="text-[11px] font-bold text-gray-600">
@@ -1091,6 +1157,21 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                                         <button
                                             onClick={openIqiyiMobileGuideModal}
                                             className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-[10px] font-black uppercase whitespace-nowrap shadow-md active:scale-95"
+                                        >
+                                            Como conectar no celular
+                                        </button>
+                                    </div>
+                                )}
+
+                                {item.name.toLowerCase().includes('wetv') && !item.isBlocked && (
+                                    <div className="mt-4 bg-orange-50 p-4 rounded-2xl border border-orange-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                                        <div>
+                                            <p className="text-[10px] font-black uppercase text-orange-700">Guia WeTV no celular</p>
+                                            <p className="text-[10px] font-bold text-orange-600 mt-1">Abra o passo a passo em video para configurar rapido no seu celular.</p>
+                                        </div>
+                                        <button
+                                            onClick={openWetvMobileGuideModal}
+                                            className="px-4 py-2 rounded-xl bg-orange-600 text-white text-[10px] font-black uppercase whitespace-nowrap shadow-md active:scale-95"
                                         >
                                             Como conectar no celular
                                         </button>
