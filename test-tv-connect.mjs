@@ -184,7 +184,7 @@ const main = async () => {
 
     // ---- CAMPO DE CÓDIGO ----
     log('code', 'Procurando campo de código...');
-    let codeInput = page.locator('input[placeholder*="Enter code" i], input[name="code"], input[placeholder*="code" i], input[placeholder*="codigo" i]');
+    let codeInput = page.locator('input[placeholder*="Enter code" i], input[name="code"], input[name="linkingCode"], input[id="linkingCode"], input[placeholder*="código" i], input[placeholder*="codigo" i]');
 
     if (!(await codeInput.count())) {
       log('code', 'Não encontrado — recarregando página TV...');
@@ -200,17 +200,16 @@ const main = async () => {
     await codeInput.first().click({ clickCount: 3 });
     await codeInput.first().fill(tvCode);
 
-    log('code', 'Clicando em Link Now...');
-    // EN: "Link Now" | PT: "Vincular agora"
-    const linked = await clickByTexts(page, ['Link Now', 'Vincular agora', 'Vincular', 'Link']);
+    log('code', 'Clicando em Vincular TV / Link Now...');
+    const linked = await clickByTexts(page, ['Link Now', 'Conectar agora', 'Vincular Agora', 'Vincular TV']);
     if (!linked) throw new Error('Botão Link Now não encontrado');
 
     result.codeSent = true;
     log('code', 'Aguardando resposta (4s)...');
-    await sleep(4000);
+    await page.waitForTimeout(4000);
 
-    const afterCodeBody = await page.locator('body').innerText().catch(() => '');
-    const codeInvalid = /code is not valid|valid samsung tv code/i.test(afterCodeBody);
+    const bodyAfterCode = String(await page.locator('body').innerText()).replace(/\s+/g, ' ').trim();
+    const codeInvalid = /Code is not valid|valid Samsung TV Code|não é válido|código inválido/i.test(bodyAfterCode);
     result.codeResponse = codeInvalid ? 'Código inválido (esperado em teste)' : 'Código enviado para vinculação';
     log('code', result.codeResponse);
 
@@ -235,6 +234,10 @@ const main = async () => {
     try {
       await page.screenshot({ path: './test-tv-connect-erro.png', fullPage: true });
       log('debug', 'Screenshot salvo: test-tv-connect-erro.png');
+      const html = await page.content();
+      const fs = await import('fs');
+      fs.writeFileSync('./test-tv-connect-erro.html', html);
+      log('debug', 'HTML salvo: test-tv-connect-erro.html');
     } catch { /* ignore */ }
   } finally {
     await context.close().catch(() => {});

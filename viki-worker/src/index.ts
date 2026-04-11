@@ -608,11 +608,11 @@ const runAutomation = async (
 		await onStep(STEP.login, 'success', 'Login executado.');
 		await onStep(STEP.code, 'running', 'Preenchendo codigo da TV.');
 
-		let codeSelector = await firstSelector(page, ['input[placeholder*="Enter code" i]', 'input[name="code"]']);
+		let codeSelector = await firstSelector(page, ['input[placeholder*="Enter code" i]', 'input[name="code"]', 'input[name="linkingCode"]', 'input[id="linkingCode"]', 'input[placeholder*="código" i]', 'input[placeholder*="codigo" i]']);
 		if (!codeSelector) {
 			await page.goto(payload.tvUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
 			await sleep(2200);
-			codeSelector = await firstSelector(page, ['input[placeholder*="Enter code" i]', 'input[name="code"]']);
+			codeSelector = await firstSelector(page, ['input[placeholder*="Enter code" i]', 'input[name="code"]', 'input[name="linkingCode"]', 'input[id="linkingCode"]', 'input[placeholder*="código" i]', 'input[placeholder*="codigo" i]']);
 		}
 		if (!codeSelector) throw new Error('Campo de codigo da TV nao encontrado');
 
@@ -620,7 +620,7 @@ const runAutomation = async (
 		await page.keyboard.press('Backspace');
 		await page.type(codeSelector, payload.tvCode, { delay: 20 });
 
-		const clickedLink = await clickByText(page, ['link now']);
+		const clickedLink = await clickByText(page, ['link now', 'conectar agora', 'vincular agora', 'vincular tv']);
 		if (!clickedLink) throw new Error('Botao Link Now nao encontrado');
 
 		await sleep(2800);

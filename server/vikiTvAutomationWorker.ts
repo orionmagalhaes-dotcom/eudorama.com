@@ -266,22 +266,22 @@ export const runVikiTvAutomationJob = async (
     push(updateStep(status, STEP_KEYS.login, 'success', 'Login executado.'));
     push(updateStep(status, STEP_KEYS.code, 'running', 'Preenchendo codigo da TV.'));
 
-    let codeInput = page.locator('input[placeholder*="Enter code" i], input[name="code"]');
+    let codeInput = page.locator('input[placeholder*="Enter code" i], input[name="code"], input[name="linkingCode"], input[id="linkingCode"], input[placeholder*="código" i], input[placeholder*="codigo" i]');
     if (!(await codeInput.count())) {
       // Some sessions do not redirect automatically; force TV page reload.
       await page.goto(payload.tvUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
       await page.waitForTimeout(2200);
-      codeInput = page.locator('input[placeholder*="Enter code" i], input[name="code"]');
+      codeInput = page.locator('input[placeholder*="Enter code" i], input[name="code"], input[name="linkingCode"], input[id="linkingCode"], input[placeholder*="código" i], input[placeholder*="codigo" i]');
     }
     if (!(await codeInput.count())) throw new Error('Campo de codigo da TV nao encontrado');
 
     await codeInput.first().fill(payload.tvCode);
-    const linkClicked = await clickFirstText(page, ['Link Now']);
+    const linkClicked = await clickFirstText(page, ['Link Now', 'Conectar agora', 'Vincular Agora', 'Vincular TV']);
     if (!linkClicked) throw new Error('Botao Link Now nao encontrado');
     await page.waitForTimeout(3000);
 
     const bodyAfterCode = String(await page.locator('body').innerText()).replace(/\s+/g, ' ').trim();
-    const invalidCode = /Code is not valid|valid Samsung TV Code/i.test(bodyAfterCode);
+    const invalidCode = /Code is not valid|valid Samsung TV Code|não é válido|código inválido/i.test(bodyAfterCode);
     push(
       updateStep(
         status,
