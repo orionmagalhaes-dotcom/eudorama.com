@@ -282,12 +282,17 @@ export const runVikiTvAutomationJob = async (
 
     const bodyAfterCode = String(await page.locator('body').innerText()).replace(/\s+/g, ' ').trim();
     const invalidCode = /Code is not valid|valid Samsung TV Code|não é válido|código inválido/i.test(bodyAfterCode);
+
+    if (invalidCode) {
+      throw new Error('O código inserido é inválido ou já expirou. Verifique o código exibido na TV e tente novamente.');
+    }
+
     push(
       updateStep(
         status,
         STEP_KEYS.code,
         'success',
-        invalidCode ? 'Codigo enviado (retorno: codigo invalido esperado em teste).' : 'Codigo enviado para vinculacao.'
+        'Codigo enviado para vinculacao.'
       )
     );
 

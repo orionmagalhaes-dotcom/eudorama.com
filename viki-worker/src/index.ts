@@ -628,11 +628,15 @@ const runAutomation = async (
 			const doc = (globalThis as any).document;
 			return doc?.body?.innerText || '';
 		})).replace(/\s+/g, ' ');
-		const invalid = /code is not valid|valid samsung tv code|valid lg tv code|valid android tv code/i.test(afterCode);
+		const invalid = /code is not valid|valid samsung tv code|valid lg tv code|valid android tv code|não é válido|código inválido/i.test(afterCode);
+		if (invalid) {
+			throw new Error('O código inserido é inválido ou já expirou. Verifique o código exibido na TV e tente novamente.');
+		}
+
 		await onStep(
 			STEP.code,
 			'success',
-			invalid ? 'Codigo enviado (retorno: codigo invalido esperado em teste).' : 'Codigo enviado para vinculacao.',
+			'Codigo enviado para vinculacao.',
 		);
 
 		await onStep(STEP.logout, 'running', 'Executando logout de seguranca.');
