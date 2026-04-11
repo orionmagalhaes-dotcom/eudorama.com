@@ -1158,6 +1158,206 @@ export const getVikiTvAutomationStatus = async (requestId: string): Promise<Viki
   }
 };
 
+export interface VikiPasswordAutomationRequest {
+  credentialEmail: string;
+  currentPassword: string;
+  newPassword: string;
+}
+
+export type VikiPasswordAutomationExecutionStatus = 'queued' | 'running' | 'success' | 'failed' | 'unknown';
+export type VikiPasswordAutomationStepStatus = 'pending' | 'running' | 'success' | 'failed';
+
+export interface VikiPasswordAutomationStep {
+  key: string;
+  label: string;
+  status: VikiPasswordAutomationStepStatus;
+  details?: string;
+  updatedAt?: string;
+}
+
+export interface VikiPasswordAutomationResponse {
+  success: boolean;
+  requestId: string;
+  provider: 'webhook' | 'history_fallback';
+  message: string;
+  executionStatus: VikiPasswordAutomationExecutionStatus;
+  steps: VikiPasswordAutomationStep[];
+}
+
+const buildVikiPasswordRequestId = () => `viki-password-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const buildDefaultPasswordQueuedSteps = (submittedAt: string): VikiPasswordAutomationStep[] => ([
+  { key: 'request', label: 'Solicitacao recebida', status: 'success', updatedAt: submittedAt },
+  { key: 'dispatch', label: 'Automacao em background iniciada', status: 'running', updatedAt: submittedAt },
+  { key: 'login', label: 'Login na Viki com senha atual', status: 'pending' },
+  { key: 'open_settings', label: 'Abertura de configuracoes da conta', status: 'pending' },
+  { key: 'change_password', label: 'Troca da senha na Viki', status: 'pending' },
+  { key: 'verify_login', label: 'Validacao de login com nova senha', status: 'pending' },
+  { key: 'logout', label: 'Logout e finalizacao', status: 'pending' }
+]);
+
+const parsePasswordWebhookResponseBody = (body: any, fallbackRequestId: string): {
+  requestId: string;
+  message: string;
+  executionStatus: VikiPasswordAutomationExecutionStatus;
+  steps: VikiPasswordAutomationStep[];
+} => {
+  const requestId = typeof body?.requestId === 'string' && body.requestId.trim() ? body.requestId : fallbackRequestId;
+  const executionStatus = normalizeExecutionStatus(body?.status || body?.executionStatus) as VikiPasswordAutomationExecutionStatus;
+  const message = typeof body?.message === 'string' && body.message.trim()
+    ? body.message
+    : 'Solicitacao enviada. A automacao esta em andamento.';
+
+  const stepsRaw = Array.isArray(body?.steps) ? body.steps : [];
+  const steps: VikiPasswordAutomationStep[] = stepsRaw
+    .filter((step: any) => step)
+    .map((step: any, index: number) => ({
+      key: typeof step.key === 'string' && step.key.trim() ? step.key : `step_${index + 1}`,
+      label: typeof step.label === 'string' && step.label.trim() ? step.label : `Etapa ${index + 1}`,
+      status: normalizeStepStatus(step.status) as VikiPasswordAutomationStepStatus,
+      details: typeof step.details === 'string' ? step.details : undefined,
+      updatedAt: typeof step.updatedAt === 'string' ? step.updatedAt : undefined
+    }));
+
+  return {
+    requestId,
+    message,
+    executionStatus,
+    steps: steps.length > 0 ? steps : buildDefaultPasswordQueuedSteps(new Date().toISOString())
+  };
+};
+
+export const submitVikiPasswordAutomationRequest = async (
+  payload: VikiPasswordAutomationRequest
+): Promise<VikiPasswordAutomationResponse> => {
+  const requestId = buildVikiPasswordRequestId();
+  const submittedAt = new Date().toISOString();
+
+  const webhookUrl = ((import.meta as any).env?.VITE_VIKI_PASSWORD_AUTOMATION_WEBHOOK as string | undefined)
+    || ((import.meta as any).env?.DEV ? '/api/viki-password-automation' : undefined);
+  const webhookToken = (
+    (import.meta as any).env?.VITE_VIKI_PASSWORD_AUTOMATION_TOKEN
+    || (import.meta as any).env?.VITE_VIKI_TV_AUTOMATION_TOKEN
+  ) as string | undefined;
+
+  if (webhookUrl && webhookUrl.trim()) {
+    try {
+      const response = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(webhookToken ? { Authorization: `Bearer ${webhookToken}` } : {})
+        },
+        body: JSON.stringify({
+          requestId,
+          submittedAt,
+          source: 'eudorama-admin-password-rotation',
+          payload
+        })
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(`Webhook ${response.status}: ${errorBody.slice(0, 200)}`);
+      }
+
+      let parsedBody: any = null;
+      try {
+        parsedBody = await response.json();
+      } catch {
+        parsedBody = null;
+      }
+
+      const parsed = parsePasswordWebhookResponseBody(parsedBody, requestId);
+      const success = parsed.executionStatus !== 'failed';
+
+      return {
+        success,
+        requestId: parsed.requestId,
+        provider: 'webhook',
+        message: parsed.message,
+        executionStatus: parsed.executionStatus === 'unknown' ? 'queued' : parsed.executionStatus,
+        steps: parsed.steps
+      };
+    } catch (e: any) {
+      console.error('Falha ao enviar webhook de troca de senha Viki:', e?.message || e);
+    }
+  }
+
+  await supabase.from('history_logs').insert({
+    action: 'Solicitacao Troca Senha Viki',
+    details: JSON.stringify({
+      requestId,
+      submittedAt,
+      mode: 'history_fallback',
+      payload: {
+        credentialEmail: payload.credentialEmail,
+        currentPassword: '***',
+        newPassword: '***'
+      }
+    })
+  });
+
+  return {
+    success: false,
+    requestId,
+    provider: 'history_fallback',
+    message: 'Automacao de troca de senha nao configurada. A solicitacao foi registrada, mas nao foi executada automaticamente.',
+    executionStatus: 'failed',
+    steps: [
+      { key: 'request', label: 'Solicitacao recebida', status: 'success', updatedAt: submittedAt },
+      { key: 'dispatch', label: 'Tentativa de iniciar automacao', status: 'failed', updatedAt: submittedAt, details: 'Webhook de automacao nao configurado' }
+    ]
+  };
+};
+
+export const getVikiPasswordAutomationStatus = async (requestId: string): Promise<VikiPasswordAutomationResponse | null> => {
+  const statusWebhook = ((import.meta as any).env?.VITE_VIKI_PASSWORD_AUTOMATION_STATUS_WEBHOOK as string | undefined)
+    || ((import.meta as any).env?.DEV ? '/api/viki-password-automation/status' : undefined);
+  const webhookToken = (
+    (import.meta as any).env?.VITE_VIKI_PASSWORD_AUTOMATION_TOKEN
+    || (import.meta as any).env?.VITE_VIKI_TV_AUTOMATION_TOKEN
+  ) as string | undefined;
+
+  if (!statusWebhook || !statusWebhook.trim()) return null;
+
+  try {
+    const baseOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost';
+    const url = new URL(statusWebhook, baseOrigin);
+    url.searchParams.set('requestId', requestId);
+
+    const response = await fetch(url.toString(), {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(webhookToken ? { Authorization: `Bearer ${webhookToken}` } : {})
+      }
+    });
+
+    if (!response.ok) return null;
+
+    let body: any = null;
+    try {
+      body = await response.json();
+    } catch {
+      return null;
+    }
+
+    const parsed = parsePasswordWebhookResponseBody(body, requestId);
+    return {
+      success: parsed.executionStatus === 'success',
+      requestId: parsed.requestId,
+      provider: 'webhook',
+      message: parsed.message,
+      executionStatus: parsed.executionStatus,
+      steps: parsed.steps
+    };
+  } catch (e) {
+    console.error('Falha ao consultar status da automacao de troca de senha Viki:', e);
+    return null;
+  }
+};
+
 export const addDoramaToDB = async (phoneNumber: string, listType: 'watching' | 'favorites' | 'completed', dorama: Dorama): Promise<Dorama | null> => {
   try {
     let status = 'Watching';

@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "viki:change-password": "node scripts/change-viki-password.mjs",
     "upload:viki-mobile-video": "node scripts/upload-viki-mobile-video.mjs public/media/viki/como-conectar-no-celular.mp4 viki/como-conectar-no-celular.mp4",
     "upload:iqiyi-mobile-video": "node scripts/upload-viki-mobile-video.mjs public/media/iqiyi/como-conectar-no-celular.mp4 iqiyi/como-conectar-no-celular.mp4"
   },

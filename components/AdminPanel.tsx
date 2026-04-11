@@ -16,6 +16,10 @@ import {
     getVikiTvAutomationStatus,
     type VikiTvAutomationStep,
     type VikiTvAutomationExecutionStatus,
+    submitVikiPasswordAutomationRequest,
+    getVikiPasswordAutomationStatus,
+    type VikiPasswordAutomationStep,
+    type VikiPasswordAutomationExecutionStatus,
     supabase
 } from '../services/clientService';
 import {
@@ -52,6 +56,8 @@ const isValidVikiTvCode = (value: string) => /^[a-z0-9]{6}$/.test(value);
 
 type VikiTvUiExecutionStatus = 'idle' | VikiTvAutomationExecutionStatus;
 const VIKI_TV_TERMINAL_STATUSES = new Set<VikiTvUiExecutionStatus>(['success', 'failed']);
+type VikiPasswordUiExecutionStatus = 'idle' | VikiPasswordAutomationExecutionStatus;
+const VIKI_PASSWORD_TERMINAL_STATUSES = new Set<VikiPasswordUiExecutionStatus>(['success', 'failed']);
 
 const getVikiExecutionBadge = (status: VikiTvUiExecutionStatus) => {
     if (status === 'success') return { label: 'Conexao concluida', className: 'bg-emerald-100 text-emerald-700' };
@@ -61,7 +67,15 @@ const getVikiExecutionBadge = (status: VikiTvUiExecutionStatus) => {
     return { label: 'Pronto', className: 'bg-gray-100 text-gray-600' };
 };
 
-const getVikiStepBadge = (status: VikiTvAutomationStep['status']) => {
+const getVikiPasswordExecutionBadge = (status: VikiPasswordUiExecutionStatus) => {
+    if (status === 'success') return { label: 'Senha atualizada', className: 'bg-emerald-100 text-emerald-700' };
+    if (status === 'failed') return { label: 'Falhou', className: 'bg-red-100 text-red-700' };
+    if (status === 'running') return { label: 'Executando', className: 'bg-blue-100 text-blue-700' };
+    if (status === 'queued') return { label: 'Na fila', className: 'bg-amber-100 text-amber-700' };
+    return { label: 'Aguardando', className: 'bg-gray-100 text-gray-600' };
+};
+
+const getVikiStepBadge = (status: 'pending' | 'running' | 'success' | 'failed') => {
     if (status === 'success') return { label: 'Feito', className: 'text-emerald-700 bg-emerald-100' };
     if (status === 'failed') return { label: 'Problema', className: 'text-red-700 bg-red-100' };
     if (status === 'running') return { label: 'Em andamento', className: 'text-blue-700 bg-blue-100' };
@@ -88,6 +102,17 @@ const getFriendlyProgressMessage = (
         return `${getFriendlyStepLabel(currentStep)}...`;
     }
     return '';
+};
+
+const getFriendlyPasswordStepLabel = (step: VikiPasswordAutomationStep | null) => {
+    if (!step) return '';
+    if (step.key === 'request' || step.key === 'dispatch') return 'Preparando automacao';
+    if (step.key === 'login') return 'Entrando na conta Viki';
+    if (step.key === 'open_settings') return 'Abrindo configuracoes da conta';
+    if (step.key === 'change_password') return 'Trocando a senha';
+    if (step.key === 'verify_login') return 'Validando login com nova senha';
+    if (step.key === 'logout') return 'Finalizando com logout';
+    return step.label;
 };
 
 // CAPACITY_LIMITS moved to financeConfig.ts for single source of truth
@@ -460,6 +485,21 @@ type CredentialCardDetails = {
     expiredClient?: { name: string; phoneNumber: string; expiryDate: Date; daysLeft: number };
 };
 
+type AdminVikiPasswordCredentialJob = {
+    credentialId: string;
+    credentialEmail: string;
+    serviceName: string;
+    requestId: string | null;
+    executionStatus: VikiPasswordUiExecutionStatus;
+    message: string | null;
+    steps: VikiPasswordAutomationStep[];
+    startedAt: string;
+    finishedAt?: string;
+    dbUpdated: boolean;
+};
+
+const waitMs = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 const getCredentialVersionKey = (credential: Pick<AppCredential, 'id' | 'publishedAt'>) => {
     return `${credential.id}::${safeDateMs(credential.publishedAt)}`;
 };
@@ -544,6 +584,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const [adminVikiTvRequestId, setAdminVikiTvRequestId] = useState<string | null>(null);
     const [adminVikiTvExecutionStatus, setAdminVikiTvExecutionStatus] = useState<VikiTvUiExecutionStatus>('idle');
     const [adminVikiTvSteps, setAdminVikiTvSteps] = useState<VikiTvAutomationStep[]>([]);
+    const [adminVikiPasswordSelection, setAdminVikiPasswordSelection] = useState<Record<string, boolean>>({});
+    const [adminVikiPasswordNewPassword, setAdminVikiPasswordNewPassword] = useState('');
+    const [adminVikiPasswordError, setAdminVikiPasswordError] = useState<string | null>(null);
+    const [adminVikiPasswordSummary, setAdminVikiPasswordSummary] = useState<string | null>(null);
+    const [adminVikiPasswordJobs, setAdminVikiPasswordJobs] = useState<AdminVikiPasswordCredentialJob[]>([]);
+    const [isAdminVikiPasswordProcessing, setIsAdminVikiPasswordProcessing] = useState(false);
 
     const [clientForm, setClientForm] = useState<Partial<ClientDBRow>>({
         phone_number: '', client_name: '', subscriptions: [], duration_months: 1, is_debtor: false, purchase_date: toLocalInput(new Date().toISOString()), client_password: '', observation: ''
@@ -882,6 +928,36 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         });
         return groups;
     }, [credentials, credSortOrder]);
+
+    const adminVikiPasswordCandidates = useMemo(() => (
+        [...credentials]
+            .filter((credential) => {
+                const service = String(credential.service || '').toLowerCase();
+                if (!service.includes('viki')) return false;
+                if (!credential.isVisible) return false;
+                if (!String(credential.email || '').trim()) return false;
+                if (!String(credential.password || '').trim()) return false;
+                if (String(credential.email || '').toLowerCase().includes('demo')) return false;
+                return true;
+            })
+            .sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime())
+    ), [credentials]);
+
+    const adminVikiPasswordSelectedCount = useMemo(
+        () => adminVikiPasswordCandidates.filter((credential) => !!adminVikiPasswordSelection[credential.id]).length,
+        [adminVikiPasswordCandidates, adminVikiPasswordSelection]
+    );
+
+    useEffect(() => {
+        setAdminVikiPasswordSelection((prev) => {
+            const allowed = new Set(adminVikiPasswordCandidates.map((credential) => credential.id));
+            const next: Record<string, boolean> = {};
+            Object.entries(prev).forEach(([id, checked]) => {
+                if (allowed.has(id) && checked) next[id] = true;
+            });
+            return next;
+        });
+    }, [adminVikiPasswordCandidates]);
 
     const formatDate = (dateStr?: string) => {
         if (!dateStr) return 'Sem data';
@@ -1514,6 +1590,213 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             if (timerId) window.clearInterval(timerId);
         };
     }, [showAdminVikiTvModal, adminVikiTvRequestId, adminVikiTvExecutionStatus]);
+
+    const updateAdminVikiPasswordJob = (
+        credentialId: string,
+        updater: (job: AdminVikiPasswordCredentialJob) => AdminVikiPasswordCredentialJob
+    ) => {
+        setAdminVikiPasswordJobs((previous) => previous.map((job) => (
+            job.credentialId === credentialId ? updater(job) : job
+        )));
+    };
+
+    const handleToggleAdminVikiPasswordCredential = (credentialId: string) => {
+        if (isAdminVikiPasswordProcessing) return;
+        setAdminVikiPasswordSelection((prev) => ({ ...prev, [credentialId]: !prev[credentialId] }));
+        if (adminVikiPasswordError) setAdminVikiPasswordError(null);
+    };
+
+    const handleSelectAllAdminVikiPasswordCredentials = () => {
+        if (isAdminVikiPasswordProcessing) return;
+        const next: Record<string, boolean> = {};
+        adminVikiPasswordCandidates.forEach((credential) => {
+            next[credential.id] = true;
+        });
+        setAdminVikiPasswordSelection(next);
+        if (adminVikiPasswordError) setAdminVikiPasswordError(null);
+    };
+
+    const handleClearAdminVikiPasswordSelection = () => {
+        if (isAdminVikiPasswordProcessing) return;
+        setAdminVikiPasswordSelection({});
+    };
+
+    const handleStartAdminVikiPasswordFlow = async () => {
+        if (isAdminVikiPasswordProcessing) {
+            setAdminVikiPasswordError('Aguarde o ciclo atual terminar antes de iniciar outro.');
+            return;
+        }
+
+        const newPassword = adminVikiPasswordNewPassword.trim();
+        if (!newPassword) {
+            setAdminVikiPasswordError('Informe a nova senha que sera aplicada nas credenciais selecionadas.');
+            return;
+        }
+
+        const selectedCredentials = adminVikiPasswordCandidates.filter((credential) => !!adminVikiPasswordSelection[credential.id]);
+        if (selectedCredentials.length === 0) {
+            setAdminVikiPasswordError('Selecione ao menos uma credencial Viki para alterar.');
+            return;
+        }
+
+        const processStartedAt = new Date().toISOString();
+        const initialJobs: AdminVikiPasswordCredentialJob[] = selectedCredentials.map((credential) => ({
+            credentialId: credential.id,
+            credentialEmail: credential.email,
+            serviceName: credential.service,
+            requestId: null,
+            executionStatus: 'idle',
+            message: 'Aguardando execucao.',
+            steps: [],
+            startedAt: processStartedAt,
+            dbUpdated: false
+        }));
+
+        setIsAdminVikiPasswordProcessing(true);
+        setAdminVikiPasswordError(null);
+        setAdminVikiPasswordSummary(null);
+        setAdminVikiPasswordJobs(initialJobs);
+
+        let successCount = 0;
+        let failedCount = 0;
+        let dbSyncFailures = 0;
+
+        try {
+            for (const credential of selectedCredentials) {
+                updateAdminVikiPasswordJob(credential.id, (job) => ({
+                    ...job,
+                    executionStatus: 'running',
+                    message: 'Enviando solicitacao da automacao...',
+                    startedAt: new Date().toISOString()
+                }));
+
+                try {
+                    const response = await submitVikiPasswordAutomationRequest({
+                        credentialEmail: credential.email,
+                        currentPassword: credential.password,
+                        newPassword
+                    });
+
+                    let finalStatus: VikiPasswordUiExecutionStatus = response.executionStatus;
+                    let finalMessage = response.message || null;
+                    let finalSteps = response.steps || [];
+
+                    updateAdminVikiPasswordJob(credential.id, (job) => ({
+                        ...job,
+                        requestId: response.requestId,
+                        executionStatus: finalStatus,
+                        message: finalMessage,
+                        steps: finalSteps
+                    }));
+
+                    if (!VIKI_PASSWORD_TERMINAL_STATUSES.has(finalStatus)) {
+                        let finished = false;
+
+                        for (let attempt = 0; attempt < 72; attempt += 1) {
+                            await waitMs(5000);
+                            const status = await getVikiPasswordAutomationStatus(response.requestId);
+                            if (!status) continue;
+
+                            finalStatus = status.executionStatus;
+                            if (status.message) finalMessage = status.message;
+                            if (status.steps?.length > 0) finalSteps = status.steps;
+
+                            updateAdminVikiPasswordJob(credential.id, (job) => ({
+                                ...job,
+                                executionStatus: finalStatus,
+                                message: finalMessage,
+                                steps: finalSteps
+                            }));
+
+                            if (VIKI_PASSWORD_TERMINAL_STATUSES.has(finalStatus)) {
+                                finished = true;
+                                break;
+                            }
+                        }
+
+                        if (!finished && !VIKI_PASSWORD_TERMINAL_STATUSES.has(finalStatus)) {
+                            finalStatus = 'failed';
+                            finalMessage = 'Tempo limite ao aguardar o status final da automacao.';
+
+                            if (finalSteps.length > 0) {
+                                const now = new Date().toISOString();
+                                finalSteps = finalSteps.map((step) => (
+                                    step.status === 'running' ? { ...step, status: 'failed', details: 'Timeout ao aguardar conclusao', updatedAt: now } : step
+                                ));
+                            }
+
+                            updateAdminVikiPasswordJob(credential.id, (job) => ({
+                                ...job,
+                                executionStatus: 'failed',
+                                message: finalMessage,
+                                steps: finalSteps
+                            }));
+                        }
+                    }
+
+                    if (finalStatus === 'success') {
+                        const savedId = await saveCredential({
+                            ...credential,
+                            password: newPassword,
+                            publishedAt: new Date().toISOString()
+                        });
+
+                        if (!savedId) {
+                            failedCount += 1;
+                            dbSyncFailures += 1;
+                            updateAdminVikiPasswordJob(credential.id, (job) => ({
+                                ...job,
+                                executionStatus: 'failed',
+                                message: 'Senha alterada na Viki, mas falhou ao atualizar a credencial no painel admin.',
+                                finishedAt: new Date().toISOString(),
+                                dbUpdated: false
+                            }));
+                            continue;
+                        }
+
+                        successCount += 1;
+                        updateAdminVikiPasswordJob(credential.id, (job) => ({
+                            ...job,
+                            executionStatus: 'success',
+                            message: 'Senha alterada na Viki e atualizada no painel admin.',
+                            finishedAt: new Date().toISOString(),
+                            dbUpdated: true
+                        }));
+                        continue;
+                    }
+
+                    failedCount += 1;
+                    updateAdminVikiPasswordJob(credential.id, (job) => ({
+                        ...job,
+                        executionStatus: 'failed',
+                        message: finalMessage || 'A automacao nao concluiu com sucesso.',
+                        steps: finalSteps,
+                        finishedAt: new Date().toISOString(),
+                        dbUpdated: false
+                    }));
+                } catch (error: any) {
+                    failedCount += 1;
+                    updateAdminVikiPasswordJob(credential.id, (job) => ({
+                        ...job,
+                        executionStatus: 'failed',
+                        message: error?.message || 'Erro inesperado ao processar esta credencial.',
+                        finishedAt: new Date().toISOString(),
+                        dbUpdated: false
+                    }));
+                }
+            }
+
+            setAdminVikiPasswordSummary(
+                `Processo finalizado: ${successCount} sucesso(s), ${failedCount} falha(s)${dbSyncFailures > 0 ? `, ${dbSyncFailures} falha(s) ao atualizar painel` : ''}.`
+            );
+
+            if (successCount > 0) {
+                await loadData();
+            }
+        } finally {
+            setIsAdminVikiPasswordProcessing(false);
+        }
+    };
 
     const handleSaveClient = async () => {
         if (!clientForm.phone_number) return;
@@ -2556,6 +2839,173 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 {activeTab === 'credentials' && (
                     <div className="space-y-6 animate-fade-in pb-32">
                         <div className="flex justify-between items-center px-2"><h3 className="font-bold text-xl flex items-center gap-2"><Key className="text-indigo-600" /> Gestão de Contas</h3><button onClick={() => { setCredForm({ service: SERVICES[0], email: '', password: '', isVisible: true, publishedAt: new Date().toISOString() }); setCredModalOpen(true); }} className="bg-indigo-600 text-white px-5 py-3 rounded-xl text-xs font-black uppercase flex items-center gap-2 shadow-lg"><Plus size={20} /> Nova Conta</button></div>
+                        <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl shadow-sm border border-indigo-100 dark:border-slate-800 space-y-4">
+                            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                                <div>
+                                    <h4 className="font-black text-gray-900 dark:text-white text-lg">Troca de senha Viki (Admin)</h4>
+                                    <p className="text-[11px] font-bold text-indigo-400 uppercase tracking-wide">Selecione credenciais, informe a nova senha e execute em lote</p>
+                                </div>
+                                <span className="text-[10px] font-black uppercase px-3 py-1.5 rounded-xl bg-indigo-50 text-indigo-600">
+                                    {adminVikiPasswordSelectedCount} selecionada(s)
+                                </span>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                <input
+                                    type="password"
+                                    value={adminVikiPasswordNewPassword}
+                                    onChange={(e) => {
+                                        setAdminVikiPasswordNewPassword(e.target.value);
+                                        if (adminVikiPasswordError) setAdminVikiPasswordError(null);
+                                    }}
+                                    placeholder="Nova senha para as contas selecionadas"
+                                    className="md:col-span-2 w-full bg-indigo-50 dark:bg-slate-800 border border-indigo-100 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-bold outline-none focus:border-indigo-400"
+                                    disabled={isAdminVikiPasswordProcessing}
+                                />
+                                <button
+                                    onClick={handleStartAdminVikiPasswordFlow}
+                                    disabled={isAdminVikiPasswordProcessing || adminVikiPasswordCandidates.length === 0}
+                                    className={`w-full py-3 rounded-xl text-white font-black text-xs uppercase tracking-wide transition-all ${isAdminVikiPasswordProcessing ? 'bg-indigo-300' : 'bg-indigo-600 hover:bg-indigo-700'} disabled:opacity-60 disabled:cursor-not-allowed`}
+                                >
+                                    {isAdminVikiPasswordProcessing ? 'Processando...' : 'Executar troca'}
+                                </button>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-2">
+                                <button
+                                    onClick={handleSelectAllAdminVikiPasswordCredentials}
+                                    disabled={isAdminVikiPasswordProcessing || adminVikiPasswordCandidates.length === 0}
+                                    className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-indigo-50 text-indigo-600 border border-indigo-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    Selecionar todas
+                                </button>
+                                <button
+                                    onClick={handleClearAdminVikiPasswordSelection}
+                                    disabled={isAdminVikiPasswordProcessing || adminVikiPasswordSelectedCount === 0}
+                                    className="px-3 py-2 rounded-xl text-[10px] font-black uppercase bg-gray-100 text-gray-600 border border-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    Limpar selecao
+                                </button>
+                            </div>
+
+                            {adminVikiPasswordError && (
+                                <p className="text-xs font-bold text-red-600 bg-red-50 border border-red-100 rounded-xl p-3">{adminVikiPasswordError}</p>
+                            )}
+
+                            {adminVikiPasswordSummary && (
+                                <p className="text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 rounded-xl p-3">{adminVikiPasswordSummary}</p>
+                            )}
+
+                            {adminVikiPasswordCandidates.length === 0 ? (
+                                <div className="rounded-2xl border border-dashed border-indigo-200 bg-indigo-50/50 p-4 text-[11px] font-black uppercase text-indigo-300">
+                                    Nenhuma credencial Viki elegivel encontrada.
+                                </div>
+                            ) : (
+                                <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                                    {adminVikiPasswordCandidates.map((credential) => (
+                                        <label
+                                            key={`password-select-${credential.id}`}
+                                            className={`flex items-start gap-3 rounded-2xl border px-3 py-3 cursor-pointer transition-all ${adminVikiPasswordSelection[credential.id] ? 'border-indigo-300 bg-indigo-50/70' : 'border-gray-200 bg-white dark:bg-slate-900'}`}
+                                        >
+                                            <input
+                                                type="checkbox"
+                                                checked={!!adminVikiPasswordSelection[credential.id]}
+                                                onChange={() => handleToggleAdminVikiPasswordCredential(credential.id)}
+                                                disabled={isAdminVikiPasswordProcessing}
+                                                className="mt-0.5 w-4 h-4 accent-indigo-600"
+                                            />
+                                            <div className="min-w-0 flex-1">
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <span className="text-sm font-black text-gray-900 dark:text-white break-all">{credential.email}</span>
+                                                    <span className="text-[9px] font-black uppercase px-2 py-1 rounded-lg bg-indigo-100 text-indigo-600">{credential.service}</span>
+                                                </div>
+                                                <p className="text-[11px] font-bold text-gray-500 mt-1">Senha atual cadastrada: <span className="font-mono text-indigo-600">{credential.password}</span></p>
+                                            </div>
+                                        </label>
+                                    ))}
+                                </div>
+                            )}
+
+                            {adminVikiPasswordJobs.length > 0 && (
+                                <div className="space-y-3 pt-2">
+                                    <p className="text-[10px] font-black uppercase tracking-widest text-indigo-400">Etapas detalhadas da automacao</p>
+                                    {adminVikiPasswordJobs.map((job) => {
+                                        const runningStep = job.steps.find((step) => step.status === 'running') || null;
+                                        const failedStep = [...job.steps].reverse().find((step) => step.status === 'failed') || null;
+                                        const pendingStep = job.steps.find((step) => step.status === 'pending') || null;
+                                        const lastSuccessStep = [...job.steps].reverse().find((step) => step.status === 'success') || null;
+                                        const currentStep = runningStep || failedStep || pendingStep || lastSuccessStep;
+                                        const badge = getVikiPasswordExecutionBadge(job.executionStatus);
+
+                                        return (
+                                            <div key={`password-job-${job.credentialId}`} className="rounded-2xl border border-indigo-100 bg-indigo-50/30 p-4 space-y-3">
+                                                <div className="flex flex-wrap items-start justify-between gap-2">
+                                                    <div>
+                                                        <p className="font-black text-gray-900 text-sm break-all">{job.credentialEmail}</p>
+                                                        <p className="text-[10px] font-bold uppercase text-indigo-400">{job.serviceName}</p>
+                                                    </div>
+                                                    <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase ${badge.className}`}>{badge.label}</span>
+                                                </div>
+
+                                                {job.message && (
+                                                    <p className={`text-xs font-bold rounded-lg px-3 py-2 border ${job.executionStatus === 'failed' ? 'bg-red-50 border-red-100 text-red-700' : job.executionStatus === 'success' ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 'bg-blue-50 border-blue-100 text-blue-700'}`}>
+                                                        {job.message}
+                                                    </p>
+                                                )}
+
+                                                <div className="flex flex-wrap gap-2 text-[9px] font-black uppercase text-gray-500">
+                                                    {job.requestId && (
+                                                        <span className="px-2 py-1 rounded-md bg-gray-100 text-gray-600">Request: {job.requestId}</span>
+                                                    )}
+                                                    <span className={`px-2 py-1 rounded-md ${job.dbUpdated ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                                                        {job.dbUpdated ? 'Painel atualizado' : 'Painel pendente'}
+                                                    </span>
+                                                    <span className="px-2 py-1 rounded-md bg-gray-100 text-gray-600">Inicio: {new Date(job.startedAt).toLocaleString()}</span>
+                                                    {job.finishedAt && (
+                                                        <span className="px-2 py-1 rounded-md bg-gray-100 text-gray-600">Fim: {new Date(job.finishedAt).toLocaleString()}</span>
+                                                    )}
+                                                </div>
+
+                                                {currentStep && (
+                                                    <div className="bg-white border border-indigo-100 rounded-xl p-3">
+                                                        <div className="flex items-center justify-between gap-2">
+                                                            <p className="text-[11px] font-bold text-gray-700">{getFriendlyPasswordStepLabel(currentStep)}</p>
+                                                            <span className={`px-2 py-1 rounded-md text-[9px] font-black uppercase ${getVikiStepBadge(currentStep.status).className}`}>
+                                                                {getVikiStepBadge(currentStep.status).label}
+                                                            </span>
+                                                        </div>
+                                                        {currentStep.details && (
+                                                            <p className="text-[11px] font-semibold text-gray-500 mt-1">{currentStep.details}</p>
+                                                        )}
+                                                    </div>
+                                                )}
+
+                                                {job.steps.length > 0 && (
+                                                    <div className="space-y-2">
+                                                        {job.steps.map((step) => (
+                                                            <div key={`${job.credentialId}-${step.key}`} className="bg-white rounded-xl border border-gray-100 px-3 py-2">
+                                                                <div className="flex items-center justify-between gap-2">
+                                                                    <p className="text-[11px] font-bold text-gray-700">{getFriendlyPasswordStepLabel(step)}</p>
+                                                                    <span className={`px-2 py-1 rounded-md text-[9px] font-black uppercase ${getVikiStepBadge(step.status).className}`}>
+                                                                        {getVikiStepBadge(step.status).label}
+                                                                    </span>
+                                                                </div>
+                                                                {step.details && (
+                                                                    <p className="text-[10px] font-semibold text-gray-500 mt-1">{step.details}</p>
+                                                                )}
+                                                                {step.updatedAt && (
+                                                                    <p className="text-[9px] font-bold text-gray-400 mt-1">{new Date(step.updatedAt).toLocaleString()}</p>
+                                                                )}
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </div>
                         <div className="space-y-8">
                             {Object.entries(groupedCredentials).map(([serviceName, creds]) => (
                                 <div key={serviceName} className="space-y-4">

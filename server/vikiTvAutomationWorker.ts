@@ -98,37 +98,46 @@ const clickFirstText = async (page: any, texts: string[]): Promise<boolean> => {
   return false;
 };
 
-const clickLoginCta = async (page: any): Promise<boolean> => {
-  const candidates = page.locator('a:has-text("Log in"), button:has-text("Log in")');
-  const count = await candidates.count();
-  for (let i = 0; i < count; i += 1) {
-    const el = candidates.nth(i);
-    let box: { y: number } | null = null;
-    try {
-      box = await el.boundingBox();
-    } catch {
-      box = null;
-    }
-    if (!box) continue;
-    if (box.y > 80) {
+const clickExactText = async (page: any, texts: string[]): Promise<boolean> => {
+  for (const text of texts) {
+    const loc = page.getByRole('button', { name: text, exact: true })
+      .or(page.getByRole('link', { name: text, exact: true }));
+    const count = await loc.count();
+    for (let i = 0; i < count; i += 1) {
       try {
-        await el.click({ timeout: 1500 });
+        await loc.nth(i).click({ timeout: 1500 });
         return true;
       } catch {
-        // keep trying
+        // next
       }
-    }
-  }
-  if (count > 0) {
-    try {
-      await candidates.first().click({ timeout: 1500 });
-      return true;
-    } catch {
-      return false;
     }
   }
   return false;
 };
+
+const clickLoginCta = async (page: any): Promise<boolean> => {
+  // Textos EXATOS (EN/PT) para evitar match parcial em "entrar\u00e3o em vigor"
+  const LOGIN_LABELS = ['Log in', 'Entrar', 'Iniciar sess\u00e3o', 'Iniciar sessao', 'Fazer login', 'Sign in'];
+  for (const label of LOGIN_LABELS) {
+    const loc = page.getByRole('link', { name: label, exact: true })
+      .or(page.getByRole('button', { name: label, exact: true }));
+    const count = await loc.count();
+    for (let i = 0; i < count; i++) {
+      const el = loc.nth(i);
+      let box: { y: number } | null = null;
+      try { box = await el.boundingBox(); } catch { box = null; }
+      if (!box) continue;
+      try { await el.click({ timeout: 2000 }); return true; } catch { /* next */ }
+    }
+  }
+  // Fallback: link href de sign-in, excluindo /legal
+  const hrefLoc = page.locator('a[href*="/sign-in"]:not([href*="/legal"]), a[href*="/web-sign-in"]:not([href*="/legal"])');
+  if (await hrefLoc.count()) {
+    try { await hrefLoc.first().click({ timeout: 2000 }); return true; } catch { /* ignore */ }
+  }
+  return false;
+};
+
 
 const performLogout = async (page: any): Promise<{ ok: boolean; details: string }> => {
   const controls = page.locator(
@@ -214,15 +223,28 @@ export const runVikiTvAutomationJob = async (
     await page.goto(payload.tvUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
     await page.waitForTimeout(1200);
 
-    const loginCtaClicked = await clickLoginCta(page);
-    if (!loginCtaClicked) {
-      throw new Error('Botao Log in nao encontrado');
+    const emailAlreadyVisible = (await page.locator('input[placeholder="Email"], input[type="email"]').count()) > 0;
+    if (!emailAlreadyVisible) {
+      const loginCtaClicked = await clickLoginCta(page);
+      if (!loginCtaClicked) {
+        throw new Error('Botao Log in nao encontrado');
+      }
+      // Aguarda nav para pagina de login concluir
+      try {
+        await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 });
+      } catch {
+        // pode já ter navegado ou ser SPA
+      }
+      await page.waitForTimeout(1500);
+      // Pode aparecer tela de selecao de metodo (EN: "Continue with Email" | PT: "Continuar com Email")
+      await clickFirstText(page, ['Continue with Email', 'Continuar com Email', 'Continuar com e-mail']).catch(() => false);
+      await page.waitForTimeout(800);
     }
 
-    await page.waitForTimeout(1000);
-
-    const emailInput = page.locator('input[placeholder="Email"]');
-    const passwordInput = page.locator('input[placeholder="Password"], input[type="password"]');
+    // EN: "Email" | PT: qualquer input de email
+    const emailInput = page.locator('input[placeholder="Email"], input[type="email"], input[name*="email" i]');
+    // EN: "Password" | PT: "Senha"
+    const passwordInput = page.locator('input[placeholder="Password"], input[placeholder="Senha"], input[type="password"], input[name*="password" i], input[name*="senha" i]');
 
     if (!(await emailInput.count()) || !(await passwordInput.count())) {
       throw new Error('Formulario de login nao encontrado');
@@ -231,11 +253,12 @@ export const runVikiTvAutomationJob = async (
     await emailInput.first().fill(payload.credentialEmail);
     await passwordInput.first().fill(payload.credentialPassword);
 
-    const continueClicked = await clickFirstText(page, ['Continue']);
+    // EN: "Continue" | PT: "Continuar", "Prosseguir", "Entrar"
+    const continueClicked = await clickExactText(page, ['Continue', 'Continuar', 'Prosseguir', 'Entrar', 'Log in', 'Fazer login', 'Sign in']);
     if (!continueClicked) throw new Error('Botao Continue nao encontrado');
 
     await page.waitForTimeout(3500);
-    const stillOnLoginForm = (await page.locator('input[placeholder="Email"]').count()) > 0;
+    const stillOnLoginForm = (await page.locator('input[placeholder="Email"], input[type="email"]').count()) > 0;
     if (stillOnLoginForm) {
       throw new Error('Login nao concluido na Viki');
     }

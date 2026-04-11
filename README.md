@@ -19,6 +19,9 @@ Frontend React + Vite focado em:
    - `VITE_VIKI_TV_AUTOMATION_WEBHOOK` (opcional, automacao Viki TV em background)
    - `VITE_VIKI_TV_AUTOMATION_TOKEN` (opcional, token Bearer do webhook)
    - `VITE_VIKI_TV_AUTOMATION_STATUS_WEBHOOK` (opcional, consulta de status das etapas)
+   - `VITE_VIKI_PASSWORD_AUTOMATION_WEBHOOK` (opcional, automacao de troca de senha Viki em background)
+   - `VITE_VIKI_PASSWORD_AUTOMATION_TOKEN` (opcional, token Bearer do webhook de troca de senha)
+   - `VITE_VIKI_PASSWORD_AUTOMATION_STATUS_WEBHOOK` (opcional, consulta de status da troca de senha)
    - `VITE_INFINITY_PAY_HANDLE` (opcional, handle da loja no InfinityPay. Padrao: `orion_magalhaes`)
    - `VITE_INFINITY_PAY_PAYMENT_CHECK_WEBHOOK` (recomendado em producao, endpoint backend para validar pagamento InfinityPay sem CORS; pode ser URL completa da rota ou apenas dominio base do worker)
    - `VITE_INFINITY_PAY_PAYMENT_CHECK_TOKEN` (opcional, token Bearer do endpoint backend de `payment_check`)
@@ -28,6 +31,8 @@ Frontend React + Vite focado em:
      - `POST /api/infinitypay/payment-check`
      - `POST /api/viki-tv-automation`
      - `GET /api/viki-tv-automation/status?requestId=...`
+     - `POST /api/viki-password-automation`
+     - `GET /api/viki-password-automation/status?requestId=...`
 3. Rode localmente:
    `npm run dev`
 
