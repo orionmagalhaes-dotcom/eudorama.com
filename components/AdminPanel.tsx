@@ -586,6 +586,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const [adminVikiTvSteps, setAdminVikiTvSteps] = useState<VikiTvAutomationStep[]>([]);
     const [adminVikiPasswordSelection, setAdminVikiPasswordSelection] = useState<Record<string, boolean>>({});
     const [adminVikiPasswordNewPassword, setAdminVikiPasswordNewPassword] = useState('');
+    const [adminVikiPasswordIsAuto, setAdminVikiPasswordIsAuto] = useState(false);
     const [adminVikiPasswordError, setAdminVikiPasswordError] = useState<string | null>(null);
     const [adminVikiPasswordSummary, setAdminVikiPasswordSummary] = useState<string | null>(null);
     const [adminVikiPasswordJobs, setAdminVikiPasswordJobs] = useState<AdminVikiPasswordCredentialJob[]>([]);
@@ -1663,10 +1664,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
         try {
             for (const credential of selectedCredentials) {
+                let targetPassword = adminVikiPasswordNewPassword.trim();
+
+                if (adminVikiPasswordIsAuto) {
+                    // Logica eudorama00-99
+                    const currentPass = (credential.password || '').toLowerCase();
+                    const match = currentPass.match(/eudorama(\d+)/);
+                    if (match) {
+                        const currentNum = parseInt(match[1]);
+                        const nextNum = (currentNum + 1) > 99 ? 1 : (currentNum + 1);
+                        targetPassword = `eudorama${nextNum.toString().padStart(2, '0')}`;
+                    } else {
+                        targetPassword = 'eudorama01';
+                    }
+                }
+
                 updateAdminVikiPasswordJob(credential.id, (job) => ({
                     ...job,
                     executionStatus: 'running',
-                    message: 'Enviando solicitacao da automacao...',
+                    message: `Enviando solicitacao (Nova Senha: ${targetPassword})...`,
                     startedAt: new Date().toISOString()
                 }));
 
@@ -1674,8 +1690,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                     const response = await submitVikiPasswordAutomationRequest({
                         credentialEmail: credential.email,
                         currentPassword: credential.password,
-                        newPassword
+                        newPassword: targetPassword
                     });
+
+                    const newPasswordUsed = targetPassword; // Captura para o salvamento posterior
 
                     let finalStatus: VikiPasswordUiExecutionStatus = response.executionStatus;
                     let finalMessage = response.message || null;
@@ -1735,9 +1753,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                     }
 
                     if (finalStatus === 'success') {
+                        const localNewPassword = targetPassword; // Usa o targetPassword calculado no inicio do loop
                         const savedId = await saveCredential({
                             ...credential,
-                            password: newPassword,
+                            password: localNewPassword,
                             publishedAt: new Date().toISOString()
                         });
 
@@ -1755,7 +1774,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         }
 
                         // Atualiza o estado local imediatamente para refletir a nova senha na UI
-                        setCredentials(prev => prev.map(c => c.id === credential.id ? { ...c, password: newPassword, publishedAt: new Date().toISOString() } : c));
+                        setCredentials(prev => prev.map(c => c.id === credential.id ? { ...c, password: localNewPassword, publishedAt: new Date().toISOString() } : c));
 
                         successCount += 1;
                         updateAdminVikiPasswordJob(credential.id, (job) => ({
@@ -2853,22 +2872,32 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                 </span>
                             </div>
 
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                                <input
-                                    type="text"
-                                    value={adminVikiPasswordNewPassword}
-                                    onChange={(e) => {
-                                        setAdminVikiPasswordNewPassword(e.target.value);
-                                        if (adminVikiPasswordError) setAdminVikiPasswordError(null);
-                                    }}
-                                    placeholder="Nova senha para as contas selecionadas"
-                                    className="md:col-span-2 w-full bg-indigo-50 dark:bg-slate-800 border border-indigo-100 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-bold outline-none focus:border-indigo-400"
+                            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                                <div className="md:col-span-2 relative">
+                                    <input
+                                        type="text"
+                                        value={adminVikiPasswordIsAuto ? 'Sequencial Automático (eudoramaXX)' : adminVikiPasswordNewPassword}
+                                        onChange={(e) => {
+                                            setAdminVikiPasswordNewPassword(e.target.value);
+                                            if (adminVikiPasswordError) setAdminVikiPasswordError(null);
+                                        }}
+                                        placeholder="Nova senha ou padrão"
+                                        className={`w-full bg-indigo-50 dark:bg-slate-800 border border-indigo-100 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-bold outline-none focus:border-indigo-400 ${adminVikiPasswordIsAuto ? 'text-indigo-400 cursor-not-allowed' : ''}`}
+                                        disabled={isAdminVikiPasswordProcessing || adminVikiPasswordIsAuto}
+                                    />
+                                    {adminVikiPasswordIsAuto && <div className="absolute right-3 top-1/2 -translate-y-1/2 bg-indigo-600 text-[9px] text-white px-2 py-1 rounded-md font-black uppercase shadow-sm">Ativo</div>}
+                                </div>
+                                <button
+                                    onClick={() => setAdminVikiPasswordIsAuto(!adminVikiPasswordIsAuto)}
                                     disabled={isAdminVikiPasswordProcessing}
-                                />
+                                    className={`py-3 rounded-xl border-2 font-black text-[10px] uppercase tracking-wide transition-all ${adminVikiPasswordIsAuto ? 'bg-indigo-600 border-indigo-600 text-white shadow-md' : 'border-indigo-100 text-indigo-600 hover:bg-indigo-50'}`}
+                                >
+                                    {adminVikiPasswordIsAuto ? 'Senha Auto: ON' : 'Senha Auto: OFF'}
+                                </button>
                                 <button
                                     onClick={handleStartAdminVikiPasswordFlow}
-                                    disabled={isAdminVikiPasswordProcessing || adminVikiPasswordCandidates.length === 0}
-                                    className={`w-full py-3 rounded-xl text-white font-black text-xs uppercase tracking-wide transition-all ${isAdminVikiPasswordProcessing ? 'bg-indigo-300' : 'bg-indigo-600 hover:bg-indigo-700'} disabled:opacity-60 disabled:cursor-not-allowed`}
+                                    disabled={isAdminVikiPasswordProcessing || adminVikiPasswordCandidates.length === 0 || (!adminVikiPasswordIsAuto && !adminVikiPasswordNewPassword.trim())}
+                                    className={`w-full py-3 rounded-xl text-white font-black text-xs uppercase tracking-wide transition-all ${isAdminVikiPasswordProcessing ? 'bg-indigo-300' : 'bg-indigo-600 hover:bg-indigo-700'} disabled:opacity-60 disabled:cursor-not-allowed shadow-lg`}
                                 >
                                     {isAdminVikiPasswordProcessing ? 'Processando...' : 'Executar troca'}
                                 </button>
