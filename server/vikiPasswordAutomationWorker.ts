@@ -701,7 +701,8 @@ export const runVikiPasswordAutomationJob = async (
     const profile = DEVICE_PROFILES[Math.floor(Math.random() * DEVICE_PROFILES.length)];
 
     browser = await chromium.launch({ 
-      headless: true,
+      headless: false, // Abre a janela para ser mais difícil de detectar
+      slowMo: 100,     // Adiciona um pequeno atraso em cada clique/tecla
       args: ['--disable-blink-features=AutomationControlled'] 
     });
     
