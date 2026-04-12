@@ -685,20 +685,40 @@ const VIKI_API_CONFIG = {
 };
 
 /**
- * Tenta realizar a troca de senha direto via API REST da Viki.
- * Muito mais rapido e evita deteccao de bot visual.
+ * Busca uma lista de proxies gratuitos no ProxyScrape
  */
-async function runVikiPasswordAutomationViaApi(payload: VikiPasswordAutomationPayload): Promise<boolean> {
+async function getProxiesFromApi(): Promise<string[]> {
   try {
-    // 1. Login para obter token e user_id
+    const res = await fetch('https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all');
+    const text = await res.text();
+    return text.split('\r\n').filter(line => line.includes(':')).map(p => `http://${p.trim()}`);
+  } catch (e) {
+    console.error('[Proxy] Erro ao buscar lista:', e);
+    return [];
+  }
+}
+
+/**
+ * Tenta realizar a troca de senha direto via API REST da Viki.
+ */
+async function runVikiPasswordAutomationViaApi(payload: VikiPasswordAutomationPayload, proxyUrl?: string): Promise<boolean> {
+  try {
+    let agent: any = null;
+    if (proxyUrl) {
+      const { HttpsProxyAgent } = await import('https-proxy-agent');
+      agent = new HttpsProxyAgent(proxyUrl);
+    }
+
+    // 1. Login
     const loginRes = await fetch(`${VIKI_API_CONFIG.baseUrl}/sessions.json?app=${VIKI_API_CONFIG.appId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      agent, // Aplica o proxy se houver
       body: JSON.stringify({
         username: payload.credentialEmail,
         password: payload.currentPassword,
       })
-    });
+    } as any);
 
     if (!loginRes.ok) {
       const err = await loginRes.json().catch(() => ({}));
@@ -718,13 +738,14 @@ async function runVikiPasswordAutomationViaApi(payload: VikiPasswordAutomationPa
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`
       },
+      agent, // Aplica o proxy se houver
       body: JSON.stringify({
         user: {
           password: payload.newPassword,
           current_password: payload.currentPassword
         }
       })
-    });
+    } as any);
 
     if (!updateRes.ok) {
       const err = await updateRes.json().catch(() => ({}));
@@ -733,7 +754,7 @@ async function runVikiPasswordAutomationViaApi(payload: VikiPasswordAutomationPa
 
     return true;
   } catch (e: any) {
-    console.warn(`[API Flow] Falha: ${e.message}. Tentando via Navegador...`);
+    console.warn(`[API Flow] Falha (Proxy: ${proxyUrl || 'Local'}): ${e.message}.`);
     return false;
   }
 }
@@ -751,9 +772,20 @@ export const runVikiPasswordAutomationJob = async (
 
   push(updateJob(status, 'running', 'Automacao de troca de senha iniciada.'));
 
+  // 0. BUSCA PROXY EXTERNVO (EX: ProxyScrape)
+  push(updateStep(status, STEP_KEYS.dispatch, 'running', 'Buscando IP anonimo no ProxyScrape...'));
+  const proxyList = await getProxiesFromApi();
+  const selectedProxy = proxyList.length > 0 ? proxyList[Math.floor(Math.random() * proxyList.length)] : undefined;
+  
+  if (selectedProxy) {
+    push(updateStep(status, STEP_KEYS.dispatch, 'success', `IP anonimo selecionado: ${selectedProxy}`));
+  } else {
+    push(updateStep(status, STEP_KEYS.dispatch, 'running', 'Nao foi possivel obter proxy. Usando IP local...'));
+  }
+
   // TENTA VIA API PRIMEIRO (SUPER FAST & STEALTH)
-  push(updateStep(status, STEP_KEYS.dispatch, 'running', 'Tentando troca rapida via API interna da Viki...'));
-  const apiSuccess = await runVikiPasswordAutomationViaApi(payload);
+  push(updateStep(status, STEP_KEYS.dispatch, 'running', 'Tentando troca rapida via API interna...'));
+  const apiSuccess = await runVikiPasswordAutomationViaApi(payload, selectedProxy);
   
   if (apiSuccess) {
     push(updateStep(status, STEP_KEYS.dispatch, 'success', 'Troca via API concluida.'));
@@ -765,7 +797,7 @@ export const runVikiPasswordAutomationJob = async (
   }
 
   // FALLBACK PARA O NAVEGADOR SE A API FALHAR
-  push(updateStep(status, STEP_KEYS.dispatch, 'running', 'API indisponivel. Inicializando navegador em modo smartphone...'));
+  push(updateStep(status, STEP_KEYS.dispatch, 'running', 'API indisponivel. Abrindo navegador com Proxy...'));
 
   let browser: any = null;
   try {
@@ -775,9 +807,10 @@ export const runVikiPasswordAutomationJob = async (
     const profile = DEVICE_PROFILES[Math.floor(Math.random() * DEVICE_PROFILES.length)];
 
     browser = await chromium.launch({ 
-      headless: false, // Abre a janela para ser mais difícil de detectar
-      slowMo: 100,     // Adiciona um pequeno atraso em cada clique/tecla
-      args: ['--disable-blink-features=AutomationControlled'] 
+      headless: false,
+      slowMo: 100,
+      args: ['--disable-blink-features=AutomationControlled'],
+      ...(selectedProxy ? { proxy: { server: selectedProxy } } : {})
     });
     
     const context = await browser.newContext({ 
