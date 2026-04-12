@@ -1754,6 +1754,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                             continue;
                         }
 
+                        // Atualiza o estado local imediatamente para refletir a nova senha na UI
+                        setCredentials(prev => prev.map(c => c.id === credential.id ? { ...c, password: newPassword, publishedAt: new Date().toISOString() } : c));
+
                         successCount += 1;
                         updateAdminVikiPasswordJob(credential.id, (job) => ({
                             ...job,
