@@ -621,15 +621,29 @@ const runAutomation = async (
 		await page.type(codeSelector, payload.tvCode, { delay: 20 });
 
 		const clickedLink = await clickByText(page, ['link now', 'conectar agora', 'vincular agora', 'vincular tv']);
-		if (!clickedLink) throw new Error('Botao Link Now nao encontrado');
+		if (!clickedLink) {
+			await page.keyboard.press('Enter');
+		} else {
+			await sleep(500);
+			await page.keyboard.press('Enter');
+		}
 
-		await sleep(2800);
-		const afterCode = (await page.evaluate(() => {
+		await sleep(6000); // aguarda resposta HTTP
+		const { afterCode, hasErrorDiv, isInputStillThere } = await page.evaluate(() => {
 			const doc = (globalThis as any).document;
-			return doc?.body?.innerText || '';
-		})).replace(/\s+/g, ' ');
-		const invalid = /code is not valid|valid samsung tv code|valid lg tv code|valid android tv code|não é válido|código inválido/i.test(afterCode);
-		if (invalid) {
+			const errDiv = doc?.querySelector('[role="alert"], .alert, .error, .sc-4f811a15-0');
+            const inputField = doc?.querySelector('input[name="linkingCode"], input[id="linkingCode"], input[name="code"]');
+			return {
+				afterCode: doc?.body?.innerText || '',
+				hasErrorDiv: !!errDiv,
+                isInputStillThere: !!inputField
+			};
+		});
+		const afterCodeClean = afterCode.replace(/\s+/g, ' ');
+		const invalid = hasErrorDiv || /code is not valid|valid samsung tv code|valid lg tv code|valid android tv code|não é válido|código inválido/i.test(afterCodeClean);
+        const isSuccessText = /bem-sucedida|conectada|sucesso|success/i.test(afterCodeClean);
+
+		if (invalid || (isInputStillThere && !isSuccessText)) {
 			throw new Error('O código inserido é inválido ou já expirou. Verifique o código exibido na TV e tente novamente.');
 		}
 

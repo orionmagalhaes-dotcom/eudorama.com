@@ -277,13 +277,23 @@ export const runVikiTvAutomationJob = async (
 
     await codeInput.first().fill(payload.tvCode);
     const linkClicked = await clickFirstText(page, ['Link Now', 'Conectar agora', 'Vincular Agora', 'Vincular TV']);
-    if (!linkClicked) throw new Error('Botao Link Now nao encontrado');
-    await page.waitForTimeout(3000);
+    if (!linkClicked) {
+      await codeInput.first().press('Enter');
+    } else {
+      await page.waitForTimeout(500);
+      await codeInput.first().press('Enter'); // Fallback
+    }
+    
+    await page.waitForTimeout(6000); // Await HTTP response correctly
 
     const bodyAfterCode = String(await page.locator('body').innerText()).replace(/\s+/g, ' ').trim();
-    const invalidCode = /Code is not valid|valid Samsung TV Code|não é válido|código inválido/i.test(bodyAfterCode);
+    const hasErrorAlert = await page.locator('[role="alert"], .alert, .error, .sc-4f811a15-0').count() > 0;
+    const invalidCode = hasErrorAlert || /Code is not valid|valid.*TV Code|não é válido|código inválido/i.test(bodyAfterCode);
 
-    if (invalidCode) {
+    const isInputStillThere = (await codeInput.count()) > 0;
+    const isSuccessText = /bem-sucedida|conectada|sucesso|success/i.test(bodyAfterCode);
+
+    if (invalidCode || (isInputStillThere && !isSuccessText)) {
       throw new Error('O código inserido é inválido ou já expirou. Verifique o código exibido na TV e tente novamente.');
     }
 
