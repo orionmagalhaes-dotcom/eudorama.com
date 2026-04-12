@@ -561,15 +561,16 @@ const performLogout = async (page: Page): Promise<void> => {
 	}
 };
 
-const runAutomation = async (
+const runAutomationAttempt = async (
 	env: Env,
 	payload: AutomationPayload,
 	onStep: (key: string, status: StepStatus, details?: string) => Promise<void>,
+	attemptInfo: string
 ): Promise<void> => {
 	const browser = await puppeteer.launch(env.BROWSER);
 	try {
 		const page = await browser.newPage();
-		await onStep(STEP.dispatch, 'running', 'Inicializando navegador em modo smartphone.');
+		await onStep(STEP.dispatch, 'running', `Inicializando navegador em modo smartphone. ${attemptInfo}`);
 
 		await page.setViewport({
 			width: 412,
@@ -658,6 +659,26 @@ const runAutomation = async (
 		await onStep(STEP.logout, 'success', 'Logout confirmado.');
 	} finally {
 		await browser.close();
+	}
+};
+
+const runAutomation = async (
+	env: Env,
+	payload: AutomationPayload,
+	onStep: (key: string, status: StepStatus, details?: string) => Promise<void>,
+): Promise<void> => {
+	const maxRetries = 2;
+	for (let i = 1; i <= maxRetries; i++) {
+		try {
+			await runAutomationAttempt(env, payload, onStep, `(Tentativa ${i}/${maxRetries})`);
+			return; // Finalizou sem erro
+		} catch (err: any) {
+			if (i < maxRetries && (err.message.includes('erro temporario') || err.message.includes('something went wrong'))) {
+				await sleep(3000); // Aguarda antes de tentar de novo
+				continue;
+			}
+			throw err; // Lança se for o último ou erro definitivo
+		}
 	}
 };
 
