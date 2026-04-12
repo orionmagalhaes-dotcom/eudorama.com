@@ -1234,7 +1234,7 @@ export const submitVikiPasswordAutomationRequest = async (
   const submittedAt = new Date().toISOString();
 
   const webhookUrl = ((import.meta as any).env?.VITE_VIKI_PASSWORD_AUTOMATION_WEBHOOK as string | undefined)
-    || ((import.meta as any).env?.DEV ? '/api/viki-password-automation' : undefined);
+    || 'https://viki-motor.eudorama.com/api/viki-password-automation';
   const webhookToken = (
     (import.meta as any).env?.VITE_VIKI_PASSWORD_AUTOMATION_TOKEN
     || (import.meta as any).env?.VITE_VIKI_TV_AUTOMATION_TOKEN
@@ -1313,7 +1313,7 @@ export const submitVikiPasswordAutomationRequest = async (
 
 export const getVikiPasswordAutomationStatus = async (requestId: string): Promise<VikiPasswordAutomationResponse | null> => {
   const statusWebhook = ((import.meta as any).env?.VITE_VIKI_PASSWORD_AUTOMATION_STATUS_WEBHOOK as string | undefined)
-    || ((import.meta as any).env?.DEV ? '/api/viki-password-automation/status' : undefined);
+    || 'https://viki-motor.eudorama.com/api/viki-password-automation/status';
   const webhookToken = (
     (import.meta as any).env?.VITE_VIKI_PASSWORD_AUTOMATION_TOKEN
     || (import.meta as any).env?.VITE_VIKI_TV_AUTOMATION_TOKEN
