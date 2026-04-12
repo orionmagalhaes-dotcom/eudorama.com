@@ -673,6 +673,12 @@ const verifyLoginWithNewPassword = async (browser: any, email: string, newPasswo
   return false;
 };
 
+const DEVICE_PROFILES = [
+  { name: 'Pixel 7', width: 412, height: 915, ua: 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36' },
+  { name: 'iPhone 14', width: 390, height: 844, ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1' },
+  { name: 'S23 Ultra', width: 360, height: 780, ua: 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36' }
+];
+
 export const runVikiPasswordAutomationJob = async (
   payload: VikiPasswordAutomationPayload,
   onUpdate: (nextStatus: VikiPasswordAutomationJobStatus) => void
@@ -690,7 +696,9 @@ export const runVikiPasswordAutomationJob = async (
   let browser: any = null;
   try {
     const playwrightModule = await import('playwright');
-    const { chromium, devices } = playwrightModule as any;
+    const { chromium } = playwrightModule as any;
+
+    const profile = DEVICE_PROFILES[Math.floor(Math.random() * DEVICE_PROFILES.length)];
 
     browser = await chromium.launch({ 
       headless: true,
@@ -698,20 +706,20 @@ export const runVikiPasswordAutomationJob = async (
     });
     
     const context = await browser.newContext({ 
-      ...(devices['Pixel 7'] || {}),
-      userAgent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36',
+      viewport: { width: profile.width, height: profile.height },
+      userAgent: profile.ua,
       locale: 'pt-BR',
       timezoneId: 'America/Sao_Paulo'
     });
     
     const page = await context.newPage();
-    // Esconde a flag de automação via script
+    // Esconde a flag de automação e altera o fingerprint levemente
     await page.addInitScript(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     });
     page.setDefaultTimeout(60000);
 
-    push(updateStep(status, STEP_KEYS.dispatch, 'success', 'Navegador iniciado.'));
+    push(updateStep(status, STEP_KEYS.dispatch, 'success', `Navegador iniciado como ${profile.name}.`));
     push(updateStep(status, STEP_KEYS.login, 'running', 'Realizando login com a senha atual.'));
 
     const loginFlow = await doLogin(page, payload.credentialEmail, payload.currentPassword);
