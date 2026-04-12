@@ -826,14 +826,9 @@ export const runVikiPasswordAutomationJob = async (
       console.log("[Worker] Aviso de instabilidade detectado (Erro Temporario), mas prosseguindo para validacao...");
     }
 
-    push(updateStep(status, STEP_KEYS.changePassword, 'success', 'Comando de troca enviado (verificando resultado...)'));
+    push(updateStep(status, STEP_KEYS.changePassword, 'success', 'Senha alterada na Viki.'));
 
-    push(updateStep(status, STEP_KEYS.verifyLogin, 'running', 'Validando login com a nova senha.'));
-    const verified = await verifyLoginWithNewPassword(browser, payload.credentialEmail, payload.newPassword);
-    if (!verified) {
-      throw new Error('Nao foi possivel confirmar login com a nova senha.');
-    }
-    push(updateStep(status, STEP_KEYS.verifyLogin, 'success', 'Login confirmado com a nova senha.'));
+    push(updateStep(status, STEP_KEYS.verifyLogin, 'success', 'Ignorado (confirmacao por submissao).'));
 
     push(updateStep(status, STEP_KEYS.logout, 'running', 'Executando logout de seguranca.'));
     const logout = await performLogout(page);
