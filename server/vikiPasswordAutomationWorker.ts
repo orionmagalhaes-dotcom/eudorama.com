@@ -772,8 +772,9 @@ export const runVikiPasswordAutomationJob = async (
 
   push(updateJob(status, 'running', 'Automacao de troca de senha iniciada.'));
 
-  // 0. BUSCA LISTA DE PROXIES UMA VEZ
-  push(updateStep(status, STEP_KEYS.dispatch, 'running', 'Buscando lista de IPs no ProxyScrape...'));
+  try {
+    // 0. BUSCA LISTA DE PROXIES UMA VEZ
+    push(updateStep(status, STEP_KEYS.dispatch, 'running', 'Buscando lista de IPs no ProxyScrape...'));
   const proxyList = await getProxiesFromApi();
   
   const MAX_ATTEMPTS = 3;
