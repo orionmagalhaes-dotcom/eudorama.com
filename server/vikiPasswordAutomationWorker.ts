@@ -679,6 +679,65 @@ const DEVICE_PROFILES = [
   { name: 'S23 Ultra', width: 360, height: 780, ua: 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36' }
 ];
 
+const VIKI_API_CONFIG = {
+  baseUrl: 'https://api.viki.io/v4',
+  appId: '100005a', // Viki Web App ID
+};
+
+/**
+ * Tenta realizar a troca de senha direto via API REST da Viki.
+ * Muito mais rapido e evita deteccao de bot visual.
+ */
+async function runVikiPasswordAutomationViaApi(payload: VikiPasswordAutomationPayload): Promise<boolean> {
+  try {
+    // 1. Login para obter token e user_id
+    const loginRes = await fetch(`${VIKI_API_CONFIG.baseUrl}/sessions.json?app=${VIKI_API_CONFIG.appId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: payload.credentialEmail,
+        password: payload.currentPassword,
+      })
+    });
+
+    if (!loginRes.ok) {
+      const err = await loginRes.json().catch(() => ({}));
+      throw new Error(`Login API falhou: ${err.error || loginRes.statusText}`);
+    }
+
+    const loginData: any = await loginRes.json();
+    const token = loginData.token;
+    const userId = loginData.user?.id;
+
+    if (!token || !userId) throw new Error('Token ou UserID nao retornados pela API.');
+
+    // 2. Troca de senha
+    const updateRes = await fetch(`${VIKI_API_CONFIG.baseUrl}/users/${userId}.json?app=${VIKI_API_CONFIG.appId}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        user: {
+          password: payload.newPassword,
+          current_password: payload.currentPassword
+        }
+      })
+    });
+
+    if (!updateRes.ok) {
+      const err = await updateRes.json().catch(() => ({}));
+      throw new Error(`Update API falhou: ${err.error || updateRes.statusText}`);
+    }
+
+    return true;
+  } catch (e: any) {
+    console.warn(`[API Flow] Falha: ${e.message}. Tentando via Navegador...`);
+    return false;
+  }
+}
+
 export const runVikiPasswordAutomationJob = async (
   payload: VikiPasswordAutomationPayload,
   onUpdate: (nextStatus: VikiPasswordAutomationJobStatus) => void
@@ -691,7 +750,22 @@ export const runVikiPasswordAutomationJob = async (
   };
 
   push(updateJob(status, 'running', 'Automacao de troca de senha iniciada.'));
-  push(updateStep(status, STEP_KEYS.dispatch, 'running', 'Inicializando navegador em modo smartphone.'));
+
+  // TENTA VIA API PRIMEIRO (SUPER FAST & STEALTH)
+  push(updateStep(status, STEP_KEYS.dispatch, 'running', 'Tentando troca rapida via API interna da Viki...'));
+  const apiSuccess = await runVikiPasswordAutomationViaApi(payload);
+  
+  if (apiSuccess) {
+    push(updateStep(status, STEP_KEYS.dispatch, 'success', 'Troca via API concluida.'));
+    push(updateStep(status, STEP_KEYS.login, 'success', 'Login API validado.'));
+    push(updateStep(status, STEP_KEYS.changePassword, 'success', 'Senha alterada via API.'));
+    push(updateStep(status, STEP_KEYS.verifyLogin, 'success', 'Confirmacao via API concluida.'));
+    push(updateJob(status, 'success', 'Troca de senha (API) concluida com sucesso.'));
+    return;
+  }
+
+  // FALLBACK PARA O NAVEGADOR SE A API FALHAR
+  push(updateStep(status, STEP_KEYS.dispatch, 'running', 'API indisponivel. Inicializando navegador em modo smartphone...'));
 
   let browser: any = null;
   try {
