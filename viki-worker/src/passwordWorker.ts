@@ -90,25 +90,38 @@ export const runPasswordAutomationAttempt = async (
 		await onStep('login', 'success', 'Login OK.');
 		await onStep('openSettings', 'running', 'Acessando conta...');
 
-		await page.goto('https://www.viki.com/user-account-settings#account', { waitUntil: 'domcontentloaded', timeout: 60000 });
-		await new Promise<void>(res => setTimeout(res, 3000));
+		// Tenta acessar as configuracoes com um tempo de espera maior
+		await page.goto('https://www.viki.com/user-account-settings#account', { waitUntil: 'networkidle', timeout: 80000 });
+		await new Promise<void>(res => setTimeout(res, 5000));
 		
 		const changePassClicked = await page.evaluate(() => {
-			const texts = ['change password', 'mudar senha', 'alterar senha'];
-			const items = Array.from(document.querySelectorAll('button, a'));
+			const texts = ['change password', 'mudar senha', 'alterar senha', 'mudar a senha'];
+			// 1. Tenta por texto em botoes e links
+			const items = Array.from(document.querySelectorAll('button, a, [role="button"]'));
 			for (const item of items) {
 				const t = (item.textContent || '').toLowerCase();
-				if (texts.some(txt => t.includes(txt)) && !t.includes('email')) {
+				const aria = (item.getAttribute('aria-label') || '').toLowerCase();
+				const title = (item.getAttribute('title') || '').toLowerCase();
+				
+				if ((texts.some(txt => t.includes(txt)) || texts.some(txt => aria.includes(txt)) || texts.some(txt => title.includes(txt))) && !t.includes('email')) {
 					(item as any).click();
 					return true;
 				}
 			}
+			
+			// 2. Tenta por seletores especificos da Viki se o texto falhar
+			const scBtn = document.querySelector('button[class*="Button"], button[class*="Account"]') as HTMLElement;
+			if (scBtn && /senha|password/i.test(scBtn.innerText)) {
+				scBtn.click();
+				return true;
+			}
+			
 			return false;
 		});
 
-		if (!changePassClicked) throw new Error('Nao foi possivel encontrar o botao de trocar senha.');
+		if (!changePassClicked) throw new Error('Botao de troca de senha nao encontrado. A Viki pode ter alterado o layout ou esta conta usa login social (Google/FB).');
 
-		await new Promise<void>(res => setTimeout(res, 2000));
+		await new Promise<void>(res => setTimeout(res, 3000));
 		await onStep('openSettings', 'success', 'Pagina de senha aberta.');
 		await onStep('changePassword', 'running', 'Enviando nova senha...');
 

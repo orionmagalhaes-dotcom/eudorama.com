@@ -1048,7 +1048,19 @@ export default {
 				continue;
 			}
 
-			let steps = createInitialSteps();
+			// Define os passos iniciais baseados no tipo (Senha ou TV)
+			let steps: AutomationStep[] = [];
+			if (payload.type === 'password') {
+				steps = [
+					{ key: 'request', label: 'Solicitacao recebida', status: 'success' as StepStatus, updatedAt: nowIso() },
+					{ key: 'dispatch', label: 'Automacao na nuvem iniciada', status: 'pending' as StepStatus },
+					{ key: 'login', label: 'Login via API/Web', status: 'pending' as StepStatus },
+					{ key: 'openSettings', label: 'Acessar as configuracoes', status: 'pending' as StepStatus },
+					{ key: 'changePassword', label: 'Trocar a Senha', status: 'pending' as StepStatus }
+				];
+			} else {
+				steps = createInitialSteps();
+			}
 			let state: ExecutionStatus = 'running';
 
 			try {
