@@ -89,6 +89,18 @@ const main = async () => {
   const browser = await chromium.launch({ headless: false });
   const context = await browser.newContext({ ...(devices['Pixel 7'] || {}) });
   const page = await context.newPage();
+
+  page.on('console', msg => log('browser', `[${msg.type()}] ${msg.text()}`));
+  page.on('response', async resp => {
+    const url = resp.url();
+    if (url.includes('api.viki.io') || url.includes('/v4/') || url.includes('link')) {
+      try {
+        const body = await resp.text();
+        log('network', `[${resp.status()}] ${url} -> ${body.substring(0, 150)}`);
+      } catch { /* ignore */ }
+    }
+  });
+
   page.setDefaultTimeout(TIMEOUT);
 
   const result = {
@@ -201,17 +213,35 @@ const main = async () => {
     await codeInput.first().fill(tvCode);
 
     log('code', 'Clicando em Vincular TV / Link Now...');
-    const linked = await clickByTexts(page, ['Link Now', 'Conectar agora', 'Vincular Agora', 'Vincular TV']);
-    if (!linked) throw new Error('Botão Link Now não encontrado');
+    const linkClicked = await clickByTexts(page, ['Link Now', 'Conectar agora', 'Vincular Agora', 'Vincular TV']);
+    if (!linkClicked) {
+      log('code', 'Botão nao encontrado, pressionando Enter no input...');
+      await codeInput.first().press('Enter');
+    } else {
+      await page.waitForTimeout(500);
+      await codeInput.first().press('Enter'); // fallback
+    }
 
     result.codeSent = true;
-    log('code', 'Aguardando resposta (4s)...');
-    await page.waitForTimeout(4000);
+    log('code', 'Aguardando resposta da pagina (6s)...');
+    await page.waitForTimeout(6000);
 
     const bodyAfterCode = String(await page.locator('body').innerText()).replace(/\s+/g, ' ').trim();
+    // Viki may have an explicit error div instead of just checking body. Let's look for known alert divs.
+    const hasErrorAlert = await page.locator('[role="alert"], .alert, .error, .sc-4f811a15-0').count() > 0;
+    if (hasErrorAlert) {
+      const alertText = await page.locator('[role="alert"], .alert, .error, .sc-4f811a15-0').first().innerText();
+      log('browser', `Alert or Error div found: ${alertText}`);
+    }
+
     const codeInvalid = /Code is not valid|valid Samsung TV Code|não é válido|código inválido/i.test(bodyAfterCode);
-    result.codeResponse = codeInvalid ? 'Código inválido (esperado em teste)' : 'Código enviado para vinculação';
-    log('code', result.codeResponse);
+    if (codeInvalid || hasErrorAlert) {
+      result.codeResponse = 'Código inválido (esperado em teste)';
+      log('code', 'Código enviado (retorno código inválido esperado em teste)');
+    } else {
+      result.codeResponse = 'Nenhum erro recebido (falso positivo)';
+      log('code', 'Problema: Viki não retornou erro claro no HTML. HTML retornado?');
+    }
 
     // ---- LOGOUT ----
     log('logout', 'Executando logout...');

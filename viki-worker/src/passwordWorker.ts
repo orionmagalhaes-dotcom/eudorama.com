@@ -46,6 +46,13 @@ export const runPasswordAutomationAttempt = async (
 
 		const loginTexts = ['continue', 'continuar', 'entrar', 'prosseguir', 'fazer login', 'log in', 'sign in'];
 		let continueClicked = false;
+  await page.evaluate(() => {
+    document.querySelectorAll('*').forEach((el) => {
+      const style = window.getComputedStyle(el);
+      const z = parseInt(style.zIndex, 10);
+      if (z > 999 && style.position !== 'static') el.remove();
+    });
+  }).catch(() => {});
 		for (const txt of loginTexts) {
 			const btns = await page.$$('button, a');
 			for (const btn of btns) {

@@ -260,6 +260,10 @@ export const runVikiTvAutomationJob = async (
     await page.waitForTimeout(3500);
     const stillOnLoginForm = (await page.locator('input[placeholder="Email"], input[type="email"]').count()) > 0;
     if (stillOnLoginForm) {
+      const bodyText = await page.locator('body').innerText();
+      const fs = await import('fs');
+      if (!fs.existsSync('artifacts')) fs.mkdirSync('artifacts');
+      fs.writeFileSync('artifacts/tv_error_body.txt', bodyText);
       throw new Error('Login nao concluido na Viki');
     }
 

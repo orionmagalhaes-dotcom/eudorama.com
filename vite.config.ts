@@ -300,7 +300,8 @@ const vikiAutomationDevPlugin = () => ({
             return;
           }
 
-          const status = vikiAutomationJobs.get(requestId);
+          let status = vikiAutomationJobs.get(requestId);
+          if (!status) status = vikiPasswordAutomationJobs.get(requestId);
           if (!status) {
             sendJson(res, 404, { success: false, message: 'requestId nao encontrado' });
             return;

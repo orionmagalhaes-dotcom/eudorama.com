@@ -204,13 +204,31 @@ const fillFirstVisible = async (page: any, selectors: string[], value: string, l
 
 const tryAcceptCookies = async (page: any) => {
   try {
+    // Hack agressivo para remover o banner dos Termos de Uso (April 8) que obstrui a API
+    await page.evaluate(() => {
+      document.querySelectorAll('*').forEach((el) => {
+        const style = window.getComputedStyle(el);
+        const z = parseInt(style.zIndex, 10);
+        if (z > 999 && style.position !== 'static') {
+          el.remove();
+        }
+      });
+    }).catch(() => {});
+
     await clickFirstVisible(
       page,
       [
         'button:has-text("Accept all")',
         'button:has-text("Aceitar")',
         'button:has-text("I agree")',
-        'button:has-text("Concordo")'
+        'button:has-text("I Agree")',
+        'button:has-text("Concordo")',
+        'button:has-text("Got it")',
+        'button:has-text("Entendi")',
+        'button:has-text("I Accept")',
+        'button:has-text("Accept")',
+        'button[aria-label="Close"]',
+        'button[aria-label="Fechar"]'
       ]
     );
   } catch {
@@ -240,7 +258,10 @@ const assertLoginSucceeded = async (page: any, contextLabel: string) => {
   if (/oh no, something went wrong|unexpected issue|try again in a few minutes|temporar/.test(bodyText)) {
     throw new Error(`${contextLabel} retornou erro temporario da Viki.`);
   }
-  throw new Error(`${contextLabel} nao foi concluido.`);
+  await page.screenshot({ path: 'artifacts/viki_error.png' }).catch(() => {});
+  const fs = await import('fs');
+  fs.writeFileSync('artifacts/error_body.txt', bodyText);
+  throw new Error(`${contextLabel} nao foi concluido. Texto: ` + bodyText.substring(0, 100));
 };
 
 const doLoginViaTv = async (page: any, email: string, password: string) => {
@@ -289,8 +310,9 @@ const doLoginViaTv = async (page: any, email: string, password: string) => {
     'campo de senha'
   );
 
+  await page.keyboard.press('Enter');
   // EN: "Continue" | PT: "Continuar", "Prosseguir", "Entrar"
-  await clickSubmitButton(page, 'botao de continuar login');
+  await clickSubmitButton(page).catch(() => {});
 
   await sleep(4500);
   await assertLoginSucceeded(page, 'Login TV');
@@ -348,8 +370,10 @@ const doLoginViaWebsite = async (page: any, email: string, password: string) => 
     'campo de senha'
   );
 
+  await page.keyboard.press('Enter');
+
   // EN: "Continue" | PT: "Continuar", "Prosseguir", "Entrar"
-  await clickSubmitButton(page, 'botao de continuar login');
+  await clickSubmitButton(page).catch(() => {});
 
   await sleep(4500);
   await assertLoginSucceeded(page, 'Login web');
