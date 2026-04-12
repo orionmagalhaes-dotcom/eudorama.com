@@ -692,9 +692,23 @@ export const runVikiPasswordAutomationJob = async (
     const playwrightModule = await import('playwright');
     const { chromium, devices } = playwrightModule as any;
 
-    browser = await chromium.launch({ headless: true });
-    const context = await browser.newContext({ ...(devices['Pixel 7'] || {}) });
+    browser = await chromium.launch({ 
+      headless: true,
+      args: ['--disable-blink-features=AutomationControlled'] 
+    });
+    
+    const context = await browser.newContext({ 
+      ...(devices['Pixel 7'] || {}),
+      userAgent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36',
+      locale: 'pt-BR',
+      timezoneId: 'America/Sao_Paulo'
+    });
+    
     const page = await context.newPage();
+    // Esconde a flag de automação via script
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    });
     page.setDefaultTimeout(60000);
 
     push(updateStep(status, STEP_KEYS.dispatch, 'success', 'Navegador iniciado.'));
@@ -714,13 +728,22 @@ export const runVikiPasswordAutomationJob = async (
     await sleep(4000);
 
     const bodyText = await extractBodyTextLower(page);
+    
+    // Erros Críticos (que impedem a troca)
     if (/wrong password|senha incorreta|invalid password|incorrect password/.test(bodyText)) {
       throw new Error('A senha atual foi rejeitada pela Viki.');
     }
-    if (/too short|must contain|invalid|error|unexpected issue|temporar/.test(bodyText)) {
-      throw new Error('A Viki rejeitou a troca de senha com a combinacao informada.');
+    if (/too short|must contain/i.test(bodyText)) {
+      throw new Error('A nova senha nao atende aos requisitos da Viki (muito curta ou simples).');
     }
-    push(updateStep(status, STEP_KEYS.changePassword, 'success', 'Senha alterada na Viki.'));
+
+    // Se houver "erro temporário" ou "unexpected issue", vamos IGNORAR e tentar validar.
+    // Muitas vezes a Viki troca a senha mas mostra esse erro por instabilidade de sessao.
+    if (/invalid|error|unexpected issue|temporar/.test(bodyText)) {
+      console.log("[Worker] Aviso de instabilidade detectado (Erro Temporario), mas prosseguindo para validacao...");
+    }
+
+    push(updateStep(status, STEP_KEYS.changePassword, 'success', 'Comando de troca enviado (verificando resultado...)'));
 
     push(updateStep(status, STEP_KEYS.verifyLogin, 'running', 'Validando login com a nova senha.'));
     const verified = await verifyLoginWithNewPassword(browser, payload.credentialEmail, payload.newPassword);
