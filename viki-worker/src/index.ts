@@ -1,5 +1,7 @@
 import puppeteer from '@cloudflare/puppeteer';
 import type { Page } from '@cloudflare/puppeteer';
+import { runPasswordAutomation } from './passwordWorker';
+import type { Page } from '@cloudflare/puppeteer';
 
 export interface Env {
 	DB: D1Database;
@@ -14,11 +16,14 @@ type ExecutionStatus = 'queued' | 'running' | 'success' | 'failed';
 type StepStatus = 'pending' | 'running' | 'success' | 'failed';
 
 interface AutomationPayload {
-	tvModel: TvModel;
-	tvUrl: string;
-	tvCode: string;
+	tvModel?: TvModel;
+	tvUrl?: string;
+	tvCode?: string;
 	credentialEmail: string;
-	credentialPassword: string;
+	credentialPassword?: string;
+	currentPassword?: string;
+	newPassword?: string;
+	type?: 'tv' | 'password';
 }
 
 interface VikiQueueMessage {
@@ -969,7 +974,35 @@ export default {
 			);
 		}
 
-		if (request.method === 'GET' && url.pathname === '/api/viki-tv-automation/status') {
+		if (request.method === 'POST' && url.pathname === '/api/viki-password-automation') {
+			const body = await request.json().catch(() => ({}));
+			const payloadInput = body?.payload || {};
+
+			if (!payloadInput.credentialEmail || !payloadInput.newPassword) {
+				return withJson({ success: false, message: 'Payload invalido: email ou senha nova vazios' }, 400);
+			}
+
+			const requestId = normalizeId((body as Record<string, unknown>)?.requestId) || crypto.randomUUID();
+			
+			const steps = [
+				{ key: 'request', label: 'Solicitacao recebida', status: 'success' as StepStatus, updatedAt: nowIso() },
+				{ key: 'dispatch', label: 'Automacao em background iniciada', status: 'pending' as StepStatus },
+				{ key: 'login', label: 'Executar login via Web', status: 'pending' as StepStatus },
+				{ key: 'open_settings', label: 'Acessar as configuracoes', status: 'pending' as StepStatus },
+				{ key: 'change_password', label: 'Trocar a Senha', status: 'pending' as StepStatus }
+			];
+
+			await insertQueuedStatus(env, requestId, steps);
+
+			await env.VIKI_QUEUE.send({
+				requestId,
+				payload: { ...payloadInput, type: 'password' },
+			});
+
+			return withJson({ success: true, requestId, status: 'queued', executionStatus: 'queued', message: 'Solicitacao encaminhada', steps }, 202);
+		}
+
+		if (request.method === 'GET' && (url.pathname === '/api/viki-tv-automation/status' || url.pathname === '/api/viki-password-automation/status')) {
 			const requestId = normalizeId(url.searchParams.get('requestId'));
 			if (!requestId) {
 				return withJson(
@@ -1024,7 +1057,11 @@ export default {
 					await persistStatus(env, requestId, 'running', steps, null);
 				};
 
-				await runAutomation(env, payload, setStep);
+				if (payload.type === 'password') {
+					await runPasswordAutomation(env, payload, setStep);
+				} else {
+					await runAutomation(env, payload, setStep);
+				}
 				state = 'success';
 
 				await persistStatus(env, requestId, state, steps, null);

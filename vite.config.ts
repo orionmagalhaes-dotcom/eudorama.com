@@ -291,7 +291,7 @@ const vikiAutomationDevPlugin = () => ({
         }
       }
 
-      if (method === 'GET' && pathOnly === '/api/viki-tv-automation/status') {
+      if (method === 'GET' && (pathOnly === '/api/viki-tv-automation/status' || pathOnly === '/api/viki-password-automation/status')) {
         try {
           const parsed = new URL(url, 'http://localhost');
           const requestId = String(parsed.searchParams.get('requestId') || '').trim();
