@@ -1,0 +1,10 @@
+    useEffect(() => {
+        console.log("DIAGNOSTICO: PAINEL ADMIN CARREGADO EM " + new Date().toISOString());
+    }, []);
+
+    const [activeTab, setActiveTab] = useState<'clients' | 'credentials' | 'buscar_login' | 'danger' | 'finances' | 'trash' | 'history' | 'charge_whatsapp'>('clients');
+    const [clientFilterStatus, setClientFilterStatus] = useState<'all' | 'expiring' | 'debtor' | 'tolerance'>('all');
+    const [clientSortByExpiry, setClientSortByExpiry] = useState(false);
+    const [darkMode, setDarkMode] = useState(false);
+    const [credentials, setCredentials] = useState<AppCredential[]>([]);
+    const [clients, setClients] = useState<ClientDBRow[]>([]);

@@ -528,6 +528,9 @@ const buildAssignmentSignature = (map: Record<string, { credentialVersion: strin
 };
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
+    useEffect(() => {
+        console.log("DIAGNOSTICO: PAINEL ADMIN CARREGADO EM " + new Date().toISOString());
+    }, []);
     const [activeTab, setActiveTab] = useState<'clients' | 'credentials' | 'buscar_login' | 'danger' | 'finances' | 'trash' | 'history' | 'charge_whatsapp'>('clients');
     const [clientFilterStatus, setClientFilterStatus] = useState<'all' | 'expiring' | 'debtor' | 'tolerance'>('all');
     const [clientSortByExpiry, setClientSortByExpiry] = useState(false);
