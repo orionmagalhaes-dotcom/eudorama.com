@@ -1233,14 +1233,13 @@ export const submitVikiPasswordAutomationRequest = async (
   const requestId = buildVikiPasswordRequestId();
   const submittedAt = new Date().toISOString();
 
-  const webhookUrl = ((import.meta as any).env?.VITE_VIKI_PASSWORD_AUTOMATION_WEBHOOK as string | undefined)
-    || 'https://viki-motor.eudorama.com/api/viki-password-automation';
+  const webhookUrl = 'https://viki-motor.eudorama.com/api/viki-password-automation';
   const webhookToken = (
     (import.meta as any).env?.VITE_VIKI_PASSWORD_AUTOMATION_TOKEN
     || (import.meta as any).env?.VITE_VIKI_TV_AUTOMATION_TOKEN
   ) as string | undefined;
 
-  if (webhookUrl && webhookUrl.trim()) {
+  if (webhookUrl) {
     try {
       const response = await fetch(webhookUrl, {
         method: 'POST',
@@ -1302,11 +1301,11 @@ export const submitVikiPasswordAutomationRequest = async (
     success: false,
     requestId,
     provider: 'history_fallback',
-    message: 'Automacao de troca de senha nao configurada. A solicitacao foi registrada, mas nao foi executada automaticamente.',
+    message: 'Automacao de troca de senha nao respondendo. Verifique se o motor local esta ligado e o tunel ativo.',
     executionStatus: 'failed',
     steps: [
       { key: 'request', label: 'Solicitacao recebida', status: 'success', updatedAt: submittedAt },
-      { key: 'dispatch', label: 'Tentativa de iniciar automacao', status: 'failed', updatedAt: submittedAt, details: 'Webhook de automacao nao configurado' }
+      { key: 'dispatch', label: 'Tentativa de iniciar automacao', status: 'failed', updatedAt: submittedAt, details: 'Motor local ou tunel nao encontrado' }
     ]
   };
 };
