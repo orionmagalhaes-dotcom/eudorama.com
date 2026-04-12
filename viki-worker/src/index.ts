@@ -986,10 +986,10 @@ export default {
 			
 			const steps = [
 				{ key: 'request', label: 'Solicitacao recebida', status: 'success' as StepStatus, updatedAt: nowIso() },
-				{ key: 'dispatch', label: 'Automacao em background iniciada', status: 'pending' as StepStatus },
-				{ key: 'login', label: 'Executar login via Web', status: 'pending' as StepStatus },
-				{ key: 'open_settings', label: 'Acessar as configuracoes', status: 'pending' as StepStatus },
-				{ key: 'change_password', label: 'Trocar a Senha', status: 'pending' as StepStatus }
+				{ key: 'dispatch', label: 'Automacao na nuvem iniciada', status: 'pending' as StepStatus },
+				{ key: 'login', label: 'Login via API/Web', status: 'pending' as StepStatus },
+				{ key: 'openSettings', label: 'Acessar as configuracoes', status: 'pending' as StepStatus },
+				{ key: 'changePassword', label: 'Trocar a Senha', status: 'pending' as StepStatus }
 			];
 
 			await insertQueuedStatus(env, requestId, steps);
