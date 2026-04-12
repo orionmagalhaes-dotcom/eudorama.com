@@ -16,24 +16,81 @@ async function getWorkerProxies(): Promise<string[]> {
 	}
 }
 
+const VIKI_API_CONFIG = {
+	baseUrl: 'https://api.viki.io/v4',
+	appId: '100005a',
+};
+
+/**
+ * Tenta a troca via API Silenciosa (igual a TV) para evitar 429 do Cloudflare
+ */
+async function runPasswordAutomationViaApi(payload: any): Promise<boolean> {
+	try {
+		// 1. Login
+		const loginRes = await fetch(`${VIKI_API_CONFIG.baseUrl}/sessions.json?app=${VIKI_API_CONFIG.appId}`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				username: payload.credentialEmail,
+				password: payload.currentPassword || payload.credentialPassword,
+			})
+		});
+
+		if (!loginRes.ok) return false;
+		const loginData: any = await loginRes.json();
+		const token = loginData.token;
+		const userId = loginData.user?.id;
+
+		if (!token || !userId) return false;
+
+		// 2. Troca
+		const updateRes = await fetch(`${VIKI_API_CONFIG.baseUrl}/users/${userId}.json?app=${VIKI_API_CONFIG.appId}`, {
+			method: 'PUT',
+			headers: {
+				'Content-Type': 'application/json',
+				'Authorization': `Bearer ${token}`
+			},
+			body: JSON.stringify({
+				user: {
+					password: payload.newPassword,
+					current_password: payload.currentPassword || payload.credentialPassword
+				}
+			})
+		});
+
+		return updateRes.ok;
+	} catch (e) {
+		return false;
+	}
+}
+
 export const runPasswordAutomationAttempt = async (
 	env: Env,
 	payload: any,
 	onStep: (key: string, status: any, details?: string) => Promise<void>,
 	attemptInfo: string
 ): Promise<void> => {
-	// 0. Coleta de Proxies
-	await onStep('dispatch', 'running', `Buscando IPs anonimos. ${attemptInfo}`);
-	const proxies = await getWorkerProxies();
-	const selectedProxy = proxies.length > 0 ? proxies[Math.floor(Math.random() * proxies.length)] : undefined;
-
-	// 1. Inicializa Navegador com Proxy (se disponivel)
-	const launchOptions: any = { ...env.BROWSER };
-	if (selectedProxy) {
-		launchOptions.args = [...(launchOptions.args || []), `--proxy-server=${selectedProxy}`];
+	// 1. TENTATIVA VIA API (SILENCIOSA - EVITA 429)
+	await onStep('dispatch', 'running', `Tentando troca rapida via API (Sem Navegador). ${attemptInfo}`);
+	const apiSuccess = await runPasswordAutomationViaApi(payload);
+	
+	if (apiSuccess) {
+		await onStep('login', 'success', 'Login API OK.');
+		await onStep('openSettings', 'success', 'Sessao estabelecida.');
+		await onStep('changePassword', 'success', 'Senha alterada via API rápida.');
+		await onStep('logout', 'success', 'Concluido.');
+		return;
 	}
 
-	const browser = await puppeteer.launch(env.BROWSER); // Nota: Cloudflare Browser Rendering as vezes ignora args de proxy em Workers gratuitos, mas tentamos.
+	await onStep('dispatch', 'running', 'API indisponivel ou bloqueada. Usando navegador de reserva...');
+
+	// 2. FALLBACK PARA NAVEGADOR (PUPPETEER)
+	const browser = await puppeteer.launch(env.BROWSER).catch(err => {
+		if (err.message.includes('429')) {
+			throw new Error('Limite de navegadores do Cloudflare atingido (429). Tente novamente em alguns minutos ou altere apenas uma conta por vez.');
+		}
+		throw err;
+	});
 	
 	try {
 		const page = await browser.newPage();

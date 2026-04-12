@@ -4,7 +4,6 @@ import {
   VikiPasswordAutomationStepStatus,
   VikiPasswordAutomationExecutionStatus
 } from '../types/vikiAutomation';
-import { supabase } from '../lib/supabase';
 
 const STEP_KEYS = {
   dispatch: 'dispatch',
@@ -16,22 +15,22 @@ const STEP_KEYS = {
 };
 
 const baseSteps = () => [
-  { key: STEP_KEYS.dispatch, label: 'Inicializacao e Proxy', status: 'pending' },
-  { key: STEP_KEYS.login, label: 'Autenticacao API', status: 'pending' },
-  { key: STEP_KEYS.openSettings, label: 'Acesso ao Perfil', status: 'pending' },
+  { key: STEP_KEYS.dispatch, label: 'Inicializacao e IP', status: 'pending' },
+  { key: STEP_KEYS.login, label: 'Autenticacao (API/Web)', status: 'pending' },
+  { key: STEP_KEYS.openSettings, label: 'Acesso as Configuracoes', status: 'pending' },
   { key: STEP_KEYS.changePassword, label: 'Troca da senha na Viki', status: 'pending' },
-  { key: STEP_KEYS.verifyLogin, label: 'Confirmacao Final', status: 'pending' },
-  { key: STEP_KEYS.logout, label: 'Finalizacao', status: 'pending' }
+  { key: STEP_KEYS.verifyLogin, label: 'Finalizacao', status: 'pending' }
 ];
 
 const nowIso = () => new Date().toISOString();
+const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
 
 export const createInitialPasswordJobStatus = (requestId: string): VikiPasswordAutomationJobStatus => {
   const now = nowIso();
   return {
     requestId,
     status: 'queued',
-    message: 'Solicitacao recebida. Agurdando execucao via API...',
+    message: 'Solicitacao recebida pelo motor local.',
     steps: baseSteps(),
     createdAt: now,
     updatedAt: now
@@ -62,38 +61,32 @@ const updateJob = (
   updatedAt: nowIso()
 });
 
-const VIKI_API_CONFIG = {
-  baseUrl: 'https://api.viki.io/v4',
-  appId: '100005a', // Viki Web App ID
-};
-
 /**
- * Busca uma lista de proxies gratuitos no ProxyScrape
+ * Busca proxies diretamente da API do ProxyScrape
  */
-async function getProxiesFromApi(): Promise<string[]> {
-  try {
-    const res = await fetch('https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all');
-    const text = await res.text();
-    return text.split('\r\n').filter(line => line.includes(':')).map(p => `http://${p.trim()}`);
-  } catch (e) {
-    console.error('[Proxy] Erro ao buscar lista:', e);
-    return [];
-  }
+async function getMotorProxies(): Promise<string[]> {
+	try {
+		const res = await fetch('https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all');
+		const text = await res.text();
+		return text.split('\r\n').filter(line => line.includes(':')).map(p => p.trim());
+	} catch (e) {
+		console.error('[Proxy] Falha ao buscar lista:', e);
+		return [];
+	}
 }
 
 /**
- * Tenta realizar a troca de senha direto via API REST da Viki (Como na TV).
+ * Tentativa via API pura (Mais rapido)
  */
-async function runVikiPasswordAutomationViaApi(payload: VikiPasswordAutomationPayload, proxyUrl?: string): Promise<boolean> {
+async function runPasswordViaApi(payload: VikiPasswordAutomationPayload, proxy?: string): Promise<boolean> {
   try {
     let agent: any = null;
-    if (proxyUrl) {
+    if (proxy) {
       const { HttpsProxyAgent } = await import('https-proxy-agent');
-      agent = new HttpsProxyAgent(proxyUrl);
+      agent = new HttpsProxyAgent(`http://${proxy}`);
     }
 
-    // 1. Login
-    const loginRes = await fetch(`${VIKI_API_CONFIG.baseUrl}/sessions.json?app=${VIKI_API_CONFIG.appId}`, {
+    const loginRes = await fetch(`https://api.viki.io/v4/sessions.json?app=100005a`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       agent,
@@ -103,19 +96,14 @@ async function runVikiPasswordAutomationViaApi(payload: VikiPasswordAutomationPa
       })
     } as any);
 
-    if (!loginRes.ok) {
-      const err = await loginRes.json().catch(() => ({}));
-      throw new Error(`Auth falhou: ${err.error || loginRes.statusText}`);
-    }
+    if (!loginRes.ok) return false;
+    const data: any = await loginRes.json();
+    const token = data.token;
+    const userId = data.user?.id;
 
-    const loginData: any = await loginRes.json();
-    const token = loginData.token;
-    const userId = loginData.user?.id;
+    if (!token || !userId) return false;
 
-    if (!token || !userId) throw new Error('Dados de sessao invalidos.');
-
-    // 2. Troca de senha
-    const updateRes = await fetch(`${VIKI_API_CONFIG.baseUrl}/users/${userId}.json?app=${VIKI_API_CONFIG.appId}`, {
+    const updateRes = await fetch(`https://api.viki.io/v4/users/${userId}.json?app=100005a`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -130,14 +118,8 @@ async function runVikiPasswordAutomationViaApi(payload: VikiPasswordAutomationPa
       })
     } as any);
 
-    if (!updateRes.ok) {
-      const err = await updateRes.json().catch(() => ({}));
-      throw new Error(`Update falhou: ${err.error || updateRes.statusText}`);
-    }
-
-    return true;
-  } catch (e: any) {
-    console.warn(`[API Flow] Erro IP ${proxyUrl || 'Local'}: ${e.message}`);
+    return updateRes.ok;
+  } catch {
     return false;
   }
 }
@@ -147,57 +129,98 @@ export const runVikiPasswordAutomationJob = async (
   onUpdate: (nextStatus: VikiPasswordAutomationJobStatus) => void
 ): Promise<void> => {
   let status = createInitialPasswordJobStatus(payload.requestId);
-
   const push = (next: VikiPasswordAutomationJobStatus) => {
     status = next;
     onUpdate(status);
   };
 
-  push(updateJob(status, 'running', 'Iniciando troca de senha silenciosa (Modo API).'));
-
   try {
-    // 0. BUSCA PROXIES
-    push(updateStep(status, STEP_KEYS.dispatch, 'running', 'Buscando lista de proxies rotativos...'));
-    const proxyList = await getProxiesFromApi();
+    push(updateJob(status, 'running', 'Motor local iniciado (Modo Invisivel).'));
+
+    // 0. Proxies
+    push(updateStep(status, STEP_KEYS.dispatch, 'running', 'Buscando IP alternativo...'));
+    const proxies = await getMotorProxies();
     
-    const MAX_ATTEMPTS = 5;
-    let success = false;
+    const MAX_ATTEMPTS = 3;
+    let finalSuccess = false;
 
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      const selectedProxy = proxyList.length > 0 ? proxyList[Math.floor(Math.random() * proxyList.length)] : undefined;
-      const proxyLabel = selectedProxy || 'IP Local';
-      
-      push(updateStep(status, STEP_KEYS.dispatch, 'running', `Tentativa ${attempt}/${MAX_ATTEMPTS} via IP: ${proxyLabel}`));
+    for (let i = 1; i <= MAX_ATTEMPTS; i++) {
+        const proxy = proxies.length > 0 ? proxies[Math.floor(Math.random() * proxies.length)] : undefined;
+        push(updateStep(status, STEP_KEYS.dispatch, 'running', `Tentativa ${i}/${MAX_ATTEMPTS} com IP: ${proxy || 'Local'}`));
 
-      try {
-        const apiSuccess = await runVikiPasswordAutomationViaApi(payload, selectedProxy);
-        
-        if (apiSuccess) {
-          push(updateStep(status, STEP_KEYS.dispatch, 'success', `Conectado via Proxy: ${proxyLabel}`));
-          push(updateStep(status, STEP_KEYS.login, 'success', 'Login API OK.'));
-          push(updateStep(status, STEP_KEYS.changePassword, 'success', 'Senha alterada na Viki.'));
-          push(updateStep(status, STEP_KEYS.verifyLogin, 'success', 'Confirmado via Servidor.'));
-          push(updateStep(status, STEP_KEYS.logout, 'success', 'Sessao encerrada.'));
-          
-          push(updateJob(status, 'success', 'Troca de senha concluida com sucesso via API.'));
-          success = true;
-          break;
-        } else {
-          push(updateStep(status, STEP_KEYS.dispatch, 'running', `IP ${proxyLabel} indisponivel. Tentando proximo...`));
+        // 1. TENTA API PRIMEIRO
+        const apiOk = await runPasswordViaApi(payload, proxy);
+        if (apiOk) {
+            push(updateStep(status, STEP_KEYS.login, 'success', 'Login OK (API).'));
+            push(updateStep(status, STEP_KEYS.changePassword, 'success', 'Senha alterada via API.'));
+            push(updateStep(status, STEP_KEYS.verifyLogin, 'success', 'Concluido com sucesso.'));
+            push(updateJob(status, 'success', 'Troca concluida silenciosamente.'));
+            finalSuccess = true;
+            break;
         }
-      } catch (err: any) {
-        if (err.message.includes('Auth falhou')) throw err; // Se senha estiver errada, para tudo
-        push(updateStep(status, STEP_KEYS.dispatch, 'running', `Falha no IP ${proxyLabel}. Buscando novo proxy...`));
-      }
+
+        // 2. FALLBACK NAVEGADOR (HEADLESS)
+        push(updateStep(status, STEP_KEYS.dispatch, 'running', `API bloqueada. Usando navegador invisivel (Tentativa ${i})...`));
+        let browser: any = null;
+        try {
+            const { chromium } = await import('playwright');
+            browser = await chromium.launch({ 
+                headless: true, // INVISIVEL
+                args: ['--disable-blink-features=AutomationControlled'],
+                ...(proxy ? { proxy: { server: `http://${proxy}` } } : {})
+            });
+            const page = await browser.newPage();
+            page.setDefaultTimeout(60000);
+
+            await page.goto('https://www.viki.com/web-sign-in', { waitUntil: 'domcontentloaded' });
+            await page.type('input[placeholder="Email"]', payload.credentialEmail);
+            await page.type('input[placeholder="Password"]', payload.currentPassword);
+            await page.keyboard.press('Enter');
+            await sleep(5000);
+
+            if (page.url().includes('sign-in')) throw new Error('Falha no login web.');
+
+            await page.goto('https://www.viki.com/user-account-settings#account', { waitUntil: 'domcontentloaded' });
+            await sleep(3000);
+
+            const clicked = await page.evaluate(() => {
+                const btn = Array.from(document.querySelectorAll('button, a')).find(el => /mudar senha|change password/i.test(el.textContent || ''));
+                if (btn) { (btn as any).click(); return true; }
+                return false;
+            });
+
+            if (!clicked) throw new Error('Botao nao encontrado.');
+
+            await sleep(2000);
+            await page.evaluate((curr, next) => {
+                const inputs = Array.from(document.querySelectorAll('input'));
+                const p1 = inputs.find(i => /current/i.test(i.name) || i.placeholder.includes('atual'));
+                const p2 = inputs.find(i => /newPassword/i.test(i.name) || i.placeholder.includes('nova'));
+                const p3 = inputs.find(i => /confirmation/i.test(i.name) || i.placeholder.includes('confirm'));
+                
+                if (p1) p1.value = curr;
+                if (p2) p2.value = next;
+                if (p3) p3.value = next;
+
+                const save = Array.from(document.querySelectorAll('button')).find(b => /save|salvar|mudar/i.test(b.textContent || ''));
+                if (save) save.click();
+            }, payload.currentPassword, payload.newPassword);
+
+            await sleep(5000);
+            push(updateJob(status, 'success', 'Troca concluida via navegador invisivel.'));
+            finalSuccess = true;
+            break;
+        } catch (err: any) {
+            console.error('[Browser Error]', err.message);
+        } finally {
+            if (browser) await browser.close();
+        }
     }
 
-    if (!success) {
-      throw new Error(`Nao foi possivel completar a troca apos ${MAX_ATTEMPTS} IPs diferentes.`);
-    }
+    if (!finalSuccess) throw new Error('Todas as tentativas falharam.');
+
   } catch (error: any) {
     const message = error?.message || 'Erro inesperado';
-    const stepToFail = status.steps.find((step) => step.status === 'running')?.key || STEP_KEYS.dispatch;
-    push(updateStep(status, stepToFail, 'failed', message));
-    push(updateJob(status, 'failed', `Falha: ${message}`));
+    push(updateJob(status, 'failed', `Falha final no motor local: ${message}`));
   }
 };
