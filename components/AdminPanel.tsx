@@ -2852,7 +2852,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                                 <input
-                                    type="password"
+                                    type="text"
                                     value={adminVikiPasswordNewPassword}
                                     onChange={(e) => {
                                         setAdminVikiPasswordNewPassword(e.target.value);

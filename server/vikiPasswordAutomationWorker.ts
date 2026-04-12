@@ -653,16 +653,24 @@ const verifyLoginWithNewPassword = async (browser: any, email: string, newPasswo
   const playwrightModule = await import('playwright');
   const { devices } = playwrightModule as any;
 
-  const context = await browser.newContext({ ...(devices['Pixel 7'] || {}) });
-  const page = await context.newPage();
-  try {
-    await doLogin(page, email, newPassword);
-    return true;
-  } catch {
-    return false;
-  } finally {
-    await context.close().catch(() => {});
+  // Tentativas: total de 3 (inicial + 2 retries) pois a Viki pode demorar uns segundos para propagar a senha nova
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const context = await browser.newContext({ ...(devices['Pixel 7'] || {}) });
+    const page = await context.newPage();
+    try {
+      if (attempt > 1) {
+        await sleep(5000); // Espera 5s antes de tentar de novo se falhou a primeira
+      }
+      await doLogin(page, email, newPassword);
+      return true;
+    } catch (e) {
+      console.log(`[Verify] Tentativa ${attempt} falhou para ${email}`);
+      if (attempt === 3) return false;
+    } finally {
+      await context.close().catch(() => {});
+    }
   }
+  return false;
 };
 
 export const runVikiPasswordAutomationJob = async (
