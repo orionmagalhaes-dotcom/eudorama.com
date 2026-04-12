@@ -772,121 +772,118 @@ export const runVikiPasswordAutomationJob = async (
 
   push(updateJob(status, 'running', 'Automacao de troca de senha iniciada.'));
 
-  // 0. BUSCA PROXY EXTERNVO (EX: ProxyScrape)
-  push(updateStep(status, STEP_KEYS.dispatch, 'running', 'Buscando IP anonimo no ProxyScrape...'));
+  // 0. BUSCA LISTA DE PROXIES UMA VEZ
+  push(updateStep(status, STEP_KEYS.dispatch, 'running', 'Buscando lista de IPs no ProxyScrape...'));
   const proxyList = await getProxiesFromApi();
-  const selectedProxy = proxyList.length > 0 ? proxyList[Math.floor(Math.random() * proxyList.length)] : undefined;
   
-  if (selectedProxy) {
-    push(updateStep(status, STEP_KEYS.dispatch, 'success', `IP anonimo selecionado: ${selectedProxy}`));
-  } else {
-    push(updateStep(status, STEP_KEYS.dispatch, 'running', 'Nao foi possivel obter proxy. Usando IP local...'));
-  }
+  const MAX_ATTEMPTS = 3;
+  let success = false;
 
-  // TENTA VIA API PRIMEIRO (SUPER FAST & STEALTH)
-  push(updateStep(status, STEP_KEYS.dispatch, 'running', 'Tentando troca rapida via API interna...'));
-  const apiSuccess = await runVikiPasswordAutomationViaApi(payload, selectedProxy);
-  
-  if (apiSuccess) {
-    push(updateStep(status, STEP_KEYS.dispatch, 'success', 'Troca via API concluida.'));
-    push(updateStep(status, STEP_KEYS.login, 'success', 'Login API validado.'));
-    push(updateStep(status, STEP_KEYS.changePassword, 'success', 'Senha alterada via API.'));
-    push(updateStep(status, STEP_KEYS.verifyLogin, 'success', 'Confirmacao via API concluida.'));
-    push(updateJob(status, 'success', 'Troca de senha (API) concluida com sucesso.'));
-    return;
-  }
-
-  // FALLBACK PARA O NAVEGADOR SE A API FALHAR
-  push(updateStep(status, STEP_KEYS.dispatch, 'running', 'API indisponivel. Abrindo navegador com Proxy...'));
-
-  let browser: any = null;
-  try {
-    const playwrightModule = await import('playwright');
-    const { chromium } = playwrightModule as any;
-
-    const profile = DEVICE_PROFILES[Math.floor(Math.random() * DEVICE_PROFILES.length)];
-
-    browser = await chromium.launch({ 
-      headless: false,
-      slowMo: 100,
-      args: ['--disable-blink-features=AutomationControlled'],
-      ...(selectedProxy ? { proxy: { server: selectedProxy } } : {})
-    });
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const selectedProxy = proxyList.length > 0 ? proxyList[Math.floor(Math.random() * proxyList.length)] : undefined;
+    const proxyLabel = selectedProxy || 'IP Local';
     
-    const context = await browser.newContext({ 
-      viewport: { width: profile.width, height: profile.height },
-      userAgent: profile.ua,
-      locale: 'pt-BR',
-      timezoneId: 'America/Sao_Paulo'
-    });
-    
-    const page = await context.newPage();
-    // Esconde a flag de automação e altera o fingerprint levemente
-    await page.addInitScript(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    });
-    page.setDefaultTimeout(60000);
+    push(updateStep(status, STEP_KEYS.dispatch, 'running', `Tentativa ${attempt} de ${MAX_ATTEMPTS} usando: ${proxyLabel}`));
 
-    push(updateStep(status, STEP_KEYS.dispatch, 'success', `Navegador iniciado como ${profile.name}.`));
-    push(updateStep(status, STEP_KEYS.login, 'running', 'Realizando login com a senha atual.'));
-
-    const loginFlow = await doLogin(page, payload.credentialEmail, payload.currentPassword);
-    push(updateStep(status, STEP_KEYS.login, 'success', `Login realizado (fluxo ${loginFlow}).`));
-
-    push(updateStep(status, STEP_KEYS.openSettings, 'running', 'Abrindo configuracoes de conta.'));
-    await openAccountSettings(page);
-    push(updateStep(status, STEP_KEYS.openSettings, 'success', 'Pagina de configuracoes aberta.'));
-
-    push(updateStep(status, STEP_KEYS.changePassword, 'running', 'Aplicando nova senha na conta.'));
-    await clickPasswordChange(page);
-    await fillPasswordChangeForm(page, payload.currentPassword, payload.newPassword);
-    await submitPasswordChange(page);
-    await sleep(4000);
-
-    const bodyText = await extractBodyTextLower(page);
-    
-    // Erros Críticos (que impedem a troca)
-    if (/wrong password|senha incorreta|invalid password|incorrect password/.test(bodyText)) {
-      throw new Error('A senha atual foi rejeitada pela Viki.');
-    }
-    if (/too short|must contain/i.test(bodyText)) {
-      throw new Error('A nova senha nao atende aos requisitos da Viki (muito curta ou simples).');
-    }
-
-    // Se houver "erro temporário" ou "unexpected issue", vamos IGNORAR e tentar validar.
-    // Muitas vezes a Viki troca a senha mas mostra esse erro por instabilidade de sessao.
-    if (/invalid|error|unexpected issue|temporar/.test(bodyText)) {
-      console.log("[Worker] Aviso de instabilidade detectado (Erro Temporario), mas prosseguindo para validacao...");
-    }
-
-    push(updateStep(status, STEP_KEYS.changePassword, 'success', 'Senha alterada na Viki.'));
-
-    push(updateStep(status, STEP_KEYS.verifyLogin, 'success', 'Ignorado (confirmacao por submissao).'));
-
-    push(updateStep(status, STEP_KEYS.logout, 'running', 'Executando logout de seguranca.'));
-    const logout = await performLogout(page);
-    if (!logout.ok) throw new Error(logout.details);
-    push(updateStep(status, STEP_KEYS.logout, 'success', logout.details));
-
-    await context.close().catch(() => {});
-    push(updateJob(status, 'success', 'Troca de senha concluida com sucesso.'));
-  } catch (error: any) {
-    const message = error?.message || 'Erro inesperado';
-
-    const stepToFail =
-      status.steps.find((step) => step.status === 'running')?.key ||
-      status.steps.find((step) => step.status === 'pending')?.key ||
-      STEP_KEYS.dispatch;
-
-    push(updateStep(status, stepToFail, 'failed', message));
-    push(updateJob(status, 'failed', `Falha na troca de senha: ${message}`));
-  } finally {
-    if (browser) {
-      try {
-        await browser.close();
-      } catch {
-        // ignore
+    try {
+      // TENTA VIA API PRIMEIRO
+      const apiSuccess = await runVikiPasswordAutomationViaApi(payload, selectedProxy);
+      
+      if (apiSuccess) {
+        push(updateStep(status, STEP_KEYS.dispatch, 'success', `Troca via API concluida (Proxy: ${proxyLabel}).`));
+        push(updateStep(status, STEP_KEYS.login, 'success', 'Login API validado.'));
+        push(updateStep(status, STEP_KEYS.changePassword, 'success', 'Senha alterada via API.'));
+        push(updateStep(status, STEP_KEYS.verifyLogin, 'success', 'Confirmacao via API concluida.'));
+        push(updateJob(status, 'success', 'Troca de senha (API) concluida com sucesso.'));
+        success = true;
+        break;
       }
+
+      // FALLBACK PARA O NAVEGADOR
+      push(updateStep(status, STEP_KEYS.dispatch, 'running', `API falhou ou instavel. Abrindo navegador (Tentativa ${attempt})...`));
+
+      let browser: any = null;
+      try {
+        const playwrightModule = await import('playwright');
+        const { chromium } = playwrightModule as any;
+        const profile = DEVICE_PROFILES[Math.floor(Math.random() * DEVICE_PROFILES.length)];
+
+        browser = await chromium.launch({ 
+          headless: false,
+          timeout: 45000, // Timeout menor para falhar rapido se o proxy for ruim
+          args: ['--disable-blink-features=AutomationControlled'],
+          ...(selectedProxy ? { proxy: { server: selectedProxy } } : {})
+        });
+        
+        const context = await browser.newContext({ 
+          viewport: { width: profile.width, height: profile.height },
+          userAgent: profile.ua,
+          locale: 'pt-BR',
+          timezoneId: 'America/Sao_Paulo'
+        });
+        
+        const page = await context.newPage();
+        await page.addInitScript(() => { Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); });
+        page.setDefaultTimeout(60000);
+
+        push(updateStep(status, STEP_KEYS.dispatch, 'success', `Dispositivo: ${profile.name} | Proxy: ${proxyLabel}`));
+        push(updateStep(status, STEP_KEYS.login, 'running', 'Realizando login web...'));
+
+        const loginFlow = await doLogin(page, payload.credentialEmail, payload.currentPassword);
+        push(updateStep(status, STEP_KEYS.login, 'success', `Login realizado (${loginFlow}).`));
+
+        push(updateStep(status, STEP_KEYS.openSettings, 'running', 'Abrindo configuracoes...'));
+        await openAccountSettings(page);
+        push(updateStep(status, STEP_KEYS.openSettings, 'success', 'Configuracoes abertas.'));
+
+        push(updateStep(status, STEP_KEYS.changePassword, 'running', 'Aplicando nova senha...'));
+        await clickPasswordChange(page);
+        await fillPasswordChangeForm(page, payload.currentPassword, payload.newPassword);
+        await submitPasswordChange(page);
+        await sleep(5000);
+
+        const bodyText = await extractBodyTextLower(page);
+        if (/wrong password|senha incorreta|invalid password|incorrect password/.test(bodyText)) {
+          throw new Error('A senha atual foi rejeitada pela Viki.');
+        }
+        if (/too short|must contain/i.test(bodyText)) {
+          throw new Error('A nova senha nao atende aos requisitos.');
+        }
+
+        push(updateStep(status, STEP_KEYS.changePassword, 'success', 'Senha alterada na Viki.'));
+        push(updateStep(status, STEP_KEYS.verifyLogin, 'success', 'Ignorado (confirmacao por submissao).'));
+        push(updateStep(status, STEP_KEYS.logout, 'running', 'Executando logout...'));
+        
+        await performLogout(page).catch(() => {});
+        await context.close().catch(() => {});
+        
+        push(updateJob(status, 'success', 'Troca concluida com sucesso (Navegador).'));
+        success = true;
+        break;
+      } catch (browserError: any) {
+        console.error(`[Browser Attempt ${attempt}] Falhou:`, browserError.message);
+        if (browser) await browser.close().catch(() => {});
+        // Se for erro de senha, nao adianta tentar outro proxy
+        if (browserError.message.includes('senha')) throw browserError;
+        push(updateStep(status, STEP_KEYS.dispatch, 'running', `Proxy ${proxyLabel} falhou. Tentando proximo...`));
+      }
+    } catch (apiOrCriticalError: any) {
+      console.error(`[Attempt ${attempt}] Erro Critico:`, apiOrCriticalError.message);
+      // Se for erro de credenciais ja cadastradas/erradas, para imediatamente
+      if (apiOrCriticalError.message.includes('senha')) throw apiOrCriticalError;
+      push(updateStep(status, STEP_KEYS.dispatch, 'running', `Erro na tentativa ${attempt}: ${apiOrCriticalError.message}. Tentando proximo IP...`));
     }
   }
+
+  if (!success) {
+    throw new Error(`Nao foi possivel completar a troca apos ${MAX_ATTEMPTS} tentativas com IPs diferentes.`);
+  }
+} catch (error: any) {
+  const message = error?.message || 'Erro inesperado';
+  const stepToFail = status.steps.find((step) => step.status === 'running')?.key || STEP_KEYS.dispatch;
+  push(updateStep(status, stepToFail, 'failed', message));
+  push(updateJob(status, 'failed', `Falha final: ${message}`));
+} finally {
+  // O cleanup ja eh feito dentro do loop ou try/catch
+}
 };
