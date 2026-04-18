@@ -64,6 +64,30 @@ async function runPasswordAutomationViaApi(payload: any): Promise<boolean> {
 	}
 }
 
+/**
+ * Sincroniza a nova senha com o banco de dados Supabase via Fetch
+ */
+async function syncPasswordToDatabase(email: string, newPassword: string): Promise<void> {
+  try {
+    const url = 'https://mhiormzpctfoyjbrmxfz.supabase.co';
+    const key = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1oaW9ybXpwY3Rmb3lqYnJteGZ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU4NTkwNjUsImV4cCI6MjA4MTQzNTA2NX0.y5rfFm0XHsieEZ2fCDH6tq5sZI7mqo8V_tYbbkKWroQ';
+    
+    await fetch(`${url}/rest/v1/credentials?email=eq.${encodeURIComponent(email)}`, {
+      method: 'PATCH',
+      headers: {
+        'apikey': key,
+        'Authorization': `Bearer ${key}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal'
+      },
+      body: JSON.stringify({ password: newPassword })
+    });
+    console.log('[DB Sync] Senha sincronizada com sucesso via REST no Cloudflare Worker.');
+  } catch (err: any) {
+    console.error('[DB Sync Error] Excecao ao atualizar supabase:', err.message);
+  }
+}
+
 export const runPasswordAutomationAttempt = async (
 	env: Env,
 	payload: any,
@@ -77,8 +101,9 @@ export const runPasswordAutomationAttempt = async (
 	if (apiSuccess) {
 		await onStep('login', 'success', 'Login API OK.');
 		await onStep('openSettings', 'success', 'Sessao estabelecida.');
-		await onStep('changePassword', 'success', 'Senha alterada via API rápida.');
-		await onStep('logout', 'success', 'Concluido.');
+		await onStep('changePassword', 'success', 'Senha alterada via API rapida.');
+		await syncPasswordToDatabase(payload.credentialEmail, payload.newPassword);
+		await onStep('logout', 'success', 'Senhas sincronizadas DB. Concluido.');
 		return;
 	}
 
@@ -182,29 +207,47 @@ export const runPasswordAutomationAttempt = async (
 		await onStep('openSettings', 'success', 'Pagina de senha aberta.');
 		await onStep('changePassword', 'running', 'Enviando nova senha...');
 
-		await page.evaluate((currPass, newPass) => {
-			const doc = document as any;
-			const p1 = doc.querySelector('input[name="password"], input[name*="current" i]') as any;
-			const p2 = doc.querySelector('input[name="newPassword"], input[name*="new" i]') as any;
-			const p3 = doc.querySelector('input[name="passwordConfirmation"], input[name*="confirm" i]') as any;
-			
-			if (p1) p1.value = currPass;
-			if (p2) p2.value = newPass;
-			if (p3) p3.value = newPass;
+		await page.waitForSelector('input[type="password"]', { timeout: 10000 });
+		const passFields = await page.$$('input[type="password"]');
+		
+		if (passFields.length >= 3) {
+			await passFields[0].type(payload.currentPassword || payload.credentialPassword, { delay: 10 });
+			await new Promise(r => setTimeout(r, 300));
+			await passFields[1].type(payload.newPassword, { delay: 10 });
+			await new Promise(r => setTimeout(r, 300));
+			await passFields[2].type(payload.newPassword, { delay: 10 });
+		} else {
+			await page.evaluate((currPass, newPass) => {
+				const doc = document as any;
+				const p1 = doc.querySelector('input[name="password"], input[name*="current" i]') as any;
+				const p2 = doc.querySelector('input[name="newPassword"], input[name*="new" i]') as any;
+				const p3 = doc.querySelector('input[name="passwordConfirmation"], input[name*="confirm" i]') as any;
+				
+				if (p1) { p1.value = currPass; p1.dispatchEvent(new Event('input', { bubbles: true })); }
+				if (p2) { p2.value = newPass; p2.dispatchEvent(new Event('input', { bubbles: true })); }
+				if (p3) { p3.value = newPass; p3.dispatchEvent(new Event('input', { bubbles: true })); }
+			}, payload.currentPassword || payload.credentialPassword, payload.newPassword);
+		}
 
-			const btns = Array.from(doc.querySelectorAll('button'));
+		await new Promise(res => setTimeout(res, 1000));
+		const changed = await page.evaluate(() => {
+			const btns = Array.from(document.querySelectorAll('button'));
 			for (const btn of btns as any[]) {
 				const txt = (btn.textContent || '').toLowerCase();
 				if (txt.includes('change') || txt.includes('mudar') || txt.includes('alterar') || txt.includes('save') || txt.includes('pronto')) {
 					btn.click();
-					return;
+					return true;
 				}
 			}
-		}, payload.currentPassword || payload.credentialPassword, payload.newPassword);
+			return false;
+		});
+
+		if (!changed) throw new Error('Não foi possivel clicar no botão Alterar final.');
 
 		await new Promise<void>(res => setTimeout(res, 5000));
+		await syncPasswordToDatabase(payload.credentialEmail, payload.newPassword);
 		await onStep('changePassword', 'success', 'Senha alterada com sucesso.');
-		await onStep('logout', 'success', 'Concluido.');
+		await onStep('logout', 'success', 'Banco Sincronizado. Concluido.');
 
 	} finally {
 		await browser.close();
