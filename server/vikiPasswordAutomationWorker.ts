@@ -102,6 +102,29 @@ async function runPasswordViaApi(payload: VikiPasswordAutomationPayload): Promis
   }
 }
 
+/**
+ * Sincroniza a nova senha com o banco de dados Supabase
+ */
+async function syncPasswordToDatabase(email: string, newPassword: string): Promise<void> {
+  try {
+    const { createClient } = await import('@supabase/supabase-js');
+    const url = process.env.VITE_SUPABASE_URL || 'https://mhiormzpctfoyjbrmxfz.supabase.co';
+    const key = process.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1oaW9ybXpwY3Rmb3lqYnJteGZ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU4NTkwNjUsImV4cCI6MjA4MTQzNTA2NX0.y5rfFm0XHsieEZ2fCDH6tq5sZI7mqo8V_tYbbkKWroQ';
+    const supabase = createClient(url, key);
+    
+    console.log(`[DB Sync] Atualizando supabase para a conta ${email}...`);
+    const { error } = await supabase.from('credentials').update({ password: newPassword }).eq('email', email);
+    
+    if (error) {
+       console.error('[DB Sync Error] Erro ao sincronizar nova senha:', error.message);
+    } else {
+       console.log(`[DB Sync] Senha da credencial ${email} atualizada com sucesso no banco para o painel.`);
+    }
+  } catch (err: any) {
+    console.error('[DB Sync Error] Exceção ao atualizar supabase:', err.message);
+  }
+}
+
 export const runVikiPasswordAutomationJob = async (
   payload: VikiPasswordAutomationPayload,
   onUpdate: (nextStatus: VikiPasswordAutomationJobStatus) => void
@@ -289,6 +312,11 @@ export const runVikiPasswordAutomationJob = async (
     }
 
     if (!finalSuccess) throw new Error('Todas as tentativas falharam.');
+
+    // Sincroniza Supabase para atualizar o Front e Dashboard
+    await syncPasswordToDatabase(payload.credentialEmail, payload.newPassword);
+    push(updateStep(status, STEP_KEYS.verifyLogin, 'success', 'Sincronizado no banco com sucesso (DB).'));
+    push(updateJob(status, 'success', 'Automação na Viki Web e banco de dados finalizadas.'));
 
   } catch (error: any) {
     const message = error?.message || 'Erro inesperado';
