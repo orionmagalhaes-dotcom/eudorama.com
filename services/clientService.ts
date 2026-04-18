@@ -1233,7 +1233,8 @@ export const submitVikiPasswordAutomationRequest = async (
   const requestId = buildVikiPasswordRequestId();
   const submittedAt = new Date().toISOString();
 
-  const webhookUrl = 'https://viki-motor.eudorama.com/api/viki-password-automation';
+  const webhookUrl = ((import.meta as any).env?.VITE_VIKI_PASSWORD_AUTOMATION_WEBHOOK as string | undefined)
+    || ((import.meta as any).env?.DEV ? '/api/viki-password-automation' : undefined);
   const webhookToken = (
     (import.meta as any).env?.VITE_VIKI_PASSWORD_AUTOMATION_TOKEN
     || (import.meta as any).env?.VITE_VIKI_TV_AUTOMATION_TOKEN
@@ -1301,11 +1302,11 @@ export const submitVikiPasswordAutomationRequest = async (
     success: false,
     requestId,
     provider: 'history_fallback',
-    message: 'Automacao de troca de senha nao respondendo. Verifique se o motor local esta ligado e o tunel ativo.',
+    message: 'Nuvem nao configurada. Webhook indisponivel.',
     executionStatus: 'failed',
     steps: [
       { key: 'request', label: 'Solicitacao recebida', status: 'success', updatedAt: submittedAt },
-      { key: 'dispatch', label: 'Tentativa de iniciar automacao', status: 'failed', updatedAt: submittedAt, details: 'Motor local ou tunel nao encontrado' }
+      { key: 'dispatch', label: 'Tentativa de iniciar automacao', status: 'failed', updatedAt: submittedAt, details: 'Falha ao contatar a nuvem (Cloudflare)' }
     ]
   };
 };
