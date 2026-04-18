@@ -136,20 +136,17 @@ export const runVikiPasswordAutomationJob = async (
         }
 
         // 2. FALLBACK NAVEGADOR
-        push(updateStep(status, STEP_KEYS.dispatch, 'running', `API bloqueada. Usando navegador VISÍVEL (Tentativa ${i})...`));
+        push(updateStep(status, STEP_KEYS.dispatch, 'running', `API bloqueada. Usando navegador invisivel (Tentativa ${i})...`));
         let browser: any = null;
         try {
             const { chromium } = await import('playwright');
             browser = await chromium.launch({ 
-                headless: false, // VISÍVEL P/ DEBUG
+                headless: true, // DE VOLTA AO INVISIVEL
                 args: ['--disable-blink-features=AutomationControlled']
             });
             const context = await browser.newContext({
-                viewport: { width: 412, height: 915 },
-                userAgent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-                isMobile: true,
-                hasTouch: true,
-                deviceScaleFactor: 2
+                viewport: { width: 1366, height: 768 },
+                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             });
             const page = await context.newPage();
             page.setDefaultTimeout(60000);
@@ -204,8 +201,7 @@ export const runVikiPasswordAutomationJob = async (
             await sleep(5000);
 
             if (page.url().includes('sign-in')) {
-                console.log('[DEBUG] Falha no login, URL ainda contem sign-in. Mantendo aberto...');
-                await new Promise(() => {}); // Manter aberto indefinidamente para depuração
+                throw new Error('Falha no login web.');
             }
 
             await page.goto('https://www.viki.com/user-account-settings#account', { waitUntil: 'domcontentloaded' });
@@ -223,34 +219,72 @@ export const runVikiPasswordAutomationJob = async (
             }
 
             await sleep(2000);
-            await page.evaluate((curr, next) => {
-                const inputs = Array.from(document.querySelectorAll('input'));
-                const p1 = inputs.find(i => /current/i.test(i.name) || i.placeholder.includes('atual') || i.placeholder.includes('Current'));
-                const p2 = inputs.find(i => /newPassword/i.test(i.name) || i.placeholder.includes('nova') || i.placeholder.includes('New'));
-                const p3 = inputs.find(i => /confirmation/i.test(i.name) || i.placeholder.includes('confirm') || i.placeholder.includes('Confirm'));
-                
-                if (p1) p1.value = curr;
-                if (p2) p2.value = next;
-                if (p3) p3.value = next;
+            
+            // Foca nos campos de input do tipo password para trocar s senhas 
+            console.log('[DEBUG] Preenchendo campos de senhas (atual, nova, confirmar)...');
+            const passFields = page.locator('input[type="password"]');
+            await passFields.first().waitFor({ state: 'visible', timeout: 5000 });
+            
+            const count = await passFields.count();
+            if (count >= 3) {
+               // Playwright nativo dispara os eventos React necessários
+               await passFields.nth(0).fill(payload.currentPassword);
+               await sleep(300);
+               await passFields.nth(1).fill(payload.newPassword);
+               await sleep(300);
+               await passFields.nth(2).fill(payload.newPassword);
+            } else {
+               console.log(`[DEBUG] Apenas ${count} campos de senha encontrados. Preenchimento Playwright puro falhou.`);
+               // Fallback: Disparar eventos nativos de input via Javascript
+               await page.evaluate((curr, next) => {
+                   const inputs = Array.from(document.querySelectorAll('input'));
+                   const p1 = inputs.find(i => /current/i.test(i.name) || i.placeholder.includes('atual') || i.placeholder.includes('Current'));
+                   const p2 = inputs.find(i => /newPassword/i.test(i.name) || i.placeholder.includes('nova') || i.placeholder.includes('New'));
+                   const p3 = inputs.find(i => /confirmation/i.test(i.name) || i.placeholder.includes('confirm') || i.placeholder.includes('Confirm'));
+                   
+                   if (p1) { p1.value = curr; p1.dispatchEvent(new Event('input', { bubbles: true })); }
+                   if (p2) { p2.value = next; p2.dispatchEvent(new Event('input', { bubbles: true })); }
+                   if (p3) { p3.value = next; p3.dispatchEvent(new Event('input', { bubbles: true })); }
+               }, payload.currentPassword, payload.newPassword);
+            }
 
-                const btns = Array.from(document.querySelectorAll('button'));
-                const save = btns.find(b => /save|salvar|mudar|confirm|pronto/i.test(b.textContent || ''));
-                if (save) save.click();
-            }, payload.currentPassword, payload.newPassword);
+            await sleep(1000);
+            
+            // Tenta clicar usando native Playwright primeiro (mais forte)
+            try {
+                const saveBtn = page.locator('button:has-text("Alterar"), button:has-text("Salvar"), button:has-text("Save"), button:has-text("Mudar"), button:has-text("Confirm")').first();
+                if (await saveBtn.count() > 0) {
+                    await saveBtn.click();
+                    console.log('[DEBUG] Botão final clicado via Locator Playwright!');
+                } else {
+                    // Fallback Javascript manual
+                    const saved = await page.evaluate(() => {
+                        const btns = Array.from(document.querySelectorAll('button'));
+                        const save = btns.find(b => /save|salvar|mudar|confirm|pronto|alterar/i.test(b.textContent || ''));
+                        if (save) { save.click(); return true; }
+                        return false;
+                    });
+                    
+                    if (!saved) {
+                        throw new Error('Botão de SAIR / SALVAR / ALTERAR não encontrado no código HTML.');
+                    } else {
+                        console.log('[DEBUG] Botão final clicado via JS Evaluate!');
+                    }
+                }
+            } catch (e: any) {
+                console.log('[DEBUG] Erro ao tentar clicar no botão:', e.message);
+                throw e;
+            }
 
             await sleep(5000);
             push(updateJob(status, 'success', 'Troca concluida via navegador invisivel.'));
             
-            console.log('[DEBUG] Processo concluído! Mantendo o navegador aberto 3 minutos para você checar as alterações...');
-            await sleep(180000); // 3 minutos
-
             finalSuccess = true;
             break;
         } catch (err: any) {
             console.error('[Browser Error]', err.message);
         } finally {
-            // Em debug visual, vamos pular o fechamento automático sumario
-            // if (browser) await browser.close();
+            if (browser) await browser.close();
         }
     }
 

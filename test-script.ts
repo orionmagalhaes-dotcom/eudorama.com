@@ -2,10 +2,10 @@ import { runVikiPasswordAutomationJob } from './server/vikiPasswordAutomationWor
 
 async function test() {
   const payload = {
-    requestId: 'test-final',
-    credentialEmail: 'clientesviki4@gmail.com',
-    currentPassword: 'euudorama5', // Senha resgatada do Supabase!
-    newPassword: 'eudorama2'
+    requestId: 'painel-admin-simulado',
+    credentialEmail: 'clientesviki11@gmail.com',
+    currentPassword: 'euudorama05',
+    newPassword: 'eudorama16'
   };
 
   console.log(`Starting test for ${payload.credentialEmail}...`);
