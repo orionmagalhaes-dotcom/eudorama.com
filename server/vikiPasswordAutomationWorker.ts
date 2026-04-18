@@ -62,34 +62,13 @@ const updateJob = (
 });
 
 /**
- * Busca proxies diretamente da API do ProxyScrape
- */
-async function getMotorProxies(): Promise<string[]> {
-	try {
-		const res = await fetch('https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all');
-		const text = await res.text();
-		return text.split('\r\n').filter(line => line.includes(':')).map(p => p.trim());
-	} catch (e) {
-		console.error('[Proxy] Falha ao buscar lista:', e);
-		return [];
-	}
-}
-
-/**
  * Tentativa via API pura (Mais rapido)
  */
-async function runPasswordViaApi(payload: VikiPasswordAutomationPayload, proxy?: string): Promise<boolean> {
+async function runPasswordViaApi(payload: VikiPasswordAutomationPayload): Promise<boolean> {
   try {
-    let agent: any = null;
-    if (proxy) {
-      const { HttpsProxyAgent } = await import('https-proxy-agent');
-      agent = new HttpsProxyAgent(`http://${proxy}`);
-    }
-
     const loginRes = await fetch(`https://api.viki.io/v4/sessions.json?app=100005a`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      agent,
       body: JSON.stringify({
         username: payload.credentialEmail,
         password: payload.currentPassword,
@@ -109,7 +88,6 @@ async function runPasswordViaApi(payload: VikiPasswordAutomationPayload, proxy?:
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`
       },
-      agent,
       body: JSON.stringify({
         user: {
           password: payload.newPassword,
@@ -137,19 +115,17 @@ export const runVikiPasswordAutomationJob = async (
   try {
     push(updateJob(status, 'running', 'Motor local iniciado (Modo Invisivel).'));
 
-    // 0. Proxies
-    push(updateStep(status, STEP_KEYS.dispatch, 'running', 'Buscando IP alternativo...'));
-    const proxies = await getMotorProxies();
+    // 0. Automação Cloudflare (Sem Proxy)
+    push(updateStep(status, STEP_KEYS.dispatch, 'running', 'Iniciando automação...'));
     
     const MAX_ATTEMPTS = 3;
     let finalSuccess = false;
 
     for (let i = 1; i <= MAX_ATTEMPTS; i++) {
-        const proxy = proxies.length > 0 ? proxies[Math.floor(Math.random() * proxies.length)] : undefined;
-        push(updateStep(status, STEP_KEYS.dispatch, 'running', `Tentativa ${i}/${MAX_ATTEMPTS} com IP: ${proxy || 'Local'}`));
+        push(updateStep(status, STEP_KEYS.dispatch, 'running', `Tentativa ${i}/${MAX_ATTEMPTS} via Conexão Padrão`));
 
         // 1. TENTA API PRIMEIRO
-        const apiOk = await runPasswordViaApi(payload, proxy);
+        const apiOk = await runPasswordViaApi(payload);
         if (apiOk) {
             push(updateStep(status, STEP_KEYS.login, 'success', 'Login OK (API).'));
             push(updateStep(status, STEP_KEYS.changePassword, 'success', 'Senha alterada via API.'));
@@ -159,61 +135,122 @@ export const runVikiPasswordAutomationJob = async (
             break;
         }
 
-        // 2. FALLBACK NAVEGADOR (HEADLESS)
-        push(updateStep(status, STEP_KEYS.dispatch, 'running', `API bloqueada. Usando navegador invisivel (Tentativa ${i})...`));
+        // 2. FALLBACK NAVEGADOR
+        push(updateStep(status, STEP_KEYS.dispatch, 'running', `API bloqueada. Usando navegador VISÍVEL (Tentativa ${i})...`));
         let browser: any = null;
         try {
             const { chromium } = await import('playwright');
             browser = await chromium.launch({ 
-                headless: true, // INVISIVEL
-                args: ['--disable-blink-features=AutomationControlled'],
-                ...(proxy ? { proxy: { server: `http://${proxy}` } } : {})
+                headless: false, // VISÍVEL P/ DEBUG
+                args: ['--disable-blink-features=AutomationControlled']
             });
-            const page = await browser.newPage();
+            const context = await browser.newContext({
+                viewport: { width: 412, height: 915 },
+                userAgent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+                isMobile: true,
+                hasTouch: true,
+                deviceScaleFactor: 2
+            });
+            const page = await context.newPage();
             page.setDefaultTimeout(60000);
 
             await page.goto('https://www.viki.com/web-sign-in', { waitUntil: 'domcontentloaded' });
-            await page.type('input[placeholder="Email"]', payload.credentialEmail);
-            await page.type('input[placeholder="Password"]', payload.currentPassword);
-            await page.keyboard.press('Enter');
+            await sleep(2000);
+
+            // Esperar os campos renderizarem de fato
+            await page.waitForLoadState('domcontentloaded');
+
+            // Focar explicitamente no primeiro input de e-mail visível
+            try {
+                const emailInput = page.locator('input[type="email"], input[placeholder="Email"], input[name*="email" i]').first();
+                await emailInput.waitFor({ state: 'visible', timeout: 15000 });
+                await emailInput.fill(payload.credentialEmail);
+            } catch (e) {
+                throw new Error('Campo de e-mail invisível ou nulo na página.');
+            }
+
+            await sleep(500);
+
+            // Focar explicitamente no input de senha
+            try {
+                const passInput = page.locator('input[type="password"], input[placeholder="Password"], input[placeholder="Senha"]').first();
+                await passInput.waitFor({ state: 'visible', timeout: 5000 });
+                await passInput.click();
+                await passInput.fill(payload.currentPassword);
+            } catch (e) {
+                throw new Error('Campo de senha invisível ou nulo na página.');
+            }
+
+            await sleep(1000);
+
+            // Click Continuar igual o worker
+            const clickedBtn = await page.evaluate(() => {
+                const texts = ['continue', 'continuar', 'entrar', 'log in', 'sign in'];
+                const buttons = Array.from(document.querySelectorAll('button, a'));
+                for (const btn of buttons) {
+                    const t = btn.textContent?.toLowerCase() || '';
+                    if (texts.some(txt => t.includes(txt))) {
+                        (btn as any).click();
+                        return true;
+                    }
+                }
+                return false;
+            });
+
+            if (!clickedBtn) {
+                await page.keyboard.press('Enter');
+            }
+
             await sleep(5000);
 
-            if (page.url().includes('sign-in')) throw new Error('Falha no login web.');
+            if (page.url().includes('sign-in')) {
+                console.log('[DEBUG] Falha no login, URL ainda contem sign-in. Mantendo aberto...');
+                await new Promise(() => {}); // Manter aberto indefinidamente para depuração
+            }
 
             await page.goto('https://www.viki.com/user-account-settings#account', { waitUntil: 'domcontentloaded' });
             await sleep(3000);
 
             const clicked = await page.evaluate(() => {
-                const btn = Array.from(document.querySelectorAll('button, a')).find(el => /mudar senha|change password/i.test(el.textContent || ''));
+                const btn = Array.from(document.querySelectorAll('button, a, [role="button"]')).find(el => /mudar senha|change password|alterar senha/i.test(el.textContent || '') || /mudar senha|change password/i.test(el.getAttribute('aria-label') || '')  || /mudar senha|change password/i.test(el.getAttribute('title') || '') );
                 if (btn) { (btn as any).click(); return true; }
                 return false;
             });
 
-            if (!clicked) throw new Error('Botao nao encontrado.');
+            if (!clicked) {
+                console.log('[DEBUG] Botao mudar senha nao encontrado. Mantendo aberto...');
+                await new Promise(() => {}); // Manter aberto
+            }
 
             await sleep(2000);
             await page.evaluate((curr, next) => {
                 const inputs = Array.from(document.querySelectorAll('input'));
-                const p1 = inputs.find(i => /current/i.test(i.name) || i.placeholder.includes('atual'));
-                const p2 = inputs.find(i => /newPassword/i.test(i.name) || i.placeholder.includes('nova'));
-                const p3 = inputs.find(i => /confirmation/i.test(i.name) || i.placeholder.includes('confirm'));
+                const p1 = inputs.find(i => /current/i.test(i.name) || i.placeholder.includes('atual') || i.placeholder.includes('Current'));
+                const p2 = inputs.find(i => /newPassword/i.test(i.name) || i.placeholder.includes('nova') || i.placeholder.includes('New'));
+                const p3 = inputs.find(i => /confirmation/i.test(i.name) || i.placeholder.includes('confirm') || i.placeholder.includes('Confirm'));
                 
                 if (p1) p1.value = curr;
                 if (p2) p2.value = next;
                 if (p3) p3.value = next;
 
-                const save = Array.from(document.querySelectorAll('button')).find(b => /save|salvar|mudar/i.test(b.textContent || ''));
+                const btns = Array.from(document.querySelectorAll('button'));
+                const save = btns.find(b => /save|salvar|mudar|confirm|pronto/i.test(b.textContent || ''));
                 if (save) save.click();
             }, payload.currentPassword, payload.newPassword);
 
             await sleep(5000);
             push(updateJob(status, 'success', 'Troca concluida via navegador invisivel.'));
+            
+            console.log('[DEBUG] Processo concluído! Mantendo o navegador aberto 3 minutos para você checar as alterações...');
+            await sleep(180000); // 3 minutos
+
             finalSuccess = true;
             break;
         } catch (err: any) {
             console.error('[Browser Error]', err.message);
         } finally {
-            if (browser) await browser.close();
+            // Em debug visual, vamos pular o fechamento automático sumario
+            // if (browser) await browser.close();
         }
     }
 

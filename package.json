@@ -8,12 +8,16 @@
     "build": "vite build",
     "preview": "vite preview",
     "viki:change-password": "node scripts/change-viki-password.mjs",
+    "viki:password-queue": "node scripts/run-viki-password-queue.mjs",
+    "proxy:test-decodo": "node scripts/test-decodo-proxy.cjs",
+    "proxy:test-decodo-list": "node scripts/test-decodo-proxy-list.cjs",
     "upload:viki-mobile-video": "node scripts/upload-viki-mobile-video.mjs public/media/viki/como-conectar-no-celular.mp4 viki/como-conectar-no-celular.mp4",
     "upload:iqiyi-mobile-video": "node scripts/upload-viki-mobile-video.mjs public/media/iqiyi/como-conectar-no-celular.mp4 iqiyi/como-conectar-no-celular.mp4"
   },
   "dependencies": {
     "@cloudflare/puppeteer": "^1.0.6",
     "@supabase/supabase-js": "^2.45.0",
+    "axios": "^1.15.0",
     "https-proxy-agent": "^9.0.0",
     "lucide-react": "^0.556.0",
     "react": "^19.2.1",

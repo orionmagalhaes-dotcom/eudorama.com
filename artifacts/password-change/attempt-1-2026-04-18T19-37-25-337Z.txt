@@ -1,0 +1,5 @@
+timestamp=2026-04-18T19:37:25.770Z
+attempt=1
+stage=login_current_password
+url=https://www.viki.com/web-sign-in?return_to=%2Fsamsungtv
+error=Login TV retornou erro temporario da Viki.
