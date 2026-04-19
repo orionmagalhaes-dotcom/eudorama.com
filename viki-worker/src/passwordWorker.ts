@@ -119,7 +119,7 @@ export const runPasswordAutomationAttempt = async (
 	
 	try {
 		const page = await browser.newPage();
-		await onStep('dispatch', 'running', `Navegador na nuvem iniciado. IP: ${selectedProxy || 'Cloudflare'}`);
+		await onStep('dispatch', 'running', 'Navegador na nuvem iniciado. IP: Cloudflare');
 
 		await page.setViewport({ width: 412, height: 915, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
 		await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
@@ -173,7 +173,7 @@ export const runPasswordAutomationAttempt = async (
 		await onStep('openSettings', 'running', 'Acessando conta...');
 
 		// Tenta acessar as configuracoes com um tempo de espera maior
-		await page.goto('https://www.viki.com/user-account-settings#account', { waitUntil: 'networkidle', timeout: 80000 });
+		await page.goto('https://www.viki.com/user-account-settings#account', { waitUntil: 'networkidle0', timeout: 80000 });
 		await new Promise<void>(res => setTimeout(res, 5000));
 		
 		const changePassClicked = await page.evaluate(() => {
@@ -205,48 +205,101 @@ export const runPasswordAutomationAttempt = async (
 
 		await new Promise<void>(res => setTimeout(res, 3000));
 		await onStep('openSettings', 'success', 'Pagina de senha aberta.');
-		await onStep('changePassword', 'running', 'Enviando nova senha...');
+		await onStep('changePassword', 'running', 'Preenchendo campos de senha...');
 
 		await page.waitForSelector('input[type="password"]', { timeout: 10000 });
-		const passFields = await page.$$('input[type="password"]');
-		
-		if (passFields.length >= 3) {
-			await passFields[0].type(payload.currentPassword || payload.credentialPassword, { delay: 10 });
-			await new Promise(r => setTimeout(r, 300));
-			await passFields[1].type(payload.newPassword, { delay: 10 });
-			await new Promise(r => setTimeout(r, 300));
-			await passFields[2].type(payload.newPassword, { delay: 10 });
-		} else {
-			await page.evaluate((currPass, newPass) => {
-				const doc = document as any;
-				const p1 = doc.querySelector('input[name="password"], input[name*="current" i]') as any;
-				const p2 = doc.querySelector('input[name="newPassword"], input[name*="new" i]') as any;
-				const p3 = doc.querySelector('input[name="passwordConfirmation"], input[name*="confirm" i]') as any;
-				
-				if (p1) { p1.value = currPass; p1.dispatchEvent(new Event('input', { bubbles: true })); }
-				if (p2) { p2.value = newPass; p2.dispatchEvent(new Event('input', { bubbles: true })); }
-				if (p3) { p3.value = newPass; p3.dispatchEvent(new Event('input', { bubbles: true })); }
-			}, payload.currentPassword || payload.credentialPassword, payload.newPassword);
-		}
 
-		await new Promise(res => setTimeout(res, 1000));
+		// Preenche os campos usando o setter nativo do React (evita que o botão fique disabled)
+		const fillCount = await page.evaluate((currPass, newPass) => {
+			// Funcao auxiliar para disparar todos os eventos que o React precisa
+			const setReactInputValue = (el: any, val: string) => {
+				const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+				if (nativeInputValueSetter) {
+					nativeInputValueSetter.call(el, val);
+				} else {
+					el.value = val;
+				}
+				// Dispara todos os eventos que o React/Vue/Angular precisam
+				el.dispatchEvent(new Event('keydown', { bubbles: true }));
+				el.dispatchEvent(new Event('keypress', { bubbles: true }));
+				el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: val }));
+				el.dispatchEvent(new Event('keyup', { bubbles: true }));
+				el.dispatchEvent(new Event('change', { bubbles: true }));
+				el.dispatchEvent(new Event('blur', { bubbles: true }));
+			};
+
+			const passInputs = Array.from(document.querySelectorAll('input[type="password"]'));
+
+			if (passInputs.length >= 3) {
+				setReactInputValue(passInputs[0], currPass);
+				setReactInputValue(passInputs[1], newPass);
+				setReactInputValue(passInputs[2], newPass);
+				return 3;
+			} else if (passInputs.length === 2) {
+				// Alguns flows so tem: nova senha + confirmar
+				setReactInputValue(passInputs[0], newPass);
+				setReactInputValue(passInputs[1], newPass);
+				return 2;
+			} else if (passInputs.length === 1) {
+				setReactInputValue(passInputs[0], currPass);
+				return 1;
+			}
+			return 0;
+		}, payload.currentPassword || payload.credentialPassword, payload.newPassword);
+
+		console.log(`[Password] ${fillCount} campos preenchidos com nativeInputValueSetter.`);
+
+		// Aguarda o React re-renderizar e habilitar o botao
+		await new Promise(res => setTimeout(res, 2000));
+
+		// Clica no botao de confirmar — tenta mesmo se estiver disabled (force click)
 		const changed = await page.evaluate(() => {
-			const btns = Array.from(document.querySelectorAll('button'));
-			for (const btn of btns as any[]) {
-				const txt = (btn.textContent || '').toLowerCase();
-				if (txt.includes('change') || txt.includes('mudar') || txt.includes('alterar') || txt.includes('save') || txt.includes('pronto')) {
-					btn.click();
-					return true;
+			const SUBMIT_TEXTS = ['change password', 'change', 'mudar senha', 'mudar', 'alterar', 'save', 'save changes', 'pronto', 'confirm', 'update'];
+
+			const allBtns = Array.from(document.querySelectorAll('button, input[type="submit"], [role="button"]')) as HTMLElement[];
+
+			// 1a: Tenta botao habilitado com texto correspondente
+			for (const btn of allBtns) {
+				const txt = (btn.textContent || (btn as any).value || '').toLowerCase().trim();
+				if (SUBMIT_TEXTS.some(t => txt.includes(t)) && !(btn as any).disabled) {
+					(btn as any).click();
+					return `clicked_enabled:${txt}`;
 				}
 			}
-			return false;
+
+			// 1b: Tenta qualquer botao com texto correspondente (mesmo disabled - force click)
+			for (const btn of allBtns) {
+				const txt = (btn.textContent || (btn as any).value || '').toLowerCase().trim();
+				if (SUBMIT_TEXTS.some(t => txt.includes(t))) {
+					(btn as HTMLButtonElement).disabled = false;
+					(btn as any).removeAttribute('disabled');
+					(btn as any).click();
+					return `force_clicked:${txt}`;
+				}
+			}
+
+			// 2: Tenta o ultimo botao do formulario de senha (geralmente e o submit)
+			const form = document.querySelector('form');
+			if (form) {
+				const formBtns = Array.from(form.querySelectorAll('button, input[type="submit"]')) as HTMLElement[];
+				const lastBtn = formBtns[formBtns.length - 1];
+				if (lastBtn) {
+					(lastBtn as HTMLButtonElement).disabled = false;
+					(lastBtn as any).removeAttribute('disabled');
+					(lastBtn as any).click();
+					return `form_last_btn:${lastBtn.textContent?.trim()}`;
+				}
+			}
+
+			return null;
 		});
 
 		if (!changed) throw new Error('Não foi possivel clicar no botão Alterar final.');
+		console.log(`[Password] Botao clicado com estrategia: ${changed}`);
 
 		await new Promise<void>(res => setTimeout(res, 5000));
 		await syncPasswordToDatabase(payload.credentialEmail, payload.newPassword);
-		await onStep('changePassword', 'success', 'Senha alterada com sucesso.');
+		await onStep('changePassword', 'success', `Senha alterada com sucesso. (${changed})`);
 		await onStep('logout', 'success', 'Banco Sincronizado. Concluido.');
 
 	} finally {

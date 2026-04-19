@@ -1,7 +1,6 @@
 import puppeteer from '@cloudflare/puppeteer';
 import type { Page } from '@cloudflare/puppeteer';
 import { runPasswordAutomation } from './passwordWorker';
-import type { Page } from '@cloudflare/puppeteer';
 
 export interface Env {
 	DB: D1Database;
