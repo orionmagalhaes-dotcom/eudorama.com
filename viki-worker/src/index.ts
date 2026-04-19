@@ -985,10 +985,11 @@ export default {
 			
 			const steps = [
 				{ key: 'request', label: 'Solicitacao recebida', status: 'success' as StepStatus, updatedAt: nowIso() },
-				{ key: 'dispatch', label: 'Automacao na nuvem iniciada', status: 'pending' as StepStatus },
-				{ key: 'login', label: 'Login via API/Web', status: 'pending' as StepStatus },
-				{ key: 'openSettings', label: 'Acessar as configuracoes', status: 'pending' as StepStatus },
-				{ key: 'changePassword', label: 'Trocar a Senha', status: 'pending' as StepStatus }
+				{ key: 'dispatch', label: 'Navegador na nuvem iniciado', status: 'pending' as StepStatus },
+				{ key: 'login', label: 'Login na Viki', status: 'pending' as StepStatus },
+				{ key: 'openSettings', label: 'Abrir formulario de senha', status: 'pending' as StepStatus },
+				{ key: 'changePassword', label: 'Trocar a Senha', status: 'pending' as StepStatus },
+				{ key: 'logout', label: 'Sincronizar banco e concluir', status: 'pending' as StepStatus },
 			];
 
 			await insertQueuedStatus(env, requestId, steps);
@@ -1052,10 +1053,11 @@ export default {
 			if (payload.type === 'password') {
 				steps = [
 					{ key: 'request', label: 'Solicitacao recebida', status: 'success' as StepStatus, updatedAt: nowIso() },
-					{ key: 'dispatch', label: 'Automacao na nuvem iniciada', status: 'pending' as StepStatus },
-					{ key: 'login', label: 'Login via API/Web', status: 'pending' as StepStatus },
-					{ key: 'openSettings', label: 'Acessar as configuracoes', status: 'pending' as StepStatus },
-					{ key: 'changePassword', label: 'Trocar a Senha', status: 'pending' as StepStatus }
+					{ key: 'dispatch', label: 'Navegador na nuvem iniciado', status: 'pending' as StepStatus },
+					{ key: 'login', label: 'Login na Viki', status: 'pending' as StepStatus },
+					{ key: 'openSettings', label: 'Abrir formulario de senha', status: 'pending' as StepStatus },
+					{ key: 'changePassword', label: 'Trocar a Senha', status: 'pending' as StepStatus },
+					{ key: 'logout', label: 'Sincronizar banco e concluir', status: 'pending' as StepStatus },
 				];
 			} else {
 				steps = createInitialSteps();

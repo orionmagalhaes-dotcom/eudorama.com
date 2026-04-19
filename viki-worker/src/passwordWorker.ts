@@ -2,91 +2,39 @@ import puppeteer from '@cloudflare/puppeteer';
 import type { Env } from './index';
 
 /**
- * Busca proxies diretamente da API do ProxyScrape
- * Nota: Filtramos apenas para a porta 80 e 443, que sao as permitidas pelo Cloudflare
- */
-async function getWorkerProxies(): Promise<string[]> {
-	try {
-		const res = await fetch('https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all');
-		const text = await res.text();
-		return text.split('\r\n').filter(line => line.includes(':')).map(p => p.trim());
-	} catch (e) {
-		console.error('[Proxy] Falha ao buscar lista no Worker:', e);
-		return [];
-	}
-}
-
-const VIKI_API_CONFIG = {
-	baseUrl: 'https://api.viki.io/v4',
-	appId: '100005a',
-};
-
-/**
- * Tenta a troca via API Silenciosa (igual a TV) para evitar 429 do Cloudflare
- */
-async function runPasswordAutomationViaApi(payload: any): Promise<boolean> {
-	try {
-		// 1. Login
-		const loginRes = await fetch(`${VIKI_API_CONFIG.baseUrl}/sessions.json?app=${VIKI_API_CONFIG.appId}`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				username: payload.credentialEmail,
-				password: payload.currentPassword || payload.credentialPassword,
-			})
-		});
-
-		if (!loginRes.ok) return false;
-		const loginData: any = await loginRes.json();
-		const token = loginData.token;
-		const userId = loginData.user?.id;
-
-		if (!token || !userId) return false;
-
-		// 2. Troca
-		const updateRes = await fetch(`${VIKI_API_CONFIG.baseUrl}/users/${userId}.json?app=${VIKI_API_CONFIG.appId}`, {
-			method: 'PUT',
-			headers: {
-				'Content-Type': 'application/json',
-				'Authorization': `Bearer ${token}`
-			},
-			body: JSON.stringify({
-				user: {
-					password: payload.newPassword,
-					current_password: payload.currentPassword || payload.credentialPassword
-				}
-			})
-		});
-
-		return updateRes.ok;
-	} catch (e) {
-		return false;
-	}
-}
-
-/**
- * Sincroniza a nova senha com o banco de dados Supabase via Fetch
+ * Sincroniza a nova senha com o banco de dados Supabase via REST.
+ * Lança erro se o PATCH não afetar nenhuma linha ou retornar status de falha.
  */
 async function syncPasswordToDatabase(email: string, newPassword: string): Promise<void> {
-  try {
-    const url = 'https://mhiormzpctfoyjbrmxfz.supabase.co';
-    const key = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1oaW9ybXpwY3Rmb3lqYnJteGZ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU4NTkwNjUsImV4cCI6MjA4MTQzNTA2NX0.y5rfFm0XHsieEZ2fCDH6tq5sZI7mqo8V_tYbbkKWroQ';
-    
-    await fetch(`${url}/rest/v1/credentials?email=eq.${encodeURIComponent(email)}`, {
-      method: 'PATCH',
-      headers: {
-        'apikey': key,
-        'Authorization': `Bearer ${key}`,
-        'Content-Type': 'application/json',
-        'Prefer': 'return=minimal'
-      },
-      body: JSON.stringify({ password: newPassword })
-    });
-    console.log('[DB Sync] Senha sincronizada com sucesso via REST no Cloudflare Worker.');
-  } catch (err: any) {
-    console.error('[DB Sync Error] Excecao ao atualizar supabase:', err.message);
-  }
+	const url = 'https://mhiormzpctfoyjbrmxfz.supabase.co';
+	const key = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1oaW9ybXpwY3Rmb3lqYnJteGZ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU4NTkwNjUsImV4cCI6MjA4MTQzNTA2NX0.y5rfFm0XHsieEZ2fCDH6tq5sZI7mqo8V_tYbbkKWroQ';
+
+	// FIX Bug #5: verificar a resposta do PATCH — 'return=representation' retorna as linhas atualizadas
+	const res = await fetch(`${url}/rest/v1/credentials?email=eq.${encodeURIComponent(email)}`, {
+		method: 'PATCH',
+		headers: {
+			'apikey': key,
+			'Authorization': `Bearer ${key}`,
+			'Content-Type': 'application/json',
+			'Prefer': 'return=representation',
+		},
+		body: JSON.stringify({ password: newPassword }),
+	});
+
+	if (!res.ok) {
+		const body = await res.text().catch(() => '');
+		throw new Error(`[DB Sync] Falha no PATCH Supabase (HTTP ${res.status}): ${body.slice(0, 200)}`);
+	}
+
+	const rows = await res.json().catch(() => []) as any[];
+	if (!Array.isArray(rows) || rows.length === 0) {
+		throw new Error(`[DB Sync] Nenhuma credencial encontrada no banco para o email: ${email}`);
+	}
+
+	console.log(`[DB Sync] Senha sincronizada com sucesso para ${email} (${rows.length} linha(s) atualizadas).`);
 }
+
+
 
 export const runPasswordAutomationAttempt = async (
 	env: Env,
@@ -94,51 +42,37 @@ export const runPasswordAutomationAttempt = async (
 	onStep: (key: string, status: any, details?: string) => Promise<void>,
 	attemptInfo: string
 ): Promise<void> => {
-	// 1. TENTATIVA VIA API (SILENCIOSA - EVITA 429)
-	await onStep('dispatch', 'running', `Tentando troca rapida via API (Sem Navegador). ${attemptInfo}`);
-	const apiSuccess = await runPasswordAutomationViaApi(payload);
-	
-	if (apiSuccess) {
-		await onStep('login', 'success', 'Login API OK.');
-		await onStep('openSettings', 'success', 'Sessao estabelecida.');
-		await onStep('changePassword', 'success', 'Senha alterada via API rapida.');
-		await syncPasswordToDatabase(payload.credentialEmail, payload.newPassword);
-		await onStep('logout', 'success', 'Senhas sincronizadas DB. Concluido.');
-		return;
-	}
-
-	await onStep('dispatch', 'running', 'API indisponivel ou bloqueada. Usando navegador de reserva...');
-
-	// 2. FALLBACK PARA NAVEGADOR (PUPPETEER)
 	const browser = await puppeteer.launch(env.BROWSER).catch(err => {
 		if (err.message.includes('429')) {
-			throw new Error('Limite de navegadores do Cloudflare atingido (429). Tente novamente em alguns minutos ou altere apenas uma conta por vez.');
+			throw new Error('Limite de navegadores do Cloudflare atingido (429). Tente novamente em alguns minutos.');
 		}
 		throw err;
 	});
-	
+
 	try {
 		const page = await browser.newPage();
-		await onStep('dispatch', 'running', 'Navegador na nuvem iniciado. IP: Cloudflare');
+		await onStep('dispatch', 'running', `Iniciando navegador na nuvem. ${attemptInfo}`);
 
 		await page.setViewport({ width: 412, height: 915, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
 		await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
-		
-		await onStep('login', 'running', 'Abrindo Viki...');
+
+		await onStep('dispatch', 'running', 'Navegador iniciado. Abrindo Viki...');
+		await onStep('login', 'running', 'Abrindo pagina de login...');
 
 		await page.goto('https://www.viki.com/web-sign-in?return_to=%2F', { waitUntil: 'domcontentloaded', timeout: 60000 });
 		await new Promise<void>(res => setTimeout(res, 2000));
 
-		// Login
+		// --- LOGIN ---
 		await onStep('login', 'running', 'Preenchendo credenciais...');
+
 		const emailSelectors = ['input[placeholder="Email"]', 'input[type="email"]', 'input[name*="email" i]'];
 		let emailHandle = null;
 		for (const sel of emailSelectors) {
 			emailHandle = await page.$(sel);
 			if (emailHandle) break;
 		}
-		if (!emailHandle) throw new Error('Campo de e-mail nao encontrado');
-		await emailHandle.type(payload.credentialEmail, { delay: 10 });
+		if (!emailHandle) throw new Error('Campo de e-mail nao encontrado na pagina de login.');
+		await emailHandle.type(payload.credentialEmail, { delay: 15 });
 
 		const passSelectors = ['input[placeholder="Password"]', 'input[type="password"]', 'input[placeholder="Senha"]'];
 		let passHandle = null;
@@ -146,15 +80,15 @@ export const runPasswordAutomationAttempt = async (
 			passHandle = await page.$(sel);
 			if (passHandle) break;
 		}
-		if (!passHandle) throw new Error('Campo de senha nao encontrado');
-		await passHandle.type(payload.currentPassword || payload.credentialPassword, { delay: 10 });
+		if (!passHandle) throw new Error('Campo de senha nao encontrado na pagina de login.');
+		await passHandle.type(payload.currentPassword || payload.credentialPassword, { delay: 15 });
 
-		// Click Continuar
+		// Clica em "Continue" / "Log in"
 		await page.evaluate(() => {
-			const texts = ['continue', 'continuar', 'entrar', 'log in', 'sign in'];
+			const texts = ['continue', 'continuar', 'log in', 'sign in', 'entrar'];
 			const buttons = Array.from(document.querySelectorAll('button, a'));
 			for (const btn of buttons) {
-				const t = btn.textContent?.toLowerCase() || '';
+				const t = (btn.textContent || '').trim().toLowerCase();
 				if (texts.some(txt => t.includes(txt))) {
 					(btn as any).click();
 					return;
@@ -163,63 +97,79 @@ export const runPasswordAutomationAttempt = async (
 		});
 
 		await new Promise<void>(res => setTimeout(res, 5000));
-		
-		const bodyText = await page.evaluate(() => document.body.innerText);
-		if (/wrong password|senha incorreta|invalid password|incorrect password/i.test(bodyText)) {
-			throw new Error('A senha atual esta incorreta.');
+
+		const loginBody = await page.evaluate(() => document.body.innerText || '');
+		if (/wrong password|senha incorreta|invalid password|incorrect password|invalid credentials/i.test(loginBody)) {
+			throw new Error('Credenciais incorretas. Verifique o email e a senha atual cadastrados.');
+		}
+		// Checa se ainda está na página de login (login falhou silenciosamente)
+		const currentUrlAfterLogin = page.url();
+		if (currentUrlAfterLogin.includes('sign-in') || currentUrlAfterLogin.includes('login')) {
+			throw new Error('Login nao foi concluido. A pagina de login ainda esta aberta apos tentativa.');
 		}
 
-		await onStep('login', 'success', 'Login OK.');
-		await onStep('openSettings', 'running', 'Acessando conta...');
+		await onStep('login', 'success', 'Login realizado com sucesso.');
+		await onStep('openSettings', 'running', 'Navegando para configuracoes da conta...');
 
-		// Tenta acessar as configuracoes com um tempo de espera maior
+		// --- CONFIGURAÇÕES ---
 		await page.goto('https://www.viki.com/user-account-settings#account', { waitUntil: 'networkidle0', timeout: 80000 });
-		await new Promise<void>(res => setTimeout(res, 5000));
-		
+		await new Promise<void>(res => setTimeout(res, 4000));
+
 		const changePassClicked = await page.evaluate(() => {
 			const texts = ['change password', 'mudar senha', 'alterar senha', 'mudar a senha'];
-			// 1. Tenta por texto em botoes e links
 			const items = Array.from(document.querySelectorAll('button, a, [role="button"]'));
 			for (const item of items) {
 				const t = (item.textContent || '').toLowerCase();
 				const aria = (item.getAttribute('aria-label') || '').toLowerCase();
 				const title = (item.getAttribute('title') || '').toLowerCase();
-				
-				if ((texts.some(txt => t.includes(txt)) || texts.some(txt => aria.includes(txt)) || texts.some(txt => title.includes(txt))) && !t.includes('email')) {
+				if (
+					(texts.some(txt => t.includes(txt)) || texts.some(txt => aria.includes(txt)) || texts.some(txt => title.includes(txt))) &&
+					!t.includes('email')
+				) {
 					(item as any).click();
 					return true;
 				}
 			}
-			
-			// 2. Tenta por seletores especificos da Viki se o texto falhar
-			const scBtn = document.querySelector('button[class*="Button"], button[class*="Account"]') as HTMLElement;
+			const scBtn = document.querySelector('button[class*="Button"], button[class*="Account"]') as HTMLElement | null;
 			if (scBtn && /senha|password/i.test(scBtn.innerText)) {
 				scBtn.click();
 				return true;
 			}
-			
 			return false;
 		});
 
-		if (!changePassClicked) throw new Error('Botao de troca de senha nao encontrado. A Viki pode ter alterado o layout ou esta conta usa login social (Google/FB).');
+		if (!changePassClicked) {
+			throw new Error('Botao "Change Password" nao encontrado. A Viki pode ter alterado o layout ou esta conta usa login social (Google/Facebook).');
+		}
 
+		// Aguarda o formulário de senha aparecer (exige >= 3 campos: atual, nova, confirmar)
 		await new Promise<void>(res => setTimeout(res, 3000));
-		await onStep('openSettings', 'success', 'Pagina de senha aberta.');
-		await onStep('changePassword', 'running', 'Preenchendo campos de senha...');
+		await page.waitForSelector('input[type="password"]', { timeout: 12000 });
 
-		await page.waitForSelector('input[type="password"]', { timeout: 10000 });
+		// FIX Bug #4: aguardar pelo menos 3 campos de senha (se < 3, o form ainda não abriu)
+		let waitForFieldsRetries = 5;
+		while (waitForFieldsRetries-- > 0) {
+			const count = await page.evaluate(() => document.querySelectorAll('input[type="password"]').length);
+			if (count >= 3) break;
+			if (waitForFieldsRetries === 0) {
+				throw new Error(`Formulario de troca de senha incompleto: apenas ${count} campo(s) encontrado(s). Esperado pelo menos 3.`);
+			}
+			await new Promise<void>(res => setTimeout(res, 1500));
+		}
 
-		// Preenche os campos usando o setter nativo do React (evita que o botão fique disabled)
-		const fillCount = await page.evaluate((currPass, newPass) => {
-			// Funcao auxiliar para disparar todos os eventos que o React precisa
-			const setReactInputValue = (el: any, val: string) => {
-				const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-				if (nativeInputValueSetter) {
-					nativeInputValueSetter.call(el, val);
+		await onStep('openSettings', 'success', 'Formulario de troca de senha aberto.');
+		await onStep('changePassword', 'running', 'Preenchendo campos de senha com eventos nativos do React...');
+
+		// FIX Bug #3 + #4: preenche os 3 campos obrigatórios usando native setter inline
+		const fillResult = await page.evaluate((currPass: string, newPass: string) => {
+			// Dispara todos os eventos que o React/Vue precisam reconhecer o novo valor
+			const setReactInputValue = (el: HTMLInputElement, val: string) => {
+				const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+				if (nativeSetter) {
+					nativeSetter.call(el, val);
 				} else {
 					el.value = val;
 				}
-				// Dispara todos os eventos que o React/Vue/Angular precisam
 				el.dispatchEvent(new Event('keydown', { bubbles: true }));
 				el.dispatchEvent(new Event('keypress', { bubbles: true }));
 				el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: val }));
@@ -228,94 +178,132 @@ export const runPasswordAutomationAttempt = async (
 				el.dispatchEvent(new Event('blur', { bubbles: true }));
 			};
 
-			const passInputs = Array.from(document.querySelectorAll('input[type="password"]'));
+			const passInputs = Array.from(document.querySelectorAll('input[type="password"]')) as HTMLInputElement[];
+			const count = passInputs.length;
 
-			if (passInputs.length >= 3) {
-				setReactInputValue(passInputs[0], currPass);
-				setReactInputValue(passInputs[1], newPass);
-				setReactInputValue(passInputs[2], newPass);
-				return 3;
-			} else if (passInputs.length === 2) {
-				// Alguns flows so tem: nova senha + confirmar
-				setReactInputValue(passInputs[0], newPass);
-				setReactInputValue(passInputs[1], newPass);
-				return 2;
-			} else if (passInputs.length === 1) {
-				setReactInputValue(passInputs[0], currPass);
-				return 1;
+			if (count < 3) {
+				return { filled: count, error: `Apenas ${count} campo(s) de senha encontrado(s). O formulario nao esta completamente carregado.` };
 			}
-			return 0;
+
+			// Preenche os 3 campos: senha atual, nova senha, confirmar nova senha
+			setReactInputValue(passInputs[0], currPass);
+			setReactInputValue(passInputs[1], newPass);
+			setReactInputValue(passInputs[2], newPass);
+
+			return { filled: 3, error: null };
 		}, payload.currentPassword || payload.credentialPassword, payload.newPassword);
 
-		console.log(`[Password] ${fillCount} campos preenchidos com nativeInputValueSetter.`);
+		if (fillResult.error) {
+			throw new Error(fillResult.error);
+		}
+		console.log(`[Password] ${fillResult.filled} campos preenchidos com nativeInputValueSetter.`);
 
-		// Aguarda o React re-renderizar e habilitar o botao
-		await new Promise(res => setTimeout(res, 2000));
+		// Aguarda o React re-renderizar e (espera-se) habilitar o botão
+		await new Promise<void>(res => setTimeout(res, 2500));
 
-		// Clica no botao de confirmar — tenta mesmo se estiver disabled (force click)
-		const changed = await page.evaluate(() => {
-			const SUBMIT_TEXTS = ['change password', 'change', 'mudar senha', 'mudar', 'alterar', 'save', 'save changes', 'pronto', 'confirm', 'update'];
-
+		// FIX Bug #3: submissão correta — tenta botão habilitado com texto, depois form.requestSubmit()
+		const submitResult = await page.evaluate(() => {
+			const SUBMIT_TEXTS = ['change password', 'change', 'mudar senha', 'mudar', 'alterar', 'save', 'save changes', 'confirm', 'update'];
 			const allBtns = Array.from(document.querySelectorAll('button, input[type="submit"], [role="button"]')) as HTMLElement[];
 
-			// 1a: Tenta botao habilitado com texto correspondente
+			// 1. Tenta somente botão realmente habilitado com texto correspondente
 			for (const btn of allBtns) {
 				const txt = (btn.textContent || (btn as any).value || '').toLowerCase().trim();
-				if (SUBMIT_TEXTS.some(t => txt.includes(t)) && !(btn as any).disabled) {
+				if (SUBMIT_TEXTS.some(t => txt.includes(t)) && !(btn as HTMLButtonElement).disabled) {
 					(btn as any).click();
 					return `clicked_enabled:${txt}`;
 				}
 			}
 
-			// 1b: Tenta qualquer botao com texto correspondente (mesmo disabled - force click)
-			for (const btn of allBtns) {
-				const txt = (btn.textContent || (btn as any).value || '').toLowerCase().trim();
-				if (SUBMIT_TEXTS.some(t => txt.includes(t))) {
-					(btn as HTMLButtonElement).disabled = false;
-					(btn as any).removeAttribute('disabled');
-					(btn as any).click();
-					return `force_clicked:${txt}`;
-				}
-			}
-
-			// 2: Tenta o ultimo botao do formulario de senha (geralmente e o submit)
-			const form = document.querySelector('form');
+			// 2. Tenta submeter via form.requestSubmit() — respeita validação do React
+			const form = document.querySelector('form') as HTMLFormElement | null;
 			if (form) {
-				const formBtns = Array.from(form.querySelectorAll('button, input[type="submit"]')) as HTMLElement[];
-				const lastBtn = formBtns[formBtns.length - 1];
-				if (lastBtn) {
-					(lastBtn as HTMLButtonElement).disabled = false;
-					(lastBtn as any).removeAttribute('disabled');
-					(lastBtn as any).click();
-					return `form_last_btn:${lastBtn.textContent?.trim()}`;
+				try {
+					form.requestSubmit();
+					return 'form_requestSubmit';
+				} catch {
+					// requestSubmit pode lançar se a validação HTML falhar — isso é esperado
+					return 'form_requestSubmit_validation_failed';
 				}
 			}
 
 			return null;
 		});
 
-		if (!changed) throw new Error('Não foi possivel clicar no botão Alterar final.');
-		console.log(`[Password] Botao clicado com estrategia: ${changed}`);
+		if (!submitResult || submitResult === 'form_requestSubmit_validation_failed') {
+			throw new Error(
+				submitResult === 'form_requestSubmit_validation_failed'
+					? 'O formulario recusou o submit por validacao HTML (campos invalidos ou nao reconhecidos pelo React).'
+					: 'Nenhum botao de submit encontrado e nenhum formulario detectado na pagina.'
+			);
+		}
+		console.log(`[Password] Submit acionado com estrategia: ${submitResult}`);
 
-		await new Promise<void>(res => setTimeout(res, 5000));
+		// FIX Bug #2: aguarda e verifica EXPLICITAMENTE se a tela exibiu confirmação de sucesso
+		await new Promise<void>(res => setTimeout(res, 6000));
+
+		const pageTextAfter = await page.evaluate(() => (document.body.innerText || '').replace(/\s+/g, ' ').toLowerCase());
+
+		const successPatterns = [
+			'password changed', 'senha alterada', 'senha atualizada', 'password updated',
+			'password has been changed', 'password successfully', 'successfully changed',
+			'success', 'atualizado com sucesso', 'alterado com sucesso',
+		];
+		const errorPatterns = [
+			'incorrect', 'wrong', 'invalid', 'does not match', "doesn't match",
+			'nao confere', 'incorreta', 'invalida', 'senha errada', 'error', 'failed',
+			'must be different', 'must not', 'too short', 'too weak',
+		];
+
+		const confirmedSuccess = successPatterns.some(p => pageTextAfter.includes(p));
+		const confirmedError = errorPatterns.some(p => pageTextAfter.includes(p));
+
+		if (confirmedError && !confirmedSuccess) {
+			// Captura mensagem de erro mais específica da tela
+			const errMsg = await page.evaluate(() => {
+				const alertEl = document.querySelector('[role="alert"], .error, .alert, [class*="error" i], [class*="alert" i]') as HTMLElement | null;
+				return alertEl?.innerText?.trim() || '';
+			});
+			throw new Error(`A troca de senha foi rejeitada pela Viki: "${errMsg || 'verifique os campos e tente novamente'}"`);
+		}
+
+		if (!confirmedSuccess) {
+			// Não foi sucesso nem erro claro — estado ambíguo: falha segura
+			throw new Error(
+				'Nao foi possivel confirmar se a senha foi alterada. Nenhuma mensagem de sucesso ou erro reconhecida na tela. Tente novamente.'
+			);
+		}
+
+		// FIX Bug #5: sync com verificação real da resposta
 		await syncPasswordToDatabase(payload.credentialEmail, payload.newPassword);
-		await onStep('changePassword', 'success', `Senha alterada com sucesso. (${changed})`);
-		await onStep('logout', 'success', 'Banco Sincronizado. Concluido.');
+
+		await onStep('changePassword', 'success', `Senha alterada e confirmada na tela. (${submitResult})`);
+		await onStep('logout', 'success', 'Banco sincronizado. Concluido.');
 
 	} finally {
 		await browser.close();
 	}
 };
 
-export const runPasswordAutomation = async (env: Env, payload: any, onStep: any) => {
+export const runPasswordAutomation = async (env: Env, payload: any, onStep: any): Promise<void> => {
 	const maxRetries = 3;
 	for (let i = 1; i <= maxRetries; i++) {
 		try {
 			await runPasswordAutomationAttempt(env, payload, onStep, `(Tentativa ${i}/${maxRetries})`);
 			return;
 		} catch (err: any) {
-			if (i < maxRetries && !err.message.includes('senha')) {
-				await new Promise(r => setTimeout(r, 2000));
+			const msg: string = err.message || '';
+			// Não retentar em erros definitivos (senha errada, validação, sem confirmação)
+			const isFatal =
+				msg.includes('Credenciais incorretas') ||
+				msg.includes('rejeitada pela Viki') ||
+				msg.includes('login social') ||
+				msg.includes('formulario recusou') ||
+				msg.includes('nao foi possivel confirmar');
+
+			if (i < maxRetries && !isFatal) {
+				console.warn(`[Password] Tentativa ${i} falhou (${msg}). Aguardando para retry...`);
+				await new Promise(r => setTimeout(r, 3000));
 				continue;
 			}
 			throw err;
