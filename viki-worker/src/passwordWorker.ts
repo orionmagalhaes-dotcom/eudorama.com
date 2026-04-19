@@ -34,8 +34,59 @@ async function syncPasswordToDatabase(email: string, newPassword: string): Promi
 	console.log(`[DB Sync] Senha sincronizada com sucesso para ${email} (${rows.length} linha(s) atualizadas).`);
 }
 
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+const clickByText = async (page: any, values: string[]): Promise<boolean> => {
+	const targets = values.map((item) => item.toLowerCase());
+	return page.evaluate((texts: string[]) => {
+		const doc = (globalThis as any).document;
+		if (!doc) return false;
+		const elements = Array.from(doc.querySelectorAll('button,a,[role="button"]')) as any[];
+		for (const element of elements) {
+			const text = String(element?.textContent || '').trim().toLowerCase();
+			if (!text) continue;
+			if (texts.some((candidate) => text.includes(candidate))) {
+				element.click();
+				return true;
+			}
+		}
+		return false;
+	}, targets);
+};
 
+const clickLoginCta = async (page: any): Promise<boolean> => {
+	return page.evaluate(() => {
+		const doc = (globalThis as any).document;
+		if (!doc) return false;
+		const elements = Array.from(doc.querySelectorAll('a,button,[role="button"]')) as any[];
+		const logins = elements.filter((element) => /log in/i.test(String(element?.textContent || '').trim()));
+		if (logins.length === 0) return false;
+
+		const preferred = logins.find((element) => {
+			const rect = element.getBoundingClientRect();
+			return rect.y > 80 && rect.width > 40 && rect.height > 20;
+		});
+
+		(preferred || logins[0]).click();
+		return true;
+	});
+};
+
+const firstSelector = async (page: any, selectors: string[]): Promise<string | null> => {
+	for (const selector of selectors) {
+		const found = await page.$(selector);
+		if (found) return selector;
+	}
+	return null;
+};
+
+const fillInput = async (page: any, selectors: string[], value: string): Promise<void> => {
+	const selector = await firstSelector(page, selectors);
+	if (!selector) throw new Error(`Campo nao encontrado: ${selectors[0]}`);
+	await page.click(selector, { clickCount: 3 });
+	await page.keyboard.press('Backspace');
+	await page.type(selector, value, { delay: 20 });
+};
 export const runPasswordAutomationAttempt = async (
 	env: Env,
 	payload: any,
@@ -56,53 +107,33 @@ export const runPasswordAutomationAttempt = async (
 		await page.setViewport({ width: 412, height: 915, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
 		await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
-		await onStep('dispatch', 'running', 'Navegador iniciado. Abrindo Viki...');
+		await onStep('dispatch', 'running', 'Navegador iniciado.');
 		await onStep('login', 'running', 'Abrindo pagina de login...');
 
-		await page.goto('https://www.viki.com/web-sign-in?return_to=%2F', { waitUntil: 'domcontentloaded', timeout: 60000 });
-		await new Promise<void>(res => setTimeout(res, 2000));
+		// Usa a mesma rota base da TV
+		await page.goto('https://www.viki.com/samsungtv', { waitUntil: 'domcontentloaded', timeout: 120000 });
+		await sleep(1300);
 
-		// --- LOGIN ---
-		await onStep('login', 'running', 'Preenchendo credenciais...');
+		const clickedLogin = await clickLoginCta(page);
+		if (!clickedLogin) throw new Error('Botao Log in nao encontrado');
 
-		const emailSelectors = ['input[placeholder="Email"]', 'input[type="email"]', 'input[name*="email" i]'];
-		let emailHandle = null;
-		for (const sel of emailSelectors) {
-			emailHandle = await page.$(sel);
-			if (emailHandle) break;
-		}
-		if (!emailHandle) throw new Error('Campo de e-mail nao encontrado na pagina de login.');
-		await emailHandle.type(payload.credentialEmail, { delay: 15 });
+		await sleep(1000);
+		await fillInput(page, ['input[placeholder="Email"]', 'input[type="email"]'], payload.credentialEmail);
+		await fillInput(page, ['input[placeholder="Password"]', 'input[type="password"]'], payload.currentPassword || payload.credentialPassword);
 
-		const passSelectors = ['input[placeholder="Password"]', 'input[type="password"]', 'input[placeholder="Senha"]'];
-		let passHandle = null;
-		for (const sel of passSelectors) {
-			passHandle = await page.$(sel);
-			if (passHandle) break;
-		}
-		if (!passHandle) throw new Error('Campo de senha nao encontrado na pagina de login.');
-		await passHandle.type(payload.currentPassword || payload.credentialPassword, { delay: 15 });
+		const clickedContinue = await clickByText(page, ['continue']);
+		if (!clickedContinue) throw new Error('Botao Continue nao encontrado');
 
-		// Clica em "Continue" / "Log in"
-		await page.evaluate(() => {
-			const texts = ['continue', 'continuar', 'log in', 'sign in', 'entrar'];
-			const buttons = Array.from(document.querySelectorAll('button, a'));
-			for (const btn of buttons) {
-				const t = (btn.textContent || '').trim().toLowerCase();
-				if (texts.some(txt => t.includes(txt))) {
-					(btn as any).click();
-					return;
-				}
-			}
+		await sleep(3500);
+
+		const loginBody = await page.evaluate(() => {
+			const doc = (globalThis as any).document;
+			return String(doc?.body?.innerText || '').replace(/\s+/g, ' ');
 		});
-
-		await new Promise<void>(res => setTimeout(res, 5000));
-
-		const loginBody = await page.evaluate(() => document.body.innerText || '');
-		if (/wrong password|senha incorreta|invalid password|incorrect password|invalid credentials/i.test(loginBody)) {
-			throw new Error('Credenciais incorretas. Verifique o email e a senha atual cadastrados.');
+		if (/wrong password|senha incorreta|invalid password|incorrect password|invalid credentials|oh no, something went wrong|unexpected issue/i.test(loginBody)) {
+			throw new Error('Credenciais incorretas ou limite de tentativas.');
 		}
-		// Checa se ainda está na página de login (login falhou silenciosamente)
+		
 		const currentUrlAfterLogin = page.url();
 		if (currentUrlAfterLogin.includes('sign-in') || currentUrlAfterLogin.includes('login')) {
 			throw new Error('Login nao foi concluido. A pagina de login ainda esta aberta apos tentativa.');
