@@ -138,14 +138,14 @@ export const runVikiPasswordAutomationJob = async (
   try {
     push(updateJob(status, 'running', 'Motor local iniciado (Modo Invisivel).'));
 
-    // 0. Automação Cloudflare (Sem Proxy)
     push(updateStep(status, STEP_KEYS.dispatch, 'running', 'Iniciando automação...'));
     
     const MAX_ATTEMPTS = 3;
     let finalSuccess = false;
 
     for (let i = 1; i <= MAX_ATTEMPTS; i++) {
-        push(updateStep(status, STEP_KEYS.dispatch, 'running', `Tentativa ${i}/${MAX_ATTEMPTS} via Conexão Padrão`));
+        const info = `(Tentativa ${i}/${MAX_ATTEMPTS})`;
+        push(updateStep(status, STEP_KEYS.dispatch, 'running', `Preparando ambiente ${info}`));
 
         // 1. TENTA API PRIMEIRO
         const apiOk = await runPasswordViaApi(payload);
@@ -159,76 +159,52 @@ export const runVikiPasswordAutomationJob = async (
         }
 
         // 2. FALLBACK NAVEGADOR
-        push(updateStep(status, STEP_KEYS.dispatch, 'running', `API bloqueada. Usando navegador invisivel (Tentativa ${i})...`));
+        push(updateStep(status, STEP_KEYS.dispatch, 'running', `${info}: Usando navegador invisível...`));
         let browser: any = null;
         try {
             const { chromium } = await import('playwright');
             browser = await chromium.launch({ 
-                headless: true, // DE VOLTA AO INVISIVEL
+                headless: true,
                 args: ['--disable-blink-features=AutomationControlled']
             });
             const context = await browser.newContext({
-                viewport: { width: 1366, height: 768 },
-                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                viewport: { width: 412, height: 915 },
+                isMobile: true,
+                hasTouch: true,
+                userAgent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
             });
             const page = await context.newPage();
             page.setDefaultTimeout(60000);
 
-            await page.goto('https://www.viki.com/web-sign-in', { waitUntil: 'domcontentloaded' });
-            await sleep(2000);
+            await page.goto('https://www.viki.com/samsungtv', { waitUntil: 'domcontentloaded' });
+            await sleep(2500);
 
-            // Esperar os campos renderizarem de fato
-            await page.waitForLoadState('domcontentloaded');
-
-            // Focar explicitamente no primeiro input de e-mail visível
-            try {
-                const emailInput = page.locator('input[type="email"], input[placeholder="Email"], input[name*="email" i]').first();
-                await emailInput.waitFor({ state: 'visible', timeout: 15000 });
-                await emailInput.fill(payload.credentialEmail);
-            } catch (e) {
-                throw new Error('Campo de e-mail invisível ou nulo na página.');
-            }
-
-            await sleep(500);
-
-            // Focar explicitamente no input de senha
-            try {
-                const passInput = page.locator('input[type="password"], input[placeholder="Password"], input[placeholder="Senha"]').first();
-                await passInput.waitFor({ state: 'visible', timeout: 5000 });
-                await passInput.click();
-                await passInput.fill(payload.currentPassword);
-            } catch (e) {
-                throw new Error('Campo de senha invisível ou nulo na página.');
-            }
-
-            await sleep(1000);
-
-            // Click Continuar igual o worker
-            const clickedBtn = await page.evaluate(() => {
-                const texts = ['continue', 'continuar', 'entrar', 'log in', 'sign in'];
-                const buttons = Array.from(document.querySelectorAll('button, a'));
-                for (const btn of buttons) {
-                    const t = btn.textContent?.toLowerCase() || '';
-                    if (texts.some(txt => t.includes(txt))) {
-                        (btn as any).click();
-                        return true;
-                    }
-                }
-                return false;
+            // Verifica se já está logado
+            const isLogado = await page.evaluate(() => {
+                const doc = document;
+                return !!doc.querySelector('button[aria-label*="Account" i], button[aria-label*="Profile" i], .sc-avatar, a[href*="/sign-out"]');
             });
 
-            if (!clickedBtn) {
-                await page.keyboard.press('Enter');
-            }
+            if (!isLogado) {
+                // Tenta clicar no Login
+                const clickedLogin = await page.evaluate(() => {
+                    const btns = Array.from(document.querySelectorAll('a, button'));
+                    const target = btns.find(b => /log in|entrar/i.test(b.textContent || ''));
+                    if (target) { (target as any).click(); return true; }
+                    return false;
+                });
 
-            await sleep(5000);
-
-            if (page.url().includes('sign-in')) {
-                throw new Error('Falha no login web.');
+                if (clickedLogin) {
+                    await sleep(2000);
+                    await page.locator('input[type="email"], input[placeholder="Email"]').first().fill(payload.credentialEmail);
+                    await page.locator('input[type="password"], input[placeholder="Password"]').first().fill(payload.currentPassword);
+                    await page.keyboard.press('Enter');
+                    await sleep(5000);
+                }
             }
 
             await page.goto('https://www.viki.com/user-account-settings#account', { waitUntil: 'domcontentloaded' });
-            await sleep(3000);
+            await sleep(4000);
 
             const clicked = await page.evaluate(() => {
                 const btn = Array.from(document.querySelectorAll('button, a, [role="button"]')).find(el => /mudar senha|change password|alterar senha/i.test(el.textContent || '') || /mudar senha|change password/i.test(el.getAttribute('aria-label') || '')  || /mudar senha|change password/i.test(el.getAttribute('title') || '') );
