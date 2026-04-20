@@ -572,28 +572,31 @@ const runAutomationAttempt = async (
 	attemptInfo: string
 ): Promise<void> => {
 	let browser: any;
+	let page: Page;
 	let launchAttempts = 3;
 	
 	while (launchAttempts > 0) {
 		try {
 			browser = await puppeteer.launch(env.BROWSER);
-			break; // Sucesso
+			// Pequeno delay para estabilizar o handshake com a Cloudflare
+			await sleep(1000);
+			page = await browser.newPage();
+			break; // Sucesso total
 		} catch (err: any) {
 			launchAttempts--;
-			if (launchAttempts > 0 && err.message.includes('429')) {
-				await onStep(STEP.dispatch, 'running', `Limite da Cloudflare atingido. Aguardando liberacao... (${3 - launchAttempts}/3)`);
-				await sleep(10000); // Aguarda 10s para a Cloudflare liberar o navegador anterior
+			const is429 = err.message.includes('429');
+			const isSessionError = err.message.includes('Unable to connect to existing session') || err.message.includes('reading \'accept\'');
+			
+			if (launchAttempts > 0 && (is429 || isSessionError)) {
+				const reason = is429 ? 'Limite da Cloudflare' : 'Sessao instavel';
+				await onStep(STEP.dispatch, 'running', `${reason}. Tentando reconectar... (${3 - launchAttempts}/3)`);
+				await sleep(is429 ? 10000 : 2000); 
 				continue;
-			}
-			if (err.message.includes('429')) {
-				throw new Error('Limite de navegadores do Cloudflare atingido (429). Tente novamente em alguns minutos.');
 			}
 			throw err;
 		}
 	}
 
-	try {
-		const page = await browser.newPage();
 		await onStep(STEP.dispatch, 'running', `Inicializando navegador em modo smartphone. ${attemptInfo}`);
 
 		await page.setViewport({

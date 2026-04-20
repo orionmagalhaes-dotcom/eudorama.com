@@ -94,29 +94,30 @@ export const runPasswordAutomationAttempt = async (
 	attemptInfo: string
 ): Promise<void> => {
 	let browser: any;
+	let page: any;
 	let launchAttempts = 3;
 	
 	while (launchAttempts > 0) {
 		try {
 			browser = await puppeteer.launch(env.BROWSER);
+			await sleep(1000); // Estabilização
+			page = await browser.newPage();
 			break; // Sucesso
 		} catch (err: any) {
 			launchAttempts--;
-			if (launchAttempts > 0 && err.message.includes('429')) {
-				await onStep('dispatch', 'running', `Limite de navegadores atingido. Aguardando... (${3 - launchAttempts}/3)`);
-				await sleep(10000); 
+			const is429 = err.message.includes('429');
+			const isSessionError = err.message.includes('Unable to connect to existing session') || err.message.includes('reading \'accept\'');
+
+			if (launchAttempts > 0 && (is429 || isSessionError)) {
+				const reason = is429 ? 'Limite atingido' : 'Sessao instavel';
+				await onStep('dispatch', 'running', `${reason}. Tentando novamente... (${3 - launchAttempts}/3)`);
+				await sleep(is429 ? 10000 : 2000); 
 				continue;
-			}
-			if (err.message.includes('429')) {
-				throw new Error('Limite de navegadores do Cloudflare atingido (429). Tente novamente em alguns minutos.');
 			}
 			throw err;
 		}
 	}
 
-
-	try {
-		const page = await browser.newPage();
 		await onStep('dispatch', 'running', `Iniciando navegador na nuvem. ${attemptInfo}`);
 
 		await page.setViewport({ width: 412, height: 915, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
