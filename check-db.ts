@@ -6,7 +6,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 async function main() {
-    const { data, error } = await supabase.from('credentials').select('*').eq('email', 'clientesviki4@gmail.com');
+    const { data, error } = await supabase.from('credentials').select('*').eq('email', 'clientesviki12@gmail.com');
     if (error) console.error(error);
     console.log('Credenciais encontradas:', data);
 }

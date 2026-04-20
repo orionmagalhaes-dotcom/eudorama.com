@@ -22,7 +22,8 @@
     ],
     "consumers": [
       {
-        "queue": "viki-tasks"
+        "queue": "viki-tasks",
+        "max_concurrency": 1
       }
     ]
   },
