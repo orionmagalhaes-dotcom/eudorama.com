@@ -1048,26 +1048,42 @@ export default {
 				continue;
 			}
 
-			// Define os passos iniciais baseados no tipo (Senha ou TV)
-			let steps: AutomationStep[] = [];
-			if (payload.type === 'password') {
-				steps = [
-					{ key: 'request', label: 'Solicitacao recebida', status: 'success' as StepStatus, updatedAt: nowIso() },
-					{ key: 'dispatch', label: 'Navegador na nuvem iniciado', status: 'pending' as StepStatus },
-					{ key: 'login', label: 'Login na Viki', status: 'pending' as StepStatus },
-					{ key: 'openSettings', label: 'Abrir formulario de senha', status: 'pending' as StepStatus },
-					{ key: 'changePassword', label: 'Trocar a Senha', status: 'pending' as StepStatus },
-					{ key: 'logout', label: 'Sincronizar banco e concluir', status: 'pending' as StepStatus },
-				];
-			} else {
-				steps = createInitialSteps();
+			// Delay de segurança para o banco processar a inserção inicial do worker e evitar race conditions
+			await sleep(2000);
+
+			// Tenta recuperar o status atual para evitar resetar passos (Fix: FEITO -> AGUARDANDO)
+			const existing = await getStatusRow(env, requestId);
+			if (existing && (existing.state === 'success' || (existing.state === 'failed' && !message.retry))) {
+				console.log(`[Queue] Task ${requestId} ja esta em estado final (${existing.state}). Pulando.`);
+				message.ack();
+				continue;
 			}
+
+			// Define os passos iniciais ou recupera os existentes
+			let steps: AutomationStep[] = existing ? parseStoredSteps(existing.steps) : [];
+			if (steps.length === 0) {
+				if (payload.type === 'password') {
+					steps = [
+						{ key: 'request', label: 'Solicitacao recebida', status: 'success' as StepStatus, updatedAt: nowIso() },
+						{ key: 'dispatch', label: 'Navegador na nuvem iniciado', status: 'pending' as StepStatus },
+						{ key: 'login', label: 'Login na Viki', status: 'pending' as StepStatus },
+						{ key: 'openSettings', label: 'Abrir formulario de senha', status: 'pending' as StepStatus },
+						{ key: 'changePassword', label: 'Trocar a Senha', status: 'pending' as StepStatus },
+						{ key: 'logout', label: 'Sincronizar banco e concluir', status: 'pending' as StepStatus },
+					];
+				} else {
+					steps = createInitialSteps();
+				}
+			}
+
 			let state: ExecutionStatus = 'running';
 
 			try {
 				const setStep = async (key: string, status: StepStatus, details?: string) => {
 					steps = updateStep(steps, key, status, details);
 					await persistStatus(env, requestId, 'running', steps, null);
+					// Delay entre passos para evitar atropelos na UI e no D1
+					await sleep(1000);
 				};
 
 				if (payload.type === 'password') {
