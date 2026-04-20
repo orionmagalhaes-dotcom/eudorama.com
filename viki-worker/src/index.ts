@@ -517,8 +517,31 @@ const fillInput = async (page: Page, selectors: string[], value: string): Promis
 	await page.type(selector, value, { delay: 20 });
 };
 
+const closeAllSessions = async (env: Env) => {
+	try {
+		console.log('[Cleaner] Verificando sessoes ativas para limpeza...');
+		const sessions = await puppeteer.sessions(env.BROWSER);
+		if (sessions.length > 0) {
+			console.log(`[Cleaner] Encontradas ${sessions.length} sessoes. Encerrando todas...`);
+			for (const s of sessions) {
+				try {
+					const b = await puppeteer.connect(env.BROWSER, s.sessionId);
+					await b.close();
+				} catch {
+					// ignore
+				}
+			}
+			// Wait a bit for Cloudflare to release resources
+			await sleep(3000);
+		}
+	} catch (e) {
+		console.warn('[Cleaner] Erro ao limpar sessoes:', e);
+	}
+};
+
 const performLogout = async (page: Page): Promise<void> => {
 	await sleep(1200);
+
 	await page.evaluate(() => {
 		const doc = (globalThis as any).document;
 		if (!doc) return;
@@ -574,6 +597,9 @@ const runAutomationAttempt = async (
 	let browser: any;
 	let page: Page;
 	let launchAttempts = 3;
+
+	// Garante que não há sessões presas antes de começar
+	await closeAllSessions(env);
 	
 	while (launchAttempts > 0) {
 		try {
@@ -1127,6 +1153,9 @@ export default {
 					// Delay entre passos para evitar atropelos na UI e no D1
 					await sleep(1000);
 				};
+
+				// Garante que o ambiente está limpo antes de qualquer automação (Senha ou TV)
+				await closeAllSessions(env);
 
 				if (payload.type === 'password') {
 					await runPasswordAutomation(env, payload, setStep);
