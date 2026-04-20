@@ -93,12 +93,27 @@ export const runPasswordAutomationAttempt = async (
 	onStep: (key: string, status: any, details?: string) => Promise<void>,
 	attemptInfo: string
 ): Promise<void> => {
-	const browser = await puppeteer.launch(env.BROWSER).catch(err => {
-		if (err.message.includes('429')) {
-			throw new Error('Limite de navegadores do Cloudflare atingido (429). Tente novamente em alguns minutos.');
+	let browser: any;
+	let launchAttempts = 3;
+	
+	while (launchAttempts > 0) {
+		try {
+			browser = await puppeteer.launch(env.BROWSER);
+			break; // Sucesso
+		} catch (err: any) {
+			launchAttempts--;
+			if (launchAttempts > 0 && err.message.includes('429')) {
+				await onStep('dispatch', 'running', `Limite de navegadores atingido. Aguardando... (${3 - launchAttempts}/3)`);
+				await sleep(10000); 
+				continue;
+			}
+			if (err.message.includes('429')) {
+				throw new Error('Limite de navegadores do Cloudflare atingido (429). Tente novamente em alguns minutos.');
+			}
+			throw err;
 		}
-		throw err;
-	});
+	}
+
 
 	try {
 		const page = await browser.newPage();

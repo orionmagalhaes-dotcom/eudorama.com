@@ -571,7 +571,27 @@ const runAutomationAttempt = async (
 	onStep: (key: string, status: StepStatus, details?: string) => Promise<void>,
 	attemptInfo: string
 ): Promise<void> => {
-	const browser = await puppeteer.launch(env.BROWSER);
+	let browser: any;
+	let launchAttempts = 3;
+	
+	while (launchAttempts > 0) {
+		try {
+			browser = await puppeteer.launch(env.BROWSER);
+			break; // Sucesso
+		} catch (err: any) {
+			launchAttempts--;
+			if (launchAttempts > 0 && err.message.includes('429')) {
+				await onStep(STEP.dispatch, 'running', `Limite da Cloudflare atingido. Aguardando liberacao... (${3 - launchAttempts}/3)`);
+				await sleep(10000); // Aguarda 10s para a Cloudflare liberar o navegador anterior
+				continue;
+			}
+			if (err.message.includes('429')) {
+				throw new Error('Limite de navegadores do Cloudflare atingido (429). Tente novamente em alguns minutos.');
+			}
+			throw err;
+		}
+	}
+
 	try {
 		const page = await browser.newPage();
 		await onStep(STEP.dispatch, 'running', `Inicializando navegador em modo smartphone. ${attemptInfo}`);
