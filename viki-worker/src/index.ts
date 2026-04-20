@@ -593,27 +593,42 @@ const runAutomationAttempt = async (
 		await sleep(1300);
 
 		const clickedLogin = await clickLoginCta(page);
-		if (!clickedLogin) throw new Error('Botao Log in nao encontrado');
+		if (!clickedLogin) {
+			const isLogado = await page.evaluate(() => {
+				const doc = (globalThis as any).document;
+				return !!doc?.querySelector('button[aria-label*="Account" i], button[aria-label*="Profile" i], .sc-avatar, a[href*="/sign-out"]');
+			});
+			if (isLogado) {
+				await onStep(STEP.login, 'success', 'Login ja estava ativo.');
+			} else {
+				throw new Error('Botao Log in nao encontrado');
+			}
+		} else {
+			await sleep(1000);
+			await fillInput(page, ['input[placeholder="Email"]', 'input[type="email"]'], payload.credentialEmail);
+			await fillInput(page, ['input[placeholder="Password"]', 'input[type="password"]'], payload.credentialPassword);
 
-		await sleep(1000);
-		await fillInput(page, ['input[placeholder="Email"]', 'input[type="email"]'], payload.credentialEmail);
-		await fillInput(page, ['input[placeholder="Password"]', 'input[type="password"]'], payload.credentialPassword);
+			const clickedContinue = await clickByText(page, ['continue']);
+			if (!clickedContinue) throw new Error('Botao Continue nao encontrado');
 
-		const clickedContinue = await clickByText(page, ['continue']);
-		if (!clickedContinue) throw new Error('Botao Continue nao encontrado');
+			await sleep(4500);
+			const urlAgora = page.url();
+			if (urlAgora.includes('sign-in') || urlAgora.includes('login') || urlAgora.includes('web-sign-in')) {
+				const loginErrorText = await page.evaluate(() => {
+					const doc = (globalThis as any).document;
+					return String(doc?.body?.innerText || '').replace(/\s+/g, ' ');
+				});
+				if (/wrong password|senha incorreta|invalid password|incorrect password|invalid credentials/i.test(loginErrorText)) {
+					throw new Error('E-mail ou Senha incorretos na Viki. Verifique as credenciais e tente novamente.');
+				}
+				if (/oh no, something went wrong|unexpected issue|try again in a few minutes/i.test(loginErrorText)) {
+					throw new Error('Limite de tentativas atingido ou Erro Temporário na Viki. O acesso foi bloqueado por segurança. Tente novamente em alguns minutos.');
+				}
+				throw new Error('Login nao foi concluido. A pagina de login ainda esta aberta apos tentativa.');
+			}
 
-		await sleep(3500);
-		const loginErrorText = await page.evaluate(() => {
-			const doc = (globalThis as any).document;
-			return String(doc?.body?.innerText || '').replace(/\s+/g, ' ');
-		});
-		if (/wrong password|senha incorreta|invalid password|incorrect password|invalid credentials/i.test(loginErrorText)) {
-			throw new Error('E-mail ou Senha incorretos na Viki. Verifique as credenciais e tente novamente.');
+			await onStep(STEP.login, 'success', 'Login executado.');
 		}
-		if (/oh no, something went wrong|unexpected issue|try again in a few minutes/i.test(loginErrorText)) {
-			throw new Error('Limite de tentativas atingido ou Erro Temporário na Viki. O acesso foi bloqueado por segurança. Tente novamente em alguns minutos.');
-		}
-		await onStep(STEP.login, 'success', 'Login executado.');
 		await onStep(STEP.code, 'running', 'Preenchendo codigo da TV.');
 
 		let codeSelector = await firstSelector(page, ['input[placeholder*="Enter code" i]', 'input[name="code"]', 'input[name="linkingCode"]', 'input[id="linkingCode"]', 'input[placeholder*="código" i]', 'input[placeholder*="codigo" i]']);

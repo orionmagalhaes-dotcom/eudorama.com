@@ -112,37 +112,50 @@ export const runPasswordAutomationAttempt = async (
 
 		// Usa a mesma rota base da TV
 		await page.goto('https://www.viki.com/samsungtv', { waitUntil: 'domcontentloaded', timeout: 120000 });
-		await sleep(1300);
+		await sleep(2200);
 
+		// Verifica se já está logado (se o botão de login não existir mas existirem elementos de logado)
 		const clickedLogin = await clickLoginCta(page);
-		if (!clickedLogin) throw new Error('Botao Log in nao encontrado');
+		if (!clickedLogin) {
+			const isLogado = await page.evaluate(() => {
+				const doc = (globalThis as any).document;
+				return !!doc?.querySelector('button[aria-label*="Account" i], button[aria-label*="Profile" i], .sc-avatar, a[href*="/sign-out"]');
+			});
+			if (isLogado) {
+				console.log('[Password] Sessao ja ativa detectada. Pulando etapa de preenchimento de login.');
+				await onStep('login', 'success', 'Login ja estava ativo ou recuperado.');
+			} else {
+				throw new Error('Botao "Log in" nao encontrado e nenhuma sessao ativa detectada. Verifique se a pagina carregou corretamente.');
+			}
+		} else {
+			// Prossegue com o login padrão
+			await sleep(1500);
+			await fillInput(page, ['input[placeholder="Email"]', 'input[type="email"]'], payload.credentialEmail);
+			await fillInput(page, ['input[placeholder="Password"]', 'input[type="password"]'], payload.currentPassword || payload.credentialPassword);
 
-		await sleep(1000);
-		await fillInput(page, ['input[placeholder="Email"]', 'input[type="email"]'], payload.credentialEmail);
-		await fillInput(page, ['input[placeholder="Password"]', 'input[type="password"]'], payload.currentPassword || payload.credentialPassword);
+			const clickedContinue = await clickByText(page, ['continue']);
+			if (!clickedContinue) throw new Error('Botao Continue nao encontrado');
 
-		const clickedContinue = await clickByText(page, ['continue']);
-		if (!clickedContinue) throw new Error('Botao Continue nao encontrado');
+			await sleep(5000);
 
-		await sleep(3500);
+			// Só verifica erros de login se continuarmos em uma página de login
+			const urlAgora = page.url();
+			if (urlAgora.includes('sign-in') || urlAgora.includes('login') || urlAgora.includes('web-sign-in')) {
+				const loginBody = await page.evaluate(() => {
+					const doc = (globalThis as any).document;
+					return String(doc?.body?.innerText || '').replace(/\s+/g, ' ');
+				});
+				if (/wrong password|senha incorreta|invalid password|incorrect password|invalid credentials/i.test(loginBody)) {
+					throw new Error('E-mail ou Senha incorretos na Viki. Verifique as credenciais e tente novamente.');
+				}
+				if (/oh no, something went wrong|unexpected issue|try again in a few minutes/i.test(loginBody)) {
+					throw new Error('Limite de tentativas atingido ou Erro Temporário na Viki. O acesso foi bloqueado por segurança. Tente novamente em alguns minutos.');
+				}
+				throw new Error('Login nao foi concluido. A pagina de login ainda esta aberta apos tentativa.');
+			}
 
-		const loginBody = await page.evaluate(() => {
-			const doc = (globalThis as any).document;
-			return String(doc?.body?.innerText || '').replace(/\s+/g, ' ');
-		});
-		if (/wrong password|senha incorreta|invalid password|incorrect password|invalid credentials/i.test(loginBody)) {
-			throw new Error('E-mail ou Senha incorretos na Viki. Verifique as credenciais e tente novamente.');
+			await onStep('login', 'success', 'Login realizado com sucesso.');
 		}
-		if (/oh no, something went wrong|unexpected issue|try again in a few minutes/i.test(loginBody)) {
-			throw new Error('Limite de tentativas atingido ou Erro Temporário na Viki. O acesso foi bloqueado por segurança. Tente novamente em alguns minutos.');
-		}
-		
-		const currentUrlAfterLogin = page.url();
-		if (currentUrlAfterLogin.includes('sign-in') || currentUrlAfterLogin.includes('login')) {
-			throw new Error('Login nao foi concluido. A pagina de login ainda esta aberta apos tentativa.');
-		}
-
-		await onStep('login', 'success', 'Login realizado com sucesso.');
 		await onStep('openSettings', 'running', 'Navegando para configuracoes da conta...');
 
 		// --- CONFIGURAÇÕES ---
