@@ -130,8 +130,11 @@ export const runPasswordAutomationAttempt = async (
 			const doc = (globalThis as any).document;
 			return String(doc?.body?.innerText || '').replace(/\s+/g, ' ');
 		});
-		if (/wrong password|senha incorreta|invalid password|incorrect password|invalid credentials|oh no, something went wrong|unexpected issue/i.test(loginBody)) {
-			throw new Error('Credenciais incorretas ou limite de tentativas.');
+		if (/wrong password|senha incorreta|invalid password|incorrect password|invalid credentials/i.test(loginBody)) {
+			throw new Error('E-mail ou Senha incorretos na Viki. Verifique as credenciais e tente novamente.');
+		}
+		if (/oh no, something went wrong|unexpected issue|try again in a few minutes/i.test(loginBody)) {
+			throw new Error('Limite de tentativas atingido ou Erro Temporário na Viki. O acesso foi bloqueado por segurança. Tente novamente em alguns minutos.');
 		}
 		
 		const currentUrlAfterLogin = page.url();

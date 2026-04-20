@@ -607,8 +607,11 @@ const runAutomationAttempt = async (
 			const doc = (globalThis as any).document;
 			return String(doc?.body?.innerText || '').replace(/\s+/g, ' ');
 		});
-		if (/oh no, something went wrong|unexpected issue/i.test(loginErrorText)) {
-			throw new Error('Viki retornou erro temporario no login');
+		if (/wrong password|senha incorreta|invalid password|incorrect password|invalid credentials/i.test(loginErrorText)) {
+			throw new Error('E-mail ou Senha incorretos na Viki. Verifique as credenciais e tente novamente.');
+		}
+		if (/oh no, something went wrong|unexpected issue|try again in a few minutes/i.test(loginErrorText)) {
+			throw new Error('Limite de tentativas atingido ou Erro Temporário na Viki. O acesso foi bloqueado por segurança. Tente novamente em alguns minutos.');
 		}
 		await onStep(STEP.login, 'success', 'Login executado.');
 		await onStep(STEP.code, 'running', 'Preenchendo codigo da TV.');
