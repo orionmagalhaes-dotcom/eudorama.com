@@ -163,31 +163,59 @@ export const runPasswordAutomationAttempt = async (
 		await new Promise<void>(res => setTimeout(res, 4000));
 
 		const changePassClicked = await page.evaluate(() => {
-			const texts = ['change password', 'mudar senha', 'alterar senha', 'mudar a senha'];
+			// Busca todos os blocos de informação (E-mail e Senha)
+			const labels = Array.from(document.querySelectorAll('div, span, p, label'));
+			let senhaLabel: HTMLElement | null = null;
+			
+			// Localiza especificamente o texto "Senha" ou "Password"
+			for (const l of labels) {
+				const txt = (l.textContent || '').trim().toLowerCase();
+				if (txt === 'senha' || txt === 'password') {
+					senhaLabel = l as HTMLElement;
+					break;
+				}
+			}
+
+			if (senhaLabel) {
+				// Busca o botão "Mudar" ou "Change" dentro do mesmo contexto ou próximo
+				const parent = senhaLabel.parentElement?.parentElement;
+				if (parent) {
+					const btn = parent.querySelector('button, a, [role="button"]') as HTMLElement | null;
+					if (btn && (btn.innerText.toLowerCase().includes('mudar') || btn.innerText.toLowerCase().includes('change'))) {
+						btn.click();
+						return 'clicked_by_proximity';
+					}
+				}
+			}
+
+			// Fallback caso a lógica de proximidade falhe (tentativa genérica revisada)
+			const texts = ['mudar senha', 'alterar senha', 'mudar a senha'];
 			const items = Array.from(document.querySelectorAll('button, a, [role="button"]'));
 			for (const item of items) {
 				const t = (item.textContent || '').toLowerCase();
-				const aria = (item.getAttribute('aria-label') || '').toLowerCase();
-				const title = (item.getAttribute('title') || '').toLowerCase();
-				if (
-					(texts.some(txt => t.includes(txt)) || texts.some(txt => aria.includes(txt)) || texts.some(txt => title.includes(txt))) &&
-					!t.includes('email')
-				) {
+				if (texts.some(txt => t.includes(txt))) {
 					(item as any).click();
-					return true;
+					return 'clicked_by_text_match';
 				}
 			}
-			const scBtn = document.querySelector('button[class*="Button"], button[class*="Account"]') as HTMLElement | null;
-			if (scBtn && /senha|password/i.test(scBtn.innerText)) {
-				scBtn.click();
-				return true;
+			
+			// Se o botão for apenas "Mudar" mas não for e-mail
+			for (const item of items) {
+				const t = (item.textContent || '').toLowerCase().trim();
+				const parentText = (item.parentElement?.innerText || '').toLowerCase();
+				if (t === 'mudar' && parentText.includes('senha') && !parentText.includes('email')) {
+					(item as any).click();
+					return 'clicked_mudar_filtered';
+				}
 			}
-			return false;
+
+			return null;
 		});
 
 		if (!changePassClicked) {
-			throw new Error('Botao "Change Password" nao encontrado. A Viki pode ter alterado o layout ou esta conta usa login social (Google/Facebook).');
+			throw new Error('Botao "Mudar Senha" nao encontrado. Verifique se a conta usa login social ou se o layout mudou.');
 		}
+		console.log(`[Password] Botao de troca de senha acionado via: ${changePassClicked}`);
 
 		// Aguarda o formulário de senha aparecer (exige >= 3 campos: atual, nova, confirmar)
 		await new Promise<void>(res => setTimeout(res, 3000));
