@@ -597,6 +597,7 @@ const runAutomationAttempt = async (
 		}
 	}
 
+	try {
 		await onStep(STEP.dispatch, 'running', `Inicializando navegador em modo smartphone. ${attemptInfo}`);
 
 		await page.setViewport({

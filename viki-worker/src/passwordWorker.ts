@@ -118,6 +118,7 @@ export const runPasswordAutomationAttempt = async (
 		}
 	}
 
+	try {
 		await onStep('dispatch', 'running', `Iniciando navegador na nuvem. ${attemptInfo}`);
 
 		await page.setViewport({ width: 412, height: 915, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
