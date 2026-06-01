@@ -209,6 +209,43 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
         [vikiTvExecutionStatus, vikiTvBackendMessage, vikiTvSteps]
     );
 
+    const vikiTvCooldownInfo = useMemo(() => {
+        const lastRequest = user.gameProgress?._viki_tv_last_request;
+        if (!lastRequest) return null;
+
+        const finishedAtStr = lastRequest.finishedAt || lastRequest.submittedAt;
+        if (!finishedAtStr) return null;
+
+        const finishedAt = new Date(finishedAtStr).getTime();
+        const now = Date.now();
+        const elapsedMs = now - finishedAt;
+
+        const isTerminal = lastRequest.status === 'success' || lastRequest.status === 'failed';
+        if (!isTerminal) {
+            const threeMinutes = 3 * 60 * 1000;
+            if (elapsedMs < threeMinutes) {
+                return {
+                    inCooldown: true,
+                    timeLeftMinutes: Math.ceil((threeMinutes - elapsedMs) / 60000),
+                    reason: 'running' as const
+                };
+            }
+        }
+
+        const loginSuccess = lastRequest.loginSuccess !== false;
+        const cooldownMs = loginSuccess ? 15 * 60 * 1000 : 60 * 60 * 1000;
+
+        if (elapsedMs < cooldownMs) {
+            return {
+                inCooldown: true,
+                timeLeftMinutes: Math.ceil((cooldownMs - elapsedMs) / 60000),
+                reason: loginSuccess ? 'success' : 'login_error'
+            };
+        }
+
+        return null;
+    }, [user.gameProgress]);
+
     const vikiTvCurrentStep = useMemo(() => {
         if (vikiTvSteps.length === 0) return null;
 
@@ -544,6 +581,29 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
             setVikiTvError(null);
             setVikiTvBackendMessage('Nao foi possivel iniciar a conexao.');
             setVikiTvExecutionStatus('failed');
+            
+            const gameProgressUpdate = {
+                requestId: `viki-tv-failed-${Date.now()}`,
+                provider: 'error',
+                submittedAt,
+                serviceName: activeVikiService,
+                tvModel: selectedVikiTvModel || 'samsung',
+                tvUrl: tvOption.url,
+                tvCodeMasked: `${vikiTvCode.slice(0, 2)}****`,
+                status: 'failed',
+                loginSuccess: false,
+                finishedAt: new Date().toISOString()
+            };
+            await saveGameProgress(user.phoneNumber, '_viki_tv_last_request', gameProgressUpdate);
+            const updatedUser = {
+                ...user,
+                gameProgress: {
+                    ...user.gameProgress,
+                    _viki_tv_last_request: gameProgressUpdate
+                }
+            };
+            onUpdateUser(updatedUser);
+
             setVikiTvSteps(prev => prev.length > 0 ? prev.map(step => {
                 if (step.key === 'request') {
                     return { ...step, status: 'failed', details: 'Erro no envio da solicitacao', updatedAt: new Date().toISOString() };
@@ -578,6 +638,33 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
 
                 if (status.executionStatus === 'success' || status.executionStatus === 'failed') {
                     setVikiTvError(null);
+                    
+                    const loginStep = status.steps?.find(s => s.key === 'login');
+                    const loginSuccess = loginStep?.status === 'success';
+                    
+                    const gameProgressUpdate = {
+                        requestId: vikiTvRequestId,
+                        provider: status.provider || 'webhook',
+                        submittedAt: user.gameProgress?._viki_tv_last_request?.submittedAt || new Date().toISOString(),
+                        serviceName: activeVikiService,
+                        tvModel: selectedVikiTvModel || user.gameProgress?._viki_tv_last_request?.tvModel || 'samsung',
+                        tvUrl: user.gameProgress?._viki_tv_last_request?.tvUrl || '',
+                        tvCodeMasked: user.gameProgress?._viki_tv_last_request?.tvCodeMasked || '******',
+                        status: status.executionStatus,
+                        loginSuccess,
+                        finishedAt: new Date().toISOString()
+                    };
+
+                    await saveGameProgress(user.phoneNumber, '_viki_tv_last_request', gameProgressUpdate);
+
+                    const updatedUser = {
+                        ...user,
+                        gameProgress: {
+                            ...user.gameProgress,
+                            _viki_tv_last_request: gameProgressUpdate
+                        }
+                    };
+                    onUpdateUser(updatedUser);
                 }
                 if (VIKI_TV_TERMINAL_STATUSES.has(status.executionStatus) && timerId) {
                     isActive = false;
@@ -718,11 +805,12 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                                 {VIKI_TV_OPTIONS.map(option => (
                                     <button
                                         key={option.id}
+                                        disabled={vikiTvCooldownInfo?.inCooldown}
                                         onClick={() => {
                                             setSelectedVikiTvModel(option.id);
                                             setVikiTvError(null);
                                         }}
-                                        className={`w-full text-left px-4 py-3 rounded-xl border text-sm font-bold transition-all ${selectedVikiTvModel === option.id ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100'}`}
+                                        className={`w-full text-left px-4 py-3 rounded-xl border text-sm font-bold transition-all ${selectedVikiTvModel === option.id ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100'} ${vikiTvCooldownInfo?.inCooldown ? 'opacity-50 cursor-not-allowed' : ''}`}
                                     >
                                         {option.label}
                                     </button>
@@ -734,9 +822,10 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                             <p className="text-[11px] font-black uppercase text-gray-500">2. Digite o codigo da TV</p>
                             <input
                                 value={vikiTvCode}
+                                disabled={vikiTvCooldownInfo?.inCooldown}
                                 onChange={(e) => handleVikiTvCodeChange(e.target.value)}
                                 placeholder="ex: aaa000"
-                                className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-mono tracking-wider lowercase text-gray-900 outline-none focus:border-blue-500"
+                                className={`w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm font-mono tracking-wider lowercase text-gray-900 outline-none focus:border-blue-500 ${vikiTvCooldownInfo?.inCooldown ? 'opacity-50 cursor-not-allowed' : ''}`}
                             />
                             <div className="bg-blue-50 rounded-xl p-3 border border-blue-100 space-y-2">
                                 <p className="text-[11px] font-bold text-blue-900">Esse codigo tem 6 digitos (letras e numeros) e aparece no lado direito do app da Viki na TV.</p>
@@ -744,6 +833,32 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                                 <p className="text-[11px] font-semibold text-blue-800">Depois disso, voce vai ver o codigo na TV e pode digitar aqui.</p>
                             </div>
                         </div>
+
+                        {vikiTvCooldownInfo && vikiTvCooldownInfo.inCooldown && (
+                            <div className={`p-4 rounded-xl border text-xs font-bold space-y-2 animate-fade-in ${
+                                vikiTvCooldownInfo.reason === 'success' 
+                                    ? 'bg-amber-50 border-amber-200 text-amber-800' 
+                                    : 'bg-red-50 border-red-200 text-red-800'
+                            }`}>
+                                {vikiTvCooldownInfo.reason === 'success' ? (
+                                    <>
+                                        <p className="flex items-center gap-1.5 font-black uppercase text-[10px] tracking-wide text-amber-700">
+                                            <Zap size={14} className="animate-bounce" /> Conexão Recente Ativa
+                                        </p>
+                                        <p>Identificamos que uma tentativa de conexão foi realizada com sucesso recentemente.</p>
+                                        <p>Para evitar erros de "múltiplas tentativas" na Viki e garantir estabilidade, aguarde <strong>{vikiTvCooldownInfo.timeLeftMinutes} {vikiTvCooldownInfo.timeLeftMinutes === 1 ? 'minuto' : 'minutos'}</strong> antes de parear outra TV.</p>
+                                    </>
+                                ) : (
+                                    <>
+                                        <p className="flex items-center gap-1.5 font-black uppercase text-[10px] tracking-wide text-red-700">
+                                            <AlertTriangle size={14} className="animate-pulse" /> Modo de Segurança Ativo
+                                        </p>
+                                        <p>A última tentativa de conexão retornou um erro na etapa de login.</p>
+                                        <p>Para proteger a conta contra bloqueios temporários por excesso de tentativas, por favor aguarde <strong>{vikiTvCooldownInfo.timeLeftMinutes} {vikiTvCooldownInfo.timeLeftMinutes === 1 ? 'minuto' : 'minutos'}</strong> para tentar novamente.</p>
+                                    </>
+                                )}
+                            </div>
+                        )}
 
                         <div className="bg-gray-50 rounded-xl p-3 border border-gray-100 space-y-3">
                             <div className="flex items-center justify-between gap-2">
@@ -783,10 +898,18 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
 
                         <button
                             onClick={handleStartVikiTvFlow}
-                            disabled={isVikiTvProcessing}
-                            className={`w-full py-3 rounded-xl text-white font-black text-sm uppercase tracking-wide shadow-lg active:scale-95 transition-all ${isVikiTvProcessing ? 'bg-blue-300 shadow-blue-100' : 'bg-blue-600 shadow-blue-200'}`}
+                            disabled={isVikiTvProcessing || vikiTvCooldownInfo?.inCooldown}
+                            className={`w-full py-3 rounded-xl text-white font-black text-sm uppercase tracking-wide shadow-lg active:scale-95 transition-all ${
+                                isVikiTvProcessing || vikiTvCooldownInfo?.inCooldown 
+                                    ? 'bg-blue-300 shadow-blue-100 cursor-not-allowed' 
+                                    : 'bg-blue-600 shadow-blue-200'
+                            }`}
                         >
-                            {isVikiTvProcessing ? 'Conectando sua TV...' : 'Conectar TV agora'}
+                            {isVikiTvProcessing 
+                                ? 'Conectando sua TV...' 
+                                : vikiTvCooldownInfo?.inCooldown 
+                                    ? `Conectar TV (${vikiTvCooldownInfo.timeLeftMinutes}m)` 
+                                    : 'Conectar TV agora'}
                         </button>
                     </div>
                 </div>
@@ -1132,9 +1255,15 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                                         <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
                                             <button
                                                 onClick={() => openVikiTvModal(item.name)}
-                                                className="px-4 py-2 rounded-xl bg-blue-600 text-white text-[10px] font-black uppercase whitespace-nowrap shadow-md active:scale-95"
+                                                className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase whitespace-nowrap shadow-md active:scale-95 transition-all ${
+                                                    vikiTvCooldownInfo?.inCooldown
+                                                        ? 'bg-amber-500 hover:bg-amber-600 text-white shadow-amber-100'
+                                                        : 'bg-blue-600 text-white shadow-blue-100'
+                                                }`}
                                             >
-                                                Conectar TV
+                                                {vikiTvCooldownInfo?.inCooldown
+                                                    ? `TV em Cooldown (${vikiTvCooldownInfo.timeLeftMinutes}m)`
+                                                    : 'Conectar TV'}
                                             </button>
                                             {item.name.toLowerCase().includes('viki pass') && (
                                                 <button
