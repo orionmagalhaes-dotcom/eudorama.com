@@ -1,9 +1,29 @@
-import {
-  VikiPasswordAutomationPayload,
-  VikiPasswordAutomationJobStatus,
-  VikiPasswordAutomationStepStatus,
-  VikiPasswordAutomationExecutionStatus
-} from '../types/vikiAutomation';
+export type VikiPasswordAutomationExecutionStatus = 'queued' | 'running' | 'success' | 'failed';
+export type VikiPasswordAutomationStepStatus = 'pending' | 'running' | 'success' | 'failed';
+
+export interface VikiPasswordAutomationStep {
+  key: string;
+  label: string;
+  status: VikiPasswordAutomationStepStatus;
+  details?: string;
+  updatedAt?: string;
+}
+
+export interface VikiPasswordAutomationJobStatus {
+  requestId: string;
+  status: VikiPasswordAutomationExecutionStatus;
+  message: string;
+  steps: VikiPasswordAutomationStep[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface VikiPasswordAutomationPayload {
+  requestId: string;
+  credentialEmail: string;
+  currentPassword: string;
+  newPassword: string;
+}
 
 const STEP_KEYS = {
   dispatch: 'dispatch',

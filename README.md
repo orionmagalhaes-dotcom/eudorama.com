@@ -36,6 +36,23 @@ Frontend React + Vite focado em:
 3. Rode localmente:
    `npm run dev`
 
+## Automacao Viki TV com Patchright
+
+- O cliente continua chamando a Cloudflare pelo endpoint:
+  - `POST /api/viki-tv-automation`
+  - `GET /api/viki-tv-automation/status?requestId=...`
+- Para a automacao de TV usar Patchright de verdade, configure um motor Node externo e aponte o Worker para ele. Patchright nao roda dentro do runtime do Cloudflare Worker/Browser Rendering.
+- Rode o motor Node em uma maquina/servidor com Chrome/Patchright:
+  - `npm install`
+  - `VIKI_MOTOR_TOKEN=<token-compartilhado> npx -y tsx automation-server.ts`
+- Exponha esse motor por um host protegido, por exemplo Cloudflare Tunnel apontando para `http://localhost:3000`.
+- Configure os secrets do Worker:
+  - `cd viki-worker`
+  - `npx wrangler secret put VIKI_PATCHRIGHT_MOTOR_URL`
+  - `npx wrangler secret put VIKI_PATCHRIGHT_MOTOR_TOKEN`
+  - `npm run deploy`
+- Sem `VIKI_PATCHRIGHT_MOTOR_URL`, o Worker usa o fallback antigo com `@cloudflare/puppeteer`.
+
 ## Build
 
 - `npm run build`

@@ -7,6 +7,8 @@ export interface Env {
 	VIKI_QUEUE: Queue<VikiQueueMessage>;
 	BROWSER: Fetcher;
 	VIKI_WEBHOOK_TOKEN?: string;
+	VIKI_PATCHRIGHT_MOTOR_URL?: string;
+	VIKI_PATCHRIGHT_MOTOR_TOKEN?: string;
 	INFINITY_PAY_PAYMENT_CHECK_TOKEN?: string;
 }
 
@@ -43,6 +45,19 @@ interface StatusRow {
 	state: ExecutionStatus;
 	steps: string | null;
 	error?: string | null;
+}
+
+interface RemoteAutomationStatus {
+	status?: ExecutionStatus;
+	executionStatus?: ExecutionStatus;
+	message?: string;
+	steps?: AutomationStep[];
+}
+
+interface RemoteAutomationResult {
+	state: ExecutionStatus;
+	steps: AutomationStep[];
+	message: string;
 }
 
 interface InfinityPayOrderRow {
@@ -365,6 +380,123 @@ const getStatusRow = async (env: Env, requestId: string): Promise<StatusRow | nu
 		if (!fallback) return null;
 		return { ...fallback, error: null };
 	}
+};
+
+const resolvePatchrightMotorUrl = (env: Env): string => String(env.VIKI_PATCHRIGHT_MOTOR_URL || '').trim().replace(/\/+$/, '');
+
+const patchrightMotorHeaders = (env: Env): HeadersInit => ({
+	'Content-Type': 'application/json',
+	...(env.VIKI_PATCHRIGHT_MOTOR_TOKEN?.trim() ? { Authorization: `Bearer ${env.VIKI_PATCHRIGHT_MOTOR_TOKEN.trim()}` } : {}),
+});
+
+const normalizeRemoteExecutionStatus = (value: unknown): ExecutionStatus => {
+	const raw = String(value || '').toLowerCase();
+	if (raw === 'success') return 'success';
+	if (raw === 'failed') return 'failed';
+	if (raw === 'running' || raw === 'processing' || raw === 'in_progress') return 'running';
+	return 'queued';
+};
+
+const normalizeRemoteStepStatus = (value: unknown): StepStatus => {
+	const raw = String(value || '').toLowerCase();
+	if (raw === 'success' || raw === 'done' || raw === 'completed') return 'success';
+	if (raw === 'failed' || raw === 'error') return 'failed';
+	if (raw === 'running' || raw === 'processing' || raw === 'in_progress') return 'running';
+	return 'pending';
+};
+
+const normalizeRemoteSteps = (steps: unknown, fallback: AutomationStep[]): AutomationStep[] => {
+	if (!Array.isArray(steps) || steps.length === 0) return cloneSteps(fallback);
+
+	return steps.map((step, index) => {
+		const source = step && typeof step === 'object' ? (step as Record<string, unknown>) : {};
+		return {
+			key: String(source.key || `step_${index + 1}`),
+			label: String(source.label || `Etapa ${index + 1}`),
+			status: normalizeRemoteStepStatus(source.status),
+			details: typeof source.details === 'string' ? source.details : undefined,
+			updatedAt: typeof source.updatedAt === 'string' ? source.updatedAt : undefined,
+		};
+	});
+};
+
+const fetchPatchrightMotorStatus = async (
+	env: Env,
+	requestId: string,
+	fallbackSteps: AutomationStep[],
+): Promise<RemoteAutomationResult> => {
+	const motorUrl = resolvePatchrightMotorUrl(env);
+	const response = await fetch(`${motorUrl}/api/viki-tv-automation/status?requestId=${encodeURIComponent(requestId)}`, {
+		method: 'GET',
+		headers: patchrightMotorHeaders(env),
+	});
+
+	const body = (await response.json().catch(() => ({}))) as RemoteAutomationStatus;
+	if (!response.ok) {
+		throw new Error(`Motor Patchright status HTTP ${response.status}: ${String(body?.message || 'sem detalhes')}`);
+	}
+
+	const state = normalizeRemoteExecutionStatus(body.status || body.executionStatus);
+	return {
+		state,
+		steps: normalizeRemoteSteps(body.steps, fallbackSteps),
+		message: String(body.message || ''),
+	};
+};
+
+const runPatchrightMotorAutomation = async (
+	env: Env,
+	requestId: string,
+	payload: AutomationPayload,
+	currentSteps: AutomationStep[],
+	onRemoteStatus: (state: ExecutionStatus, steps: AutomationStep[], message?: string) => Promise<void>,
+): Promise<RemoteAutomationResult> => {
+	const motorUrl = resolvePatchrightMotorUrl(env);
+	if (!motorUrl) {
+		throw new Error('Motor Patchright nao configurado');
+	}
+
+	await onRemoteStatus('running', updateStep(currentSteps, STEP.dispatch, 'running', 'Encaminhando automacao para motor Patchright.'));
+
+	const response = await fetch(`${motorUrl}/api/viki-tv-automation`, {
+		method: 'POST',
+		headers: patchrightMotorHeaders(env),
+		body: JSON.stringify({
+			requestId,
+			source: 'cloudflare-worker-patchright-motor',
+			payload,
+		}),
+	});
+
+	const body = (await response.json().catch(() => ({}))) as RemoteAutomationStatus;
+	if (!response.ok) {
+		throw new Error(`Motor Patchright HTTP ${response.status}: ${String(body?.message || 'sem detalhes')}`);
+	}
+
+	let latest: RemoteAutomationResult = {
+		state: normalizeRemoteExecutionStatus(body.status || body.executionStatus),
+		steps: normalizeRemoteSteps(body.steps, currentSteps),
+		message: String(body.message || 'Solicitacao encaminhada ao motor Patchright.'),
+	};
+	await onRemoteStatus(latest.state === 'queued' ? 'running' : latest.state, latest.steps, latest.message);
+
+	if (latest.state === 'success' || latest.state === 'failed') return latest;
+
+	for (let attempt = 0; attempt < 72; attempt += 1) {
+		await sleep(5000);
+		latest = await fetchPatchrightMotorStatus(env, requestId, latest.steps);
+		await onRemoteStatus(latest.state === 'queued' ? 'running' : latest.state, latest.steps, latest.message);
+
+		if (latest.state === 'success' || latest.state === 'failed') {
+			return latest;
+		}
+	}
+
+	return {
+		state: 'failed',
+		steps: updateStep(latest.steps, STEP.dispatch, 'failed', 'Motor Patchright nao concluiu dentro do tempo limite.'),
+		message: 'Motor Patchright nao concluiu dentro do tempo limite.',
+	};
 };
 
 const toInfinityPayOrderResponse = (row: InfinityPayOrderRow) => ({
@@ -1042,8 +1174,8 @@ export default {
 		}
 
 		if (request.method === 'POST' && url.pathname === '/api/viki-password-automation') {
-			const body = await request.json().catch(() => ({}));
-			const payloadInput = body?.payload || {};
+			const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+			const payloadInput = (body.payload && typeof body.payload === 'object' ? body.payload : {}) as Record<string, unknown>;
 
 			if (!payloadInput.credentialEmail || !payloadInput.newPassword) {
 				return withJson({ success: false, message: 'Payload invalido: email ou senha nova vazios' }, 400);
@@ -1064,7 +1196,7 @@ export default {
 
 			await env.VIKI_QUEUE.send({
 				requestId,
-				payload: { ...payloadInput, type: 'password' },
+				payload: { ...payloadInput, type: 'password' } as unknown as AutomationPayload,
 			});
 
 			return withJson({ success: true, requestId, status: 'queued', executionStatus: 'queued', message: 'Solicitacao encaminhada', steps }, 202);
@@ -1155,14 +1287,42 @@ export default {
 				};
 
 				// Garante que o ambiente está limpo antes de qualquer automação (Senha ou TV)
-				await closeAllSessions(env);
-
 				if (payload.type === 'password') {
+					await closeAllSessions(env);
 					await runPasswordAutomation(env, payload, setStep);
+					state = 'success';
 				} else {
-					await runAutomation(env, payload, setStep);
+					const patchrightMotorUrl = resolvePatchrightMotorUrl(env);
+					if (patchrightMotorUrl) {
+						const remoteResult = await runPatchrightMotorAutomation(
+							env,
+							requestId,
+							payload,
+							steps,
+							async (remoteState, remoteSteps, remoteMessage) => {
+								steps = remoteSteps;
+								await persistStatus(
+									env,
+									requestId,
+									remoteState,
+									steps,
+									remoteState === 'failed' ? (remoteMessage || 'Falha no motor Patchright') : null,
+								);
+							},
+						);
+						steps = remoteResult.steps;
+						state = remoteResult.state;
+						if (state === 'failed') {
+							await persistStatus(env, requestId, state, steps, remoteResult.message || 'Falha no motor Patchright');
+							message.ack();
+							continue;
+						}
+					} else {
+						await closeAllSessions(env);
+						await runAutomation(env, payload, setStep);
+						state = 'success';
+					}
 				}
-				state = 'success';
 
 				await persistStatus(env, requestId, state, steps, null);
 			} catch (error) {
