@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createClient } from '@supabase/supabase-js';
-import { chromium } from 'playwright';
+import { chromium } from 'patchright';
 
 const DEFAULT_SUPABASE_URL = 'https://mhiormzpctfoyjbrmxfz.supabase.co';
 const DEFAULT_SUPABASE_ANON_KEY =

@@ -210,8 +210,8 @@ export const runVikiTvAutomationJob = async (
 
   let browser: any = null;
   try {
-    const playwrightModule = await import('playwright');
-    const { chromium, devices } = playwrightModule as any;
+    const patchrightModule = await import('patchright');
+    const { chromium, devices } = patchrightModule as any;
 
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({ ...(devices['Pixel 7'] || {}) });

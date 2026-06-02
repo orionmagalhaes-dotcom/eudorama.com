@@ -3,7 +3,7 @@
  * Teste bilíngue (EN/PT) de conexão Samsung TV - Viki
  * Login: clientesviki5@gmail.com | Senha: eudorama16 | Código: rkkexw
  */
-import { chromium, devices } from 'playwright';
+import { chromium, devices } from 'patchright';
 
 const email = 'clientesviki5@gmail.com';
 const password = 'eudorama16';

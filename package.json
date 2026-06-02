@@ -20,6 +20,7 @@
     "axios": "^1.15.0",
     "https-proxy-agent": "^9.0.0",
     "lucide-react": "^0.556.0",
+    "patchright": "^1.60.2",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
     "wrangler": "^4.81.1"
@@ -27,7 +28,6 @@
   "devDependencies": {
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.0",
-    "playwright": "^1.58.2",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
   }

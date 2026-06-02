@@ -162,7 +162,7 @@ export const runVikiPasswordAutomationJob = async (
         push(updateStep(status, STEP_KEYS.dispatch, 'running', `${info}: Usando navegador invisível...`));
         let browser: any = null;
         try {
-            const { chromium } = await import('playwright');
+            const { chromium } = await import('patchright');
             browser = await chromium.launch({ 
                 headless: true,
                 args: ['--disable-blink-features=AutomationControlled']
