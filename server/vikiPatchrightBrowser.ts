@@ -11,12 +11,12 @@ export const createVikiPatchrightContext = async (
 ): Promise<{ browser: any; context: any; profileDir: string; headless: boolean }> => {
   const profileDir = path.resolve(process.env.VIKI_PATCHRIGHT_PROFILE_DIR || path.join('artifacts', 'viki-patchright-profile'));
   const headless = !envFlag(process.env.VIKI_PATCHRIGHT_HEADFUL || process.env.VIKI_PATCHRIGHT_HEADED);
-  const channel = process.env.VIKI_PATCHRIGHT_CHANNEL || 'chrome';
+  const channel = process.env.VIKI_PATCHRIGHT_CHANNEL || undefined;
   const device = devices?.['Pixel 7'] || {};
   const options = {
     ...device,
     headless,
-    channel,
+    ...(channel ? { channel } : {}),
     ...(proxy ? { proxy } : {})
   };
 

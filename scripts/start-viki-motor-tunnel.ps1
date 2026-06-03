@@ -112,10 +112,17 @@ function Start-MotorIfNeeded($port, $logDir, $restartExisting) {
   Write-Info "Iniciando motor Patchright na porta $port..."
   $token = [string]$env:VIKI_MOTOR_TOKEN
   $safeToken = $token.Replace('"', '\"')
-  $headful = if ([string]$env:VIKI_PATCHRIGHT_HEADFUL) { [string]$env:VIKI_PATCHRIGHT_HEADFUL } else { "1" }
-  $channel = if ([string]$env:VIKI_PATCHRIGHT_CHANNEL) { [string]$env:VIKI_PATCHRIGHT_CHANNEL } else { "chrome" }
-  $profileDir = if ([string]$env:VIKI_PATCHRIGHT_PROFILE_DIR) { [string]$env:VIKI_PATCHRIGHT_PROFILE_DIR } else { "artifacts\viki-patchright-profile" }
-  $command = "set PORT=$port&& set VIKI_MOTOR_TOKEN=$safeToken&& set VIKI_PATCHRIGHT_HEADFUL=$headful&& set VIKI_PATCHRIGHT_CHANNEL=$channel&& set VIKI_PATCHRIGHT_PROFILE_DIR=$profileDir&& npx -y tsx automation-server.ts"
+  $command = "set PORT=$port&& set VIKI_MOTOR_TOKEN=$safeToken"
+  if ([string]$env:VIKI_PATCHRIGHT_HEADFUL) {
+    $command += "&& set VIKI_PATCHRIGHT_HEADFUL=$([string]$env:VIKI_PATCHRIGHT_HEADFUL)"
+  }
+  if ([string]$env:VIKI_PATCHRIGHT_CHANNEL) {
+    $command += "&& set VIKI_PATCHRIGHT_CHANNEL=$([string]$env:VIKI_PATCHRIGHT_CHANNEL)"
+  }
+  if ([string]$env:VIKI_PATCHRIGHT_PROFILE_DIR) {
+    $command += "&& set VIKI_PATCHRIGHT_PROFILE_DIR=$([string]$env:VIKI_PATCHRIGHT_PROFILE_DIR)"
+  }
+  $command += "&& npx -y tsx automation-server.ts"
   $process = Start-Process -WindowStyle Hidden -FilePath "cmd.exe" -WorkingDirectory (Get-Location) -ArgumentList @(
     "/d",
     "/s",

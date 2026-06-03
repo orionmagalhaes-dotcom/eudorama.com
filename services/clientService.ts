@@ -12,7 +12,8 @@ const INFINITY_PAY_API_BASE_PATH = '/api/infinitypay';
 const INFINITY_PAY_PAYMENT_CHECK_PATH = `${INFINITY_PAY_API_BASE_PATH}/payment-check`;
 const INFINITY_PAY_ORDER_REGISTER_PATH = `${INFINITY_PAY_API_BASE_PATH}/order-register`;
 const INFINITY_PAY_ORDER_LOOKUP_PATH = `${INFINITY_PAY_API_BASE_PATH}/order`;
-const INFINITY_PAY_DEFAULT_WORKER_BASE = 'https://viki-worker.orionmagalhaes.workers.dev/api/infinitypay';
+const VIKI_WORKER_BASE = 'https://viki-worker.orionmagalhaes.workers.dev';
+const INFINITY_PAY_DEFAULT_WORKER_BASE = `${VIKI_WORKER_BASE}/api/infinitypay`;
 const INFINITY_PAY_PAYMENT_CHECK_WEBHOOK =
   ((import.meta as any).env?.VITE_INFINITY_PAY_PAYMENT_CHECK_WEBHOOK as string | undefined)?.trim() || '';
 const INFINITY_PAY_PAYMENT_CHECK_TOKEN = (
@@ -1041,7 +1042,7 @@ export const submitVikiTvAutomationRequest = async (payload: VikiTvAutomationReq
   const submittedAt = new Date().toISOString();
 
   const webhookUrl = ((import.meta as any).env?.VITE_VIKI_TV_AUTOMATION_WEBHOOK as string | undefined)
-    || ((import.meta as any).env?.DEV ? '/api/viki-tv-automation' : undefined);
+    || ((import.meta as any).env?.DEV ? '/api/viki-tv-automation' : `${VIKI_WORKER_BASE}/api/viki-tv-automation`);
   const webhookToken = (import.meta as any).env?.VITE_VIKI_TV_AUTOMATION_TOKEN as string | undefined;
 
   if (webhookUrl && webhookUrl.trim()) {
@@ -1117,7 +1118,7 @@ export const submitVikiTvAutomationRequest = async (payload: VikiTvAutomationReq
 
 export const getVikiTvAutomationStatus = async (requestId: string): Promise<VikiTvAutomationResponse | null> => {
   const statusWebhook = ((import.meta as any).env?.VITE_VIKI_TV_AUTOMATION_STATUS_WEBHOOK as string | undefined)
-    || ((import.meta as any).env?.DEV ? '/api/viki-tv-automation/status' : undefined);
+    || ((import.meta as any).env?.DEV ? '/api/viki-tv-automation/status' : `${VIKI_WORKER_BASE}/api/viki-tv-automation/status`);
   const webhookToken = (import.meta as any).env?.VITE_VIKI_TV_AUTOMATION_TOKEN as string | undefined;
   if (!statusWebhook || !statusWebhook.trim()) return null;
 
@@ -1234,7 +1235,7 @@ export const submitVikiPasswordAutomationRequest = async (
   const submittedAt = new Date().toISOString();
 
   const webhookUrl = ((import.meta as any).env?.VITE_VIKI_PASSWORD_AUTOMATION_WEBHOOK as string | undefined)
-    || ((import.meta as any).env?.DEV ? '/api/viki-password-automation' : undefined);
+    || ((import.meta as any).env?.DEV ? '/api/viki-password-automation' : `${VIKI_WORKER_BASE}/api/viki-password-automation`);
   const webhookToken = (
     (import.meta as any).env?.VITE_VIKI_PASSWORD_AUTOMATION_TOKEN
     || (import.meta as any).env?.VITE_VIKI_TV_AUTOMATION_TOKEN
@@ -1313,7 +1314,7 @@ export const submitVikiPasswordAutomationRequest = async (
 
 export const getVikiPasswordAutomationStatus = async (requestId: string): Promise<VikiPasswordAutomationResponse | null> => {
   const statusWebhook = ((import.meta as any).env?.VITE_VIKI_PASSWORD_AUTOMATION_STATUS_WEBHOOK as string | undefined)
-    || 'https://viki-worker.orionmagalhaes.workers.dev/api/viki-password-automation/status';
+    || `${VIKI_WORKER_BASE}/api/viki-password-automation/status`;
   const webhookToken = (
     (import.meta as any).env?.VITE_VIKI_PASSWORD_AUTOMATION_TOKEN
     || (import.meta as any).env?.VITE_VIKI_TV_AUTOMATION_TOKEN
