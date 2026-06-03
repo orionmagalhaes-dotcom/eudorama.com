@@ -418,7 +418,13 @@ export const runVikiPasswordAutomationJob = async (
             await page.goto('https://www.viki.com/user-account-settings#account', { waitUntil: 'domcontentloaded' });
             await sleep(6000);
 
-            const clicked = await page.evaluate(() => {
+            let clicked = false;
+            const passwordChange = page.locator('button[aria-label="Change Password"], a[aria-label="Change Password"], [role="button"][aria-label="Change Password"]');
+            if ((await passwordChange.count()) > 0) {
+                await passwordChange.first().click();
+                clicked = true;
+            } else {
+                clicked = await page.evaluate(() => {
                 const blocks = Array.from(document.querySelectorAll('section, article, div, li')) as HTMLElement[];
                 for (const block of blocks) {
                     const text = (block.innerText || '').replace(/\s+/g, ' ').trim();
@@ -446,7 +452,8 @@ export const runVikiPasswordAutomationJob = async (
                     return true;
                 }
                 return false;
-            });
+                });
+            }
 
             if (!clicked) {
                 console.log('[DEBUG] Botao mudar senha nao encontrado. Mantendo aberto...');
@@ -496,6 +503,26 @@ export const runVikiPasswordAutomationJob = async (
             }
 
             await sleep(1000);
+
+            const submitButton = page.getByRole('button', { name: 'Change password', exact: true });
+            if ((await submitButton.count()) === 0) {
+                throw new Error('Botao final "Change password" nao encontrado.');
+            }
+            await submitButton.first().click();
+            await sleep(8000);
+
+            const successState = await page.evaluate(() => ({
+                url: location.href,
+                text: (document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 1000),
+            }));
+            if (!/change-password-success/i.test(successState.url) && !/password changed|account has been updated|senha alterada|senha atualizada/i.test(successState.text)) {
+                throw new Error(`Viki nao confirmou a troca de senha. URL: ${successState.url}. Texto: ${successState.text}`);
+            }
+
+            push(updateStep(status, STEP_KEYS.changePassword, 'success', 'Senha alterada e confirmada pela Viki.'));
+            push(updateJob(status, 'success', 'Troca concluida via navegador invisivel.'));
+            finalSuccess = true;
+            break;
             
             // Tenta clicar usando native Playwright primeiro (mais forte)
             try {
