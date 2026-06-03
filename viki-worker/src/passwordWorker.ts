@@ -147,11 +147,21 @@ export const runPasswordAutomationAttempt = async (
 		} else {
 			// Prossegue com o login padrão
 			await sleep(1500);
+			const clickedEmailLogin = await clickByText(page, ['continue with email', 'continuar com email', 'email']);
+			if (clickedEmailLogin) await sleep(1500);
 			await fillInput(page, ['input[placeholder="Email"]', 'input[type="email"]'], payload.credentialEmail);
 			await fillInput(page, ['input[placeholder="Password"]', 'input[type="password"]'], payload.currentPassword || payload.credentialPassword);
 
-			const clickedContinue = await clickByText(page, ['continue']);
-			if (!clickedContinue) throw new Error('Botao Continue nao encontrado');
+			const clickedContinue = await page.evaluate(() => {
+				const buttons = Array.from(document.querySelectorAll('button')) as HTMLButtonElement[];
+				const target = buttons.find((button) => /^continue$/i.test((button.textContent || '').trim()) && !button.disabled);
+				if (target) {
+					target.click();
+					return true;
+				}
+				return false;
+			});
+			if (!clickedContinue) throw new Error('Botao Continue de login nao ficou habilitado apos preencher email e senha.');
 
 			await sleep(5000);
 

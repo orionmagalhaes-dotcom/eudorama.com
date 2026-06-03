@@ -424,9 +424,11 @@ const fetchPatchrightMotorStatus = async (
 	env: Env,
 	requestId: string,
 	fallbackSteps: AutomationStep[],
+	kind: 'tv' | 'password' = 'tv',
 ): Promise<RemoteAutomationResult> => {
 	const motorUrl = resolvePatchrightMotorUrl(env);
-	const response = await fetch(`${motorUrl}/api/viki-tv-automation/status?requestId=${encodeURIComponent(requestId)}`, {
+	const statusPath = kind === 'password' ? '/api/viki-password-automation/status' : '/api/viki-tv-automation/status';
+	const response = await fetch(`${motorUrl}${statusPath}?requestId=${encodeURIComponent(requestId)}`, {
 		method: 'GET',
 		headers: patchrightMotorHeaders(env),
 	});
@@ -450,6 +452,7 @@ const runPatchrightMotorAutomation = async (
 	payload: AutomationPayload,
 	currentSteps: AutomationStep[],
 	onRemoteStatus: (state: ExecutionStatus, steps: AutomationStep[], message?: string) => Promise<void>,
+	kind: 'tv' | 'password' = 'tv',
 ): Promise<RemoteAutomationResult> => {
 	const motorUrl = resolvePatchrightMotorUrl(env);
 	if (!motorUrl) {
@@ -458,7 +461,8 @@ const runPatchrightMotorAutomation = async (
 
 	await onRemoteStatus('running', updateStep(currentSteps, STEP.dispatch, 'running', 'Encaminhando automacao para motor Patchright.'));
 
-	const response = await fetch(`${motorUrl}/api/viki-tv-automation`, {
+	const automationPath = kind === 'password' ? '/api/viki-password-automation' : '/api/viki-tv-automation';
+	const response = await fetch(`${motorUrl}${automationPath}`, {
 		method: 'POST',
 		headers: patchrightMotorHeaders(env),
 		body: JSON.stringify({
@@ -484,7 +488,7 @@ const runPatchrightMotorAutomation = async (
 
 	for (let attempt = 0; attempt < 72; attempt += 1) {
 		await sleep(5000);
-		latest = await fetchPatchrightMotorStatus(env, requestId, latest.steps);
+		latest = await fetchPatchrightMotorStatus(env, requestId, latest.steps, kind);
 		await onRemoteStatus(latest.state === 'queued' ? 'running' : latest.state, latest.steps, latest.message);
 
 		if (latest.state === 'success' || latest.state === 'failed') {
@@ -1288,9 +1292,37 @@ export default {
 
 				// Garante que o ambiente está limpo antes de qualquer automação (Senha ou TV)
 				if (payload.type === 'password') {
-					await closeAllSessions(env);
-					await runPasswordAutomation(env, payload, setStep);
-					state = 'success';
+					const patchrightMotorUrl = resolvePatchrightMotorUrl(env);
+					if (patchrightMotorUrl) {
+						const remoteResult = await runPatchrightMotorAutomation(
+							env,
+							requestId,
+							payload,
+							steps,
+							async (remoteState, remoteSteps, remoteMessage) => {
+								steps = remoteSteps;
+								await persistStatus(
+									env,
+									requestId,
+									remoteState,
+									steps,
+									remoteState === 'failed' ? (remoteMessage || 'Falha no motor Patchright') : null,
+								);
+							},
+							'password',
+						);
+						steps = remoteResult.steps;
+						state = remoteResult.state;
+						if (state === 'failed') {
+							await persistStatus(env, requestId, state, steps, remoteResult.message || 'Falha no motor Patchright');
+							message.ack();
+							continue;
+						}
+					} else {
+						await closeAllSessions(env);
+						await runPasswordAutomation(env, payload, setStep);
+						state = 'success';
+					}
 				} else {
 					const patchrightMotorUrl = resolvePatchrightMotorUrl(env);
 					if (patchrightMotorUrl) {

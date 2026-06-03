@@ -162,8 +162,10 @@ export const runVikiPasswordAutomationJob = async (
     
     const MAX_ATTEMPTS = 3;
     let finalSuccess = false;
+    let stopRetries = false;
 
     for (let i = 1; i <= MAX_ATTEMPTS; i++) {
+        if (stopRetries) break;
         const info = `(Tentativa ${i}/${MAX_ATTEMPTS})`;
         push(updateStep(status, STEP_KEYS.dispatch, 'running', `Preparando ambiente ${info}`));
 
@@ -195,6 +197,18 @@ export const runVikiPasswordAutomationJob = async (
             });
             const page = await context.newPage();
             page.setDefaultTimeout(60000);
+            let signInApiError = '';
+
+            page.on('response', async (response: any) => {
+                try {
+                    if (!String(response.url()).includes('/api/users/sign-in')) return;
+                    if (response.status() < 400) return;
+                    const body = await response.text().catch(() => '');
+                    signInApiError = `HTTP ${response.status()} ${body}`.trim();
+                } catch {
+                    signInApiError = 'Erro no endpoint de login da Viki.';
+                }
+            });
 
             await page.goto('https://www.viki.com/samsungtv', { waitUntil: 'domcontentloaded' });
             await sleep(2500);
@@ -216,25 +230,98 @@ export const runVikiPasswordAutomationJob = async (
 
                 if (clickedLogin) {
                     await sleep(2000);
+                    const clickedEmailLogin = await page.evaluate(() => {
+                        const btns = Array.from(document.querySelectorAll('button, a, [role="button"]'));
+                        const target = btns.find((b) => /continue with email|continuar com email|email/i.test(b.textContent || ''));
+                        if (target) { (target as any).click(); return true; }
+                        return false;
+                    });
+                    if (clickedEmailLogin) await sleep(2000);
                     await page.locator('input[type="email"], input[placeholder="Email"]').first().fill(payload.credentialEmail);
                     await page.locator('input[type="password"], input[placeholder="Password"]').first().fill(payload.currentPassword);
-                    await page.keyboard.press('Enter');
+                    const clickedContinue = await page.evaluate(() => {
+                        const buttons = Array.from(document.querySelectorAll('button')) as HTMLButtonElement[];
+                        const target = buttons.find((button) =>
+                            /^continue$/i.test((button.textContent || '').trim()) &&
+                            !button.disabled
+                        );
+                        if (target) { target.click(); return true; }
+                        return false;
+                    });
+                    if (!clickedContinue) {
+                        throw new Error('Botao Continue de login nao ficou habilitado apos preencher email e senha.');
+                    }
                     await sleep(5000);
+
+                    const urlAposLogin = page.url();
+                    const loginState = await page.evaluate(() => ({
+                        text: (document.body.innerText || '').replace(/\s+/g, ' '),
+                        logged: !!document.querySelector('button[aria-label*="Account" i], button[aria-label*="Profile" i], .sc-avatar, a[href*="/sign-out"]')
+                    }));
+
+                    if (/recaptcha_error/i.test(signInApiError)) {
+                        throw new Error('Login bloqueado pela Viki: recaptcha_error. A tela mostra "There has been an unexpected issue. Please try again in a few minutes."');
+                    }
+                    if (/there has been an unexpected issue|try again in a few minutes|oh no, something went wrong/i.test(loginState.text)) {
+                        throw new Error(`Login bloqueado pela Viki. ${signInApiError || 'A tela pediu para tentar novamente em alguns minutos.'}`);
+                    }
+                    if (/wrong password|incorrect|invalid|senha incorreta|credenciais/i.test(loginState.text)) {
+                        throw new Error('E-mail ou senha atuais incorretos na Viki.');
+                    }
+                    if (/sign-in|login|web-sign-in/i.test(urlAposLogin) || !loginState.logged) {
+                        throw new Error(`Login nao foi concluido antes de abrir as configuracoes. ${signInApiError || ''}`.trim());
+                    }
                 }
             }
 
             await page.goto('https://www.viki.com/user-account-settings#account', { waitUntil: 'domcontentloaded' });
-            await sleep(4000);
+            await sleep(6000);
 
             const clicked = await page.evaluate(() => {
-                const btn = Array.from(document.querySelectorAll('button, a, [role="button"]')).find(el => /mudar senha|change password|alterar senha/i.test(el.textContent || '') || /mudar senha|change password/i.test(el.getAttribute('aria-label') || '')  || /mudar senha|change password/i.test(el.getAttribute('title') || '') );
-                if (btn) { (btn as any).click(); return true; }
+                const blocks = Array.from(document.querySelectorAll('section, article, div, li')) as HTMLElement[];
+                for (const block of blocks) {
+                    const text = (block.innerText || '').replace(/\s+/g, ' ').trim();
+                    if (!/\b(password|senha)\b/i.test(text)) continue;
+                    if (!/\b(change|mudar|alterar)\b/i.test(text)) continue;
+
+                    const controls = Array.from(block.querySelectorAll('button, a, [role="button"]')) as HTMLElement[];
+                    const change = controls.find((el) =>
+                        /\b(change|mudar|alterar)\b/i.test((el.innerText || el.textContent || '').trim()) ||
+                        /change password|mudar senha|alterar senha/i.test(el.getAttribute('aria-label') || '') ||
+                        /change password|mudar senha|alterar senha/i.test(el.getAttribute('title') || '')
+                    );
+                    if (change) {
+                        change.click();
+                        return true;
+                    }
+                }
+
+                const fallback = Array.from(document.querySelectorAll('button, a, [role="button"]')).find((el) =>
+                    /change password|mudar senha|alterar senha/i.test(el.getAttribute('aria-label') || '') ||
+                    /change password|mudar senha|alterar senha/i.test(el.getAttribute('title') || '')
+                ) as HTMLElement | undefined;
+                if (fallback) {
+                    fallback.click();
+                    return true;
+                }
                 return false;
             });
 
             if (!clicked) {
                 console.log('[DEBUG] Botao mudar senha nao encontrado. Mantendo aberto...');
-                await new Promise(() => {}); // Manter aberto
+                const pageState = await page.evaluate(() => ({
+                    url: location.href,
+                    text: (document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 700),
+                    buttons: Array.from(document.querySelectorAll('button, a, [role="button"]'))
+                        .map((el) => ({
+                            text: (el.textContent || '').trim(),
+                            aria: el.getAttribute('aria-label'),
+                            title: el.getAttribute('title'),
+                        }))
+                        .filter((item) => item.text || item.aria || item.title)
+                        .slice(0, 30),
+                }));
+                throw new Error(`Botao "Mudar Senha" nao encontrado apos abrir configuracoes da conta. URL: ${pageState.url}. Texto: ${pageState.text}. Botoes: ${JSON.stringify(pageState.buttons)}`);
             }
 
             await sleep(2000);
@@ -302,12 +389,19 @@ export const runVikiPasswordAutomationJob = async (
             break;
         } catch (err: any) {
             console.error('[Browser Error]', err.message);
+            if (/recaptcha_error|login bloqueado|try again in a few minutes|tentar novamente em alguns minutos/i.test(err?.message || '')) {
+                stopRetries = true;
+            }
+            push(updateStep(status, STEP_KEYS.dispatch, 'failed', `${info}: ${err?.message || 'Erro no navegador invisivel'}`));
         } finally {
             if (browser) await browser.close();
         }
     }
 
-    if (!finalSuccess) throw new Error('Todas as tentativas falharam.');
+    if (!finalSuccess) {
+      const failed = status.steps.find((step) => step.status === 'failed');
+      throw new Error(failed?.details || 'Todas as tentativas falharam.');
+    }
 
     // Sincroniza Supabase para atualizar o Front e Dashboard
     await syncPasswordToDatabase(payload.credentialEmail, payload.newPassword);
