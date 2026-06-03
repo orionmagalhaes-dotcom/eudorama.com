@@ -197,7 +197,7 @@ function Start-NamedTunnelIfNeeded($tunnelName, $workerDir, $logDir) {
 function Test-PublicDns($url) {
   try {
     $hostName = ([Uri]$url).Host
-    $resolved = Resolve-DnsName $hostName -Type A -ErrorAction Stop
+    $resolved = Resolve-DnsName $hostName -Server 1.1.1.1 -Type A -ErrorAction Stop
     return [bool]($resolved | Where-Object { $_.IPAddress } | Select-Object -First 1)
   } catch {
     return $false
