@@ -998,9 +998,41 @@ const normalizeExecutionStatus = (value: any): VikiTvAutomationExecutionStatus =
   return 'unknown';
 };
 
+const readVikiWebhookError = async (response: Response): Promise<{
+  message: string;
+  executionStatus: VikiTvAutomationExecutionStatus;
+}> => {
+  const rawBody = await response.text();
+  let body: any = null;
+  try {
+    body = rawBody ? JSON.parse(rawBody) : null;
+  } catch {
+    body = null;
+  }
+
+  const bodyMessage = typeof body?.message === 'string' && body.message.trim() ? body.message.trim() : '';
+  const fallbackMessage = rawBody.trim()
+    ? rawBody.trim().slice(0, 220)
+    : `Webhook retornou HTTP ${response.status}`;
+  const executionStatus = normalizeExecutionStatus(body?.status || body?.executionStatus);
+
+  return {
+    message: bodyMessage || fallbackMessage,
+    executionStatus: executionStatus === 'unknown' ? 'failed' : executionStatus
+  };
+};
+
 const buildDefaultQueuedSteps = (submittedAt: string): VikiTvAutomationStep[] => ([
   { key: 'request', label: 'Solicitacao recebida', status: 'success', updatedAt: submittedAt },
   { key: 'dispatch', label: 'Automacao em background iniciada', status: 'running', updatedAt: submittedAt },
+  { key: 'login', label: 'Login na Viki', status: 'pending' },
+  { key: 'code', label: 'Insercao do codigo da TV', status: 'pending' },
+  { key: 'logout', label: 'Logout e finalizacao', status: 'pending' }
+]);
+
+const buildWebhookFailureSteps = (submittedAt: string, details: string): VikiTvAutomationStep[] => ([
+  { key: 'request', label: 'Solicitacao recebida', status: 'success', updatedAt: submittedAt },
+  { key: 'dispatch', label: 'Resposta da automacao', status: 'failed', updatedAt: new Date().toISOString(), details },
   { key: 'login', label: 'Login na Viki', status: 'pending' },
   { key: 'code', label: 'Insercao do codigo da TV', status: 'pending' },
   { key: 'logout', label: 'Logout e finalizacao', status: 'pending' }
@@ -1062,8 +1094,15 @@ export const submitVikiTvAutomationRequest = async (payload: VikiTvAutomationReq
       });
 
       if (!response.ok) {
-        const errorBody = await response.text();
-        throw new Error(`Webhook ${response.status}: ${errorBody.slice(0, 200)}`);
+        const error = await readVikiWebhookError(response);
+        return {
+          success: false,
+          requestId,
+          provider: 'webhook',
+          message: error.message,
+          executionStatus: error.executionStatus,
+          steps: buildWebhookFailureSteps(submittedAt, error.message)
+        };
       }
 
       let parsedBody: any = null;
@@ -1086,6 +1125,15 @@ export const submitVikiTvAutomationRequest = async (payload: VikiTvAutomationReq
       };
     } catch (e: any) {
       console.error('Falha ao enviar webhook de automacao Viki TV:', e?.message || e);
+      const message = `Falha ao contatar automacao Viki TV: ${e?.message || 'erro de rede'}`;
+      return {
+        success: false,
+        requestId,
+        provider: 'webhook',
+        message,
+        executionStatus: 'failed',
+        steps: buildWebhookFailureSteps(submittedAt, message)
+      };
     }
   }
 
@@ -1197,6 +1245,16 @@ const buildDefaultPasswordQueuedSteps = (submittedAt: string): VikiPasswordAutom
   { key: 'logout', label: 'Logout e finalizacao', status: 'pending' }
 ]);
 
+const buildPasswordWebhookFailureSteps = (submittedAt: string, details: string): VikiPasswordAutomationStep[] => ([
+  { key: 'request', label: 'Solicitacao recebida', status: 'success', updatedAt: submittedAt },
+  { key: 'dispatch', label: 'Resposta da automacao', status: 'failed', updatedAt: new Date().toISOString(), details },
+  { key: 'login', label: 'Login na Viki com senha atual', status: 'pending' },
+  { key: 'open_settings', label: 'Abertura de configuracoes da conta', status: 'pending' },
+  { key: 'change_password', label: 'Troca da senha na Viki', status: 'pending' },
+  { key: 'verify_login', label: 'Validacao de login com nova senha', status: 'pending' },
+  { key: 'logout', label: 'Logout e finalizacao', status: 'pending' }
+]);
+
 const parsePasswordWebhookResponseBody = (body: any, fallbackRequestId: string): {
   requestId: string;
   message: string;
@@ -1258,8 +1316,15 @@ export const submitVikiPasswordAutomationRequest = async (
       });
 
       if (!response.ok) {
-        const errorBody = await response.text();
-        throw new Error(`Webhook ${response.status}: ${errorBody.slice(0, 200)}`);
+        const error = await readVikiWebhookError(response);
+        return {
+          success: false,
+          requestId,
+          provider: 'webhook',
+          message: error.message,
+          executionStatus: error.executionStatus as VikiPasswordAutomationExecutionStatus,
+          steps: buildPasswordWebhookFailureSteps(submittedAt, error.message)
+        };
       }
 
       let parsedBody: any = null;
@@ -1282,6 +1347,15 @@ export const submitVikiPasswordAutomationRequest = async (
       };
     } catch (e: any) {
       console.error('Falha ao enviar webhook de troca de senha Viki:', e?.message || e);
+      const message = `Falha ao contatar automacao de senha Viki: ${e?.message || 'erro de rede'}`;
+      return {
+        success: false,
+        requestId,
+        provider: 'webhook',
+        message,
+        executionStatus: 'failed',
+        steps: buildPasswordWebhookFailureSteps(submittedAt, message)
+      };
     }
   }
 
