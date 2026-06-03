@@ -230,6 +230,63 @@ const performLogout = async (page: any): Promise<{ ok: boolean; details: string 
   return { ok: true, details: 'Logout confirmado' };
 };
 
+const extractVisibleVikiTvError = async (page: any): Promise<string> => {
+  return page.evaluate(`(() => {
+    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+    const looksLikeTvCodeError = (value) => {
+      const lower = normalize(value).toLowerCase();
+      if (!lower) return false;
+      return (/code|tv|c[oó]digo|codigo|televis/i.test(lower) && /invalid|valid|expired|expir|inv[aá]lid|v[aá]lid|n[aã]o|nao/i.test(lower));
+    };
+    const selectors = ['[role="alert"]', '[aria-live]', '.alert', '.error', '[class*="error" i]', '[class*="alert" i]'];
+    const candidates = selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)).map((element) => normalize(element.innerText || element.textContent || '')).filter(Boolean));
+    const allText = normalize(candidates.join(' ') + ' ' + (document.body.innerText || ''));
+    const patterns = [
+      /Please enter a valid Samsung TV code\./i,
+      /Please enter a valid LG TV code\./i,
+      /Please enter a valid Android TV code\./i,
+      /Code is not valid\.?/i,
+      /O c[oó]digo[^.!?]*(?:inv[aá]lido|v[aá]lido)[^.!?]*[.!?]?/i
+    ];
+    for (const pattern of patterns) {
+      const match = allText.match(pattern);
+      if (match) return match[0];
+    }
+    const specific = candidates.find(looksLikeTvCodeError);
+    if (specific) return specific;
+    const bodySentences = normalize(document.body.innerText || '').split(/(?<=[.!?])\\s+/).map(normalize).filter(Boolean);
+    return bodySentences.find(looksLikeTvCodeError) || '';
+  })()`);
+};
+
+const extractVisibleVikiLoginError = async (page: any): Promise<string> => {
+  return page.evaluate(`(() => {
+    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+    const looksLikeLoginError = (value) => {
+      const lower = normalize(value).toLowerCase();
+      if (!lower) return false;
+      return /unexpected issue|try again|wrong password|incorrect|invalid|recaptcha|something went wrong|email or password|senha|incorret|inval/i.test(lower);
+    };
+    const selectors = ['[role="alert"]', '[aria-live]', '.alert', '.error', '[class*="error" i]', '[class*="alert" i]'];
+    const candidates = selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)).map((element) => normalize(element.innerText || element.textContent || '')).filter(Boolean));
+    const allText = normalize(candidates.join(' ') + ' ' + (document.body.innerText || ''));
+    const patterns = [
+      /Oh no, something went wrong!/i,
+      /There has been an unexpected issue\. Please try again in a few minutes\./i,
+      /The email or password you entered did not match our records\. Please double-check and try again\./i,
+      /Your password is incorrect\./i
+    ];
+    for (const pattern of patterns) {
+      const match = allText.match(pattern);
+      if (match) return match[0];
+    }
+    const specific = candidates.find(looksLikeLoginError);
+    if (specific) return specific;
+    const bodySentences = normalize(document.body.innerText || '').split(/(?<=[.!?])\\s+/).map(normalize).filter(Boolean);
+    return bodySentences.find(looksLikeLoginError) || '';
+  })()`);
+};
+
 export const runVikiTvAutomationJob = async (
   payload: VikiTvAutomationPayload,
   onUpdate: (nextStatus: VikiTvAutomationJobStatus) => void
@@ -303,11 +360,12 @@ export const runVikiTvAutomationJob = async (
     const stillOnLoginForm = (await page.locator('input[placeholder="Email"], input[type="email"]').count()) > 0;
     if (stillOnLoginForm) {
       const bodyText = await page.locator('body').innerText();
+      const vikiLoginErrorText = await extractVisibleVikiLoginError(page);
       const fs = await import('fs');
       if (!fs.existsSync('artifacts')) fs.mkdirSync('artifacts');
       fs.writeFileSync('artifacts/tv_error_body.txt', bodyText);
       await page.screenshot({ path: 'artifacts/tv_error_login.png', fullPage: true }).catch(() => undefined);
-      throw new Error('Login nao concluido na Viki');
+      throw new Error(vikiLoginErrorText || 'Login nao concluido na Viki');
     }
     }
 
@@ -335,6 +393,7 @@ export const runVikiTvAutomationJob = async (
     await page.waitForTimeout(6000); // Await HTTP response correctly
 
     const bodyAfterCode = String(await page.locator('body').innerText()).replace(/\s+/g, ' ').trim();
+    const vikiErrorText = await extractVisibleVikiTvError(page);
     const hasErrorAlert = await page.locator('[role="alert"], .alert, .error, .sc-4f811a15-0').count() > 0;
     const invalidCode = hasErrorAlert || /Code is not valid|valid.*TV Code|não é válido|código inválido/i.test(bodyAfterCode);
 
@@ -342,7 +401,7 @@ export const runVikiTvAutomationJob = async (
     const isSuccessText = /bem-sucedida|conectada|sucesso|success/i.test(bodyAfterCode);
 
     if (invalidCode || (isInputStillThere && !isSuccessText)) {
-      throw new Error('O código inserido é inválido ou já expirou. Verifique o código exibido na TV e tente novamente.');
+      throw new Error(vikiErrorText || 'O codigo inserido e invalido ou ja expirou. Verifique o codigo exibido na TV e tente novamente.');
     }
 
     push(

@@ -1431,6 +1431,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         () => getFriendlyProgressMessage(adminVikiTvExecutionStatus, adminVikiTvCurrentStep),
         [adminVikiTvExecutionStatus, adminVikiTvCurrentStep]
     );
+    const getAdminVikiTvDisplayMessage = (executionStatus: VikiTvUiExecutionStatus, message: string, steps?: VikiTvAutomationStep[]) => {
+        if (executionStatus === 'failed') {
+            const failedStep = [...(steps || [])].reverse().find((step) => step.status === 'failed');
+            if (failedStep?.details?.trim()) return failedStep.details.trim();
+        }
+        return message;
+    };
     const isAdminVikiTvProcessing = isSubmittingAdminVikiTv || adminVikiTvExecutionStatus === 'queued' || adminVikiTvExecutionStatus === 'running';
 
     const openAdminVikiTvModal = (target: {
@@ -1534,7 +1541,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             setAdminVikiTvRequestId(response.requestId);
             setAdminVikiTvExecutionStatus(response.executionStatus);
             setAdminVikiTvSteps(response.steps && response.steps.length > 0 ? response.steps : initialSteps);
-            setAdminVikiTvBackendMessage(response.message);
+            setAdminVikiTvBackendMessage(getAdminVikiTvDisplayMessage(response.executionStatus, response.message, response.steps));
             setAdminVikiTvCode('');
         } catch (error) {
             console.error('Erro ao iniciar automacao Viki TV no admin:', error);
@@ -1569,7 +1576,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
                 setAdminVikiTvExecutionStatus(status.executionStatus);
                 if (status.steps?.length > 0) setAdminVikiTvSteps(status.steps);
-                setAdminVikiTvBackendMessage(status.message);
+                setAdminVikiTvBackendMessage(getAdminVikiTvDisplayMessage(status.executionStatus, status.message, status.steps));
 
                 if (status.executionStatus === 'success' || status.executionStatus === 'failed') {
                     setAdminVikiTvError(null);

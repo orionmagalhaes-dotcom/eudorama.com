@@ -619,6 +619,63 @@ const clickByText = async (page: Page, values: string[]): Promise<boolean> => {
 	}, targets);
 };
 
+const extractVisibleVikiTvError = async (page: Page): Promise<string> => {
+	return page.evaluate(`(() => {
+		const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+		const looksLikeTvCodeError = (value) => {
+			const lower = normalize(value).toLowerCase();
+			if (!lower) return false;
+			return (/code|tv|c[oó]digo|codigo|televis/i.test(lower) && /invalid|valid|expired|expir|inv[aá]lid|v[aá]lid|n[aã]o|nao/i.test(lower));
+		};
+		const selectors = ['[role="alert"]', '[aria-live]', '.alert', '.error', '[class*="error" i]', '[class*="alert" i]'];
+		const candidates = selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)).map((element) => normalize(element.innerText || element.textContent || '')).filter(Boolean));
+		const allText = normalize(candidates.join(' ') + ' ' + (document.body.innerText || ''));
+		const patterns = [
+			/Please enter a valid Samsung TV code\./i,
+			/Please enter a valid LG TV code\./i,
+			/Please enter a valid Android TV code\./i,
+			/Code is not valid\.?/i,
+			/O c[oó]digo[^.!?]*(?:inv[aá]lido|v[aá]lido)[^.!?]*[.!?]?/i,
+		];
+		for (const pattern of patterns) {
+			const match = allText.match(pattern);
+			if (match) return match[0];
+		}
+		const specific = candidates.find(looksLikeTvCodeError);
+		if (specific) return specific;
+		const bodySentences = normalize(document.body.innerText || '').split(/(?<=[.!?])\\s+/).map(normalize).filter(Boolean);
+		return bodySentences.find(looksLikeTvCodeError) || '';
+	})()`);
+};
+
+const extractVisibleVikiLoginError = async (page: Page): Promise<string> => {
+	return page.evaluate(`(() => {
+		const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+		const looksLikeLoginError = (value) => {
+			const lower = normalize(value).toLowerCase();
+			if (!lower) return false;
+			return /unexpected issue|try again|wrong password|incorrect|invalid|recaptcha|something went wrong|email or password|senha|incorret|inval/i.test(lower);
+		};
+		const selectors = ['[role="alert"]', '[aria-live]', '.alert', '.error', '[class*="error" i]', '[class*="alert" i]'];
+		const candidates = selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)).map((element) => normalize(element.innerText || element.textContent || '')).filter(Boolean));
+		const allText = normalize(candidates.join(' ') + ' ' + (document.body.innerText || ''));
+		const patterns = [
+			/Oh no, something went wrong!/i,
+			/There has been an unexpected issue\. Please try again in a few minutes\./i,
+			/The email or password you entered did not match our records\. Please double-check and try again\./i,
+			/Your password is incorrect\./i,
+		];
+		for (const pattern of patterns) {
+			const match = allText.match(pattern);
+			if (match) return match[0];
+		}
+		const specific = candidates.find(looksLikeLoginError);
+		if (specific) return specific;
+		const bodySentences = normalize(document.body.innerText || '').split(/(?<=[.!?])\\s+/).map(normalize).filter(Boolean);
+		return bodySentences.find(looksLikeLoginError) || '';
+	})()`);
+};
+
 const clickLoginCta = async (page: Page): Promise<boolean> => {
 	return page.evaluate(() => {
 		const doc = (globalThis as any).document;
@@ -800,17 +857,21 @@ const runAutomationAttempt = async (
 			await sleep(4500);
 			const urlAgora = page.url();
 			if (urlAgora.includes('sign-in') || urlAgora.includes('login') || urlAgora.includes('web-sign-in')) {
+				const visibleLoginError = await extractVisibleVikiLoginError(page);
 				const loginErrorText = await page.evaluate(() => {
 					const doc = (globalThis as any).document;
 					return String(doc?.body?.innerText || '').replace(/\s+/g, ' ');
 				});
+				if (visibleLoginError) {
+					throw new Error(visibleLoginError);
+				}
 				if (/wrong password|senha incorreta|invalid password|incorrect password|invalid credentials/i.test(loginErrorText)) {
-					throw new Error('E-mail ou Senha incorretos na Viki. Verifique as credenciais e tente novamente.');
+					throw new Error(visibleLoginError || 'E-mail ou Senha incorretos na Viki. Verifique as credenciais e tente novamente.');
 				}
 				if (/oh no, something went wrong|unexpected issue|try again in a few minutes/i.test(loginErrorText)) {
 					throw new Error('Limite de tentativas atingido ou Erro Temporário na Viki. O acesso foi bloqueado por segurança. Tente novamente em alguns minutos.');
 				}
-				throw new Error('Login nao foi concluido. A pagina de login ainda esta aberta apos tentativa.');
+				throw new Error(visibleLoginError || 'Login nao foi concluido. A pagina de login ainda esta aberta apos tentativa.');
 			}
 
 			await onStep(STEP.login, 'success', 'Login executado.');
@@ -838,6 +899,7 @@ const runAutomationAttempt = async (
 		}
 
 		await sleep(6000); // aguarda resposta HTTP
+		const vikiErrorText = await extractVisibleVikiTvError(page);
 		const { afterCode, hasErrorDiv, isInputStillThere } = await page.evaluate(() => {
 			const doc = (globalThis as any).document;
 			const errDiv = doc?.querySelector('[role="alert"], .alert, .error, .sc-4f811a15-0');
@@ -850,10 +912,10 @@ const runAutomationAttempt = async (
 		});
 		const afterCodeClean = afterCode.replace(/\s+/g, ' ');
 		const invalid = hasErrorDiv || /code is not valid|valid samsung tv code|valid lg tv code|valid android tv code|não é válido|código inválido/i.test(afterCodeClean);
-        const isSuccessText = /bem-sucedida|conectada|sucesso|success/i.test(afterCodeClean);
+		const isSuccessText = /bem-sucedida|conectada|sucesso|success/i.test(afterCodeClean);
 
 		if (invalid || (isInputStillThere && !isSuccessText)) {
-			throw new Error('O código inserido é inválido ou já expirou. Verifique o código exibido na TV e tente novamente.');
+			throw new Error(vikiErrorText || 'O codigo inserido e invalido ou ja expirou. Verifique o codigo exibido na TV e tente novamente.');
 		}
 
 		await onStep(
