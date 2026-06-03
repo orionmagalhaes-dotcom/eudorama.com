@@ -138,6 +138,40 @@ const clickLoginCta = async (page: any): Promise<boolean> => {
   return false;
 };
 
+const parseProxyConfig = (rawValue: string): { server: string; username?: string; password?: string } | null => {
+  const raw = rawValue.trim();
+  if (!raw) return null;
+
+  try {
+    const parsed = new URL(raw);
+    if (!parsed.hostname || !parsed.port) return null;
+    return {
+      server: `${parsed.protocol || 'http:'}//${parsed.hostname}:${parsed.port}`,
+      username: parsed.username ? decodeURIComponent(parsed.username) : undefined,
+      password: parsed.password ? decodeURIComponent(parsed.password) : undefined
+    };
+  } catch {
+    const parts = raw.split(':');
+    if (parts.length < 4) return null;
+    const [host, port, username, ...passwordParts] = parts;
+    if (!host || !port || !username || passwordParts.length === 0) return null;
+    return {
+      server: `http://${host}:${port}`,
+      username,
+      password: passwordParts.join(':')
+    };
+  }
+};
+
+const getPatchrightProxyConfig = (): { server: string; username?: string; password?: string } | null => {
+  const rawProxy =
+    process.env.PATCHRIGHT_PROXY_URL ||
+    process.env.VIKI_PROXY_URL ||
+    process.env.DECODO_PROXY_URL ||
+    '';
+  return parseProxyConfig(String(rawProxy || ''));
+};
+
 
 const performLogout = async (page: any): Promise<{ ok: boolean; details: string }> => {
   const controls = page.locator(
@@ -213,11 +247,15 @@ export const runVikiTvAutomationJob = async (
     const patchrightModule = await import('patchright');
     const { chromium, devices } = patchrightModule as any;
 
-    browser = await chromium.launch({ headless: true });
+    const proxy = getPatchrightProxyConfig();
+    browser = await chromium.launch({
+      headless: true,
+      ...(proxy ? { proxy } : {})
+    });
     const context = await browser.newContext({ ...(devices['Pixel 7'] || {}) });
     const page = await context.newPage();
 
-    push(updateStep(status, STEP_KEYS.dispatch, 'success', 'Navegador iniciado.'));
+    push(updateStep(status, STEP_KEYS.dispatch, 'success', proxy ? 'Navegador iniciado com proxy configurado.' : 'Navegador iniciado.'));
     push(updateStep(status, STEP_KEYS.login, 'running', 'Abrindo pagina de conexao.'));
 
     await page.goto(payload.tvUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
