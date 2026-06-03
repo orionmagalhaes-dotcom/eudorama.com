@@ -422,6 +422,11 @@ export const runVikiPasswordAutomationJob = async (
             await page.goto('https://www.viki.com/user-account-settings#account', { waitUntil: 'domcontentloaded' });
             await sleep(6000);
 
+            const settingsTextBeforeChange = String(await page.locator('body').innerText().catch(() => '')).toLowerCase();
+            if (!settingsTextBeforeChange.includes(payload.credentialEmail.toLowerCase())) {
+                throw new Error(`Sessao Viki autenticada em conta diferente da solicitada. Esperado: ${payload.credentialEmail}`);
+            }
+
             let clicked = false;
             const passwordChange = page.locator('button[aria-label="Change Password"], a[aria-label="Change Password"], [role="button"][aria-label="Change Password"]');
             if ((await passwordChange.count()) > 0) {
@@ -508,11 +513,64 @@ export const runVikiPasswordAutomationJob = async (
 
             await sleep(1000);
 
-            const submitButton = page.getByRole('button', { name: 'Change password', exact: true });
-            if ((await submitButton.count()) === 0) {
-                throw new Error('Botao final "Change password" nao encontrado.');
+            const submitClicked = await page.evaluate(() => {
+                const isEnabled = (el: Element) => !(el as HTMLButtonElement).disabled && el.getAttribute('aria-disabled') !== 'true';
+                const click = (el: Element, reason: string) => {
+                    (el as HTMLElement).click();
+                    return reason;
+                };
+
+                const direct = document.querySelector('button[data-what="change_password_confirmation_button"], [role="button"][data-what="change_password_confirmation_button"]');
+                if (direct && isEnabled(direct)) return click(direct, 'data-what:change_password_confirmation_button');
+
+                const submitTexts = [
+                    'change password',
+                    'alterar senha',
+                    'mudar senha',
+                    'modificar senha',
+                    'change',
+                    'alterar',
+                    'mudar',
+                    'salvar',
+                    'save',
+                    'confirmar',
+                    'confirm'
+                ];
+                const containers = Array.from(document.querySelectorAll('#change_password_modal, [role="dialog"], form'));
+                const roots = containers.length > 0 ? containers : [document.body];
+                for (const root of roots) {
+                    const controls = Array.from(root.querySelectorAll('button, input[type="submit"], [role="button"]'));
+                    for (const control of controls) {
+                        const text = String(control.textContent || (control as HTMLInputElement).value || '').trim().toLowerCase();
+                        if (!text || !isEnabled(control)) continue;
+                        if (submitTexts.some((candidate) => text === candidate || text.includes(candidate))) {
+                            return click(control, `text:${text}`);
+                        }
+                    }
+                }
+
+                const form = document.querySelector('#change_password_modal form, [role="dialog"] form, form') as HTMLFormElement | null;
+                if (form) {
+                    form.requestSubmit();
+                    return 'form.requestSubmit';
+                }
+
+                return null;
+            });
+            if (!submitClicked) {
+                const buttons = await page.evaluate(() => Array.from(document.querySelectorAll('button, input[type="submit"], [role="button"]'))
+                    .map((el) => ({
+                        text: String(el.textContent || (el as HTMLInputElement).value || '').trim(),
+                        dataWhat: el.getAttribute('data-what'),
+                        aria: el.getAttribute('aria-label'),
+                        disabled: (el as HTMLButtonElement).disabled || el.getAttribute('aria-disabled') === 'true',
+                    }))
+                    .filter((item) => item.text || item.dataWhat || item.aria)
+                    .slice(0, 40)
+                );
+                throw new Error(`Botao final de troca de senha nao encontrado. Controles: ${JSON.stringify(buttons)}`);
             }
-            await submitButton.first().click();
+            console.log(`[DEBUG] Submit de troca de senha acionado via ${submitClicked}.`);
             await sleep(8000);
 
             const successState = await page.evaluate(() => ({

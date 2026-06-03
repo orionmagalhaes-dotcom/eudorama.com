@@ -9,7 +9,9 @@ export const createVikiPatchrightContext = async (
   devices: any,
   proxy: ProxyConfig
 ): Promise<{ browser: any; context: any; profileDir: string; headless: boolean }> => {
-  const profileDir = path.resolve(process.env.VIKI_PATCHRIGHT_PROFILE_DIR || path.join('artifacts', 'viki-patchright-profile'));
+  const requestedProfileDir = process.env.VIKI_PATCHRIGHT_PROFILE_DIR;
+  const profileDir = path.resolve(requestedProfileDir || path.join('artifacts', 'viki-patchright-profile'));
+  const usePersistentProfile = Boolean(requestedProfileDir) || envFlag(process.env.VIKI_PATCHRIGHT_PERSISTENT_PROFILE);
   const headless = !envFlag(process.env.VIKI_PATCHRIGHT_HEADFUL || process.env.VIKI_PATCHRIGHT_HEADED);
   const channel = process.env.VIKI_PATCHRIGHT_CHANNEL || undefined;
   const device = devices?.['Pixel 7'] || {};
@@ -20,7 +22,7 @@ export const createVikiPatchrightContext = async (
     ...(proxy ? { proxy } : {})
   };
 
-  if (typeof chromium.launchPersistentContext === 'function') {
+  if (usePersistentProfile && typeof chromium.launchPersistentContext === 'function') {
     const context = await chromium.launchPersistentContext(profileDir, options);
     return {
       browser: { close: () => context.close() },
@@ -32,6 +34,7 @@ export const createVikiPatchrightContext = async (
 
   const browser = await chromium.launch({
     headless,
+    ...(channel ? { channel } : {}),
     ...(proxy ? { proxy } : {})
   });
   const context = await browser.newContext(device);
