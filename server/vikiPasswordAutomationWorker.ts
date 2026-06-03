@@ -1,3 +1,5 @@
+import { createVikiPatchrightContext } from './vikiPatchrightBrowser.ts';
+
 export type VikiPasswordAutomationExecutionStatus = 'queued' | 'running' | 'success' | 'failed';
 export type VikiPasswordAutomationStepStatus = 'pending' | 'running' | 'success' | 'failed';
 
@@ -287,11 +289,9 @@ export const runVikiPasswordAutomationJob = async (
             const patchrightModule = await import('patchright');
             const { chromium, devices } = patchrightModule as any;
             const proxy = getPatchrightProxyConfig();
-            browser = await chromium.launch({
-                headless: true,
-                ...(proxy ? { proxy } : {})
-            });
-            const context = await browser.newContext({ ...(devices['Pixel 7'] || {}) });
+            const browserSession = await createVikiPatchrightContext(chromium, devices, proxy);
+            browser = browserSession.browser;
+            const context = browserSession.context;
             page = await context.newPage();
             page.setDefaultTimeout(60000);
             let signInApiError = '';
@@ -310,8 +310,10 @@ export const runVikiPasswordAutomationJob = async (
             await page.goto('https://www.viki.com/samsungtv', { waitUntil: 'domcontentloaded' });
             await page.waitForTimeout(1200);
 
+            const tvCodeInputSelector = 'input[placeholder*="Enter code" i], input[name="code"], input[name="linkingCode"], input[id="linkingCode"], input[placeholder*="código" i], input[placeholder*="codigo" i]';
             const emailAlreadyVisible = (await page.locator('input[placeholder="Email"], input[type="email"]').count()) > 0;
-            if (!emailAlreadyVisible) {
+            const codeAlreadyVisible = (await page.locator(tvCodeInputSelector).count()) > 0;
+            if (!emailAlreadyVisible && !codeAlreadyVisible) {
                 const loginCtaClicked = await clickLoginCta(page);
                 if (!loginCtaClicked) throw new Error('Botao Log in nao encontrado');
 
@@ -325,6 +327,7 @@ export const runVikiPasswordAutomationJob = async (
                 await page.waitForTimeout(800);
             }
 
+            if (!codeAlreadyVisible) {
             const emailInput = page.locator('input[placeholder="Email"], input[type="email"], input[name*="email" i]');
             const passwordInput = page.locator('input[placeholder="Password"], input[placeholder="Senha"], input[type="password"], input[name*="password" i], input[name*="senha" i]');
 
@@ -352,6 +355,7 @@ export const runVikiPasswordAutomationJob = async (
                     throw new Error('E-mail ou senha atuais incorretos na Viki.');
                 }
                 throw new Error(`Login nao concluido na Viki. ${signInApiError || ''}`.trim());
+            }
             }
 
             // Verifica se já está logado

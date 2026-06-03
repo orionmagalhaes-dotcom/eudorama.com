@@ -1,3 +1,5 @@
+import { createVikiPatchrightContext } from './vikiPatchrightBrowser.ts';
+
 export type VikiTvModel = 'samsung' | 'lg' | 'android';
 export type VikiTvAutomationExecutionStatus = 'queued' | 'running' | 'success' | 'failed';
 export type VikiTvAutomationStepStatus = 'pending' | 'running' | 'success' | 'failed';
@@ -248,21 +250,22 @@ export const runVikiTvAutomationJob = async (
     const { chromium, devices } = patchrightModule as any;
 
     const proxy = getPatchrightProxyConfig();
-    browser = await chromium.launch({
-      headless: true,
-      ...(proxy ? { proxy } : {})
-    });
-    const context = await browser.newContext({ ...(devices['Pixel 7'] || {}) });
+    const browserSession = await createVikiPatchrightContext(chromium, devices, proxy);
+    browser = browserSession.browser;
+    const context = browserSession.context;
     const page = await context.newPage();
 
-    push(updateStep(status, STEP_KEYS.dispatch, 'success', proxy ? 'Navegador iniciado com proxy configurado.' : 'Navegador iniciado.'));
+    push(updateStep(status, STEP_KEYS.dispatch, 'success', `${proxy ? 'Navegador iniciado com proxy configurado' : 'Navegador iniciado'} usando perfil local persistente.`));
     push(updateStep(status, STEP_KEYS.login, 'running', 'Abrindo pagina de conexao.'));
 
     await page.goto(payload.tvUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
     await page.waitForTimeout(1200);
 
+    const tvCodeInputSelector = 'input[placeholder*="Enter code" i], input[name="code"], input[name="linkingCode"], input[id="linkingCode"], input[placeholder*="código" i], input[placeholder*="codigo" i]';
+    let codeInput = page.locator(tvCodeInputSelector);
     const emailAlreadyVisible = (await page.locator('input[placeholder="Email"], input[type="email"]').count()) > 0;
-    if (!emailAlreadyVisible) {
+    const codeAlreadyVisible = (await codeInput.count()) > 0;
+    if (!emailAlreadyVisible && !codeAlreadyVisible) {
       const loginCtaClicked = await clickLoginCta(page);
       if (!loginCtaClicked) {
         throw new Error('Botao Log in nao encontrado');
@@ -279,6 +282,7 @@ export const runVikiTvAutomationJob = async (
       await page.waitForTimeout(800);
     }
 
+    if (!codeAlreadyVisible) {
     // EN: "Email" | PT: qualquer input de email
     const emailInput = page.locator('input[placeholder="Email"], input[type="email"], input[name*="email" i]');
     // EN: "Password" | PT: "Senha"
@@ -302,18 +306,20 @@ export const runVikiTvAutomationJob = async (
       const fs = await import('fs');
       if (!fs.existsSync('artifacts')) fs.mkdirSync('artifacts');
       fs.writeFileSync('artifacts/tv_error_body.txt', bodyText);
+      await page.screenshot({ path: 'artifacts/tv_error_login.png', fullPage: true }).catch(() => undefined);
       throw new Error('Login nao concluido na Viki');
+    }
     }
 
     push(updateStep(status, STEP_KEYS.login, 'success', 'Login executado.'));
     push(updateStep(status, STEP_KEYS.code, 'running', 'Preenchendo codigo da TV.'));
 
-    let codeInput = page.locator('input[placeholder*="Enter code" i], input[name="code"], input[name="linkingCode"], input[id="linkingCode"], input[placeholder*="código" i], input[placeholder*="codigo" i]');
+    codeInput = page.locator(tvCodeInputSelector);
     if (!(await codeInput.count())) {
       // Some sessions do not redirect automatically; force TV page reload.
       await page.goto(payload.tvUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
       await page.waitForTimeout(2200);
-      codeInput = page.locator('input[placeholder*="Enter code" i], input[name="code"], input[name="linkingCode"], input[id="linkingCode"], input[placeholder*="código" i], input[placeholder*="codigo" i]');
+      codeInput = page.locator(tvCodeInputSelector);
     }
     if (!(await codeInput.count())) throw new Error('Campo de codigo da TV nao encontrado');
 
