@@ -45,6 +45,105 @@ const baseSteps = () => [
 const nowIso = () => new Date().toISOString();
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
 
+const clickFirstText = async (page: any, texts: string[]): Promise<boolean> => {
+  for (const text of texts) {
+    const loc = page.getByText(text, { exact: false });
+    const count = await loc.count();
+    for (let i = 0; i < count; i += 1) {
+      try {
+        await loc.nth(i).click({ timeout: 1500 });
+        return true;
+      } catch {
+        // try next match
+      }
+    }
+  }
+  return false;
+};
+
+const clickExactText = async (page: any, texts: string[]): Promise<boolean> => {
+  for (const text of texts) {
+    const loc = page.getByRole('button', { name: text, exact: true })
+      .or(page.getByRole('link', { name: text, exact: true }));
+    const count = await loc.count();
+    for (let i = 0; i < count; i += 1) {
+      try {
+        await loc.nth(i).click({ timeout: 1500 });
+        return true;
+      } catch {
+        // try next match
+      }
+    }
+  }
+  return false;
+};
+
+const clickLoginCta = async (page: any): Promise<boolean> => {
+  const labels = ['Log in', 'Entrar', 'Iniciar sessão', 'Iniciar sessao', 'Fazer login', 'Sign in'];
+  for (const label of labels) {
+    const loc = page.getByRole('link', { name: label, exact: true })
+      .or(page.getByRole('button', { name: label, exact: true }));
+    const count = await loc.count();
+    for (let i = 0; i < count; i += 1) {
+      const el = loc.nth(i);
+      let box: { y: number } | null = null;
+      try { box = await el.boundingBox(); } catch { box = null; }
+      if (!box) continue;
+      try {
+        await el.click({ timeout: 2000 });
+        return true;
+      } catch {
+        // try next match
+      }
+    }
+  }
+
+  const hrefLoc = page.locator('a[href*="/sign-in"]:not([href*="/legal"]), a[href*="/web-sign-in"]:not([href*="/legal"])');
+  if (await hrefLoc.count()) {
+    try {
+      await hrefLoc.first().click({ timeout: 2000 });
+      return true;
+    } catch {
+      // ignore
+    }
+  }
+  return false;
+};
+
+const parseProxyConfig = (rawValue: string): { server: string; username?: string; password?: string } | null => {
+  const raw = rawValue.trim();
+  if (!raw) return null;
+
+  try {
+    const parsed = new URL(raw);
+    if (!parsed.hostname || !parsed.port) return null;
+    return {
+      server: `${parsed.protocol || 'http:'}//${parsed.hostname}:${parsed.port}`,
+      username: parsed.username ? decodeURIComponent(parsed.username) : undefined,
+      password: parsed.password ? decodeURIComponent(parsed.password) : undefined
+    };
+  } catch {
+    const parts = raw.split(':');
+    if (parts.length < 4) return null;
+    const [host, port, username, ...passwordParts] = parts;
+    if (!host || !port || !username || passwordParts.length === 0) return null;
+    return {
+      server: `http://${host}:${port}`,
+      username,
+      password: passwordParts.join(':')
+    };
+  }
+};
+
+const getPatchrightProxyConfig = (): { server: string; username?: string; password?: string } | null => {
+  const rawProxy =
+    process.env.PATCHRIGHT_PROXY_URL ||
+    process.env.VIKI_PROXY_URL ||
+    process.env.DECODO_PROXY_URL ||
+    '';
+  return parseProxyConfig(rawProxy);
+};
+
 export const createInitialPasswordJobStatus = (requestId: string): VikiPasswordAutomationJobStatus => {
   const now = nowIso();
   return {
@@ -160,7 +259,7 @@ export const runVikiPasswordAutomationJob = async (
 
     push(updateStep(status, STEP_KEYS.dispatch, 'running', 'Iniciando automação...'));
     
-    const MAX_ATTEMPTS = 3;
+    const MAX_ATTEMPTS = 1;
     let finalSuccess = false;
     let stopRetries = false;
 
@@ -183,19 +282,17 @@ export const runVikiPasswordAutomationJob = async (
         // 2. FALLBACK NAVEGADOR
         push(updateStep(status, STEP_KEYS.dispatch, 'running', `${info}: Usando navegador invisível...`));
         let browser: any = null;
+        let page: any = null;
         try {
-            const { chromium } = await import('patchright');
-            browser = await chromium.launch({ 
+            const patchrightModule = await import('patchright');
+            const { chromium, devices } = patchrightModule as any;
+            const proxy = getPatchrightProxyConfig();
+            browser = await chromium.launch({
                 headless: true,
-                args: ['--disable-blink-features=AutomationControlled']
+                ...(proxy ? { proxy } : {})
             });
-            const context = await browser.newContext({
-                viewport: { width: 412, height: 915 },
-                isMobile: true,
-                hasTouch: true,
-                userAgent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
-            });
-            const page = await context.newPage();
+            const context = await browser.newContext({ ...(devices['Pixel 7'] || {}) });
+            page = await context.newPage();
             page.setDefaultTimeout(60000);
             let signInApiError = '';
 
@@ -211,7 +308,51 @@ export const runVikiPasswordAutomationJob = async (
             });
 
             await page.goto('https://www.viki.com/samsungtv', { waitUntil: 'domcontentloaded' });
-            await sleep(2500);
+            await page.waitForTimeout(1200);
+
+            const emailAlreadyVisible = (await page.locator('input[placeholder="Email"], input[type="email"]').count()) > 0;
+            if (!emailAlreadyVisible) {
+                const loginCtaClicked = await clickLoginCta(page);
+                if (!loginCtaClicked) throw new Error('Botao Log in nao encontrado');
+
+                try {
+                    await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 });
+                } catch {
+                    // Pode ser SPA/modal, igual ao fluxo de TV.
+                }
+                await page.waitForTimeout(1500);
+                await clickFirstText(page, ['Continue with Email', 'Continuar com Email', 'Continuar com e-mail']).catch(() => false);
+                await page.waitForTimeout(800);
+            }
+
+            const emailInput = page.locator('input[placeholder="Email"], input[type="email"], input[name*="email" i]');
+            const passwordInput = page.locator('input[placeholder="Password"], input[placeholder="Senha"], input[type="password"], input[name*="password" i], input[name*="senha" i]');
+
+            if (!(await emailInput.count()) || !(await passwordInput.count())) {
+                throw new Error('Formulario de login nao encontrado');
+            }
+
+            await emailInput.first().fill(payload.credentialEmail);
+            await passwordInput.first().fill(payload.currentPassword);
+
+            const continueClicked = await clickExactText(page, ['Continue', 'Continuar', 'Prosseguir', 'Entrar', 'Log in', 'Fazer login', 'Sign in']);
+            if (!continueClicked) throw new Error('Botao Continue nao encontrado');
+
+            await page.waitForTimeout(3500);
+            const stillOnLoginForm = (await page.locator('input[placeholder="Email"], input[type="email"]').count()) > 0;
+            if (stillOnLoginForm) {
+                const bodyText = String(await page.locator('body').innerText()).replace(/\s+/g, ' ');
+                if (/recaptcha_error/i.test(signInApiError)) {
+                    throw new Error('Login bloqueado pela Viki: recaptcha_error. A tela mostra "There has been an unexpected issue. Please try again in a few minutes."');
+                }
+                if (/there has been an unexpected issue|try again in a few minutes|oh no, something went wrong/i.test(bodyText)) {
+                    throw new Error(`Login bloqueado pela Viki. ${signInApiError || 'A tela pediu para tentar novamente em alguns minutos.'}`);
+                }
+                if (/wrong password|incorrect|invalid|senha incorreta|credenciais/i.test(bodyText)) {
+                    throw new Error('E-mail ou senha atuais incorretos na Viki.');
+                }
+                throw new Error(`Login nao concluido na Viki. ${signInApiError || ''}`.trim());
+            }
 
             // Verifica se já está logado
             const isLogado = await page.evaluate(() => {
@@ -219,7 +360,7 @@ export const runVikiPasswordAutomationJob = async (
                 return !!doc.querySelector('button[aria-label*="Account" i], button[aria-label*="Profile" i], .sc-avatar, a[href*="/sign-out"]');
             });
 
-            if (!isLogado) {
+            if (false && !isLogado) {
                 // Tenta clicar no Login
                 const clickedLogin = await page.evaluate(() => {
                     const btns = Array.from(document.querySelectorAll('a, button'));
@@ -389,6 +530,20 @@ export const runVikiPasswordAutomationJob = async (
             break;
         } catch (err: any) {
             console.error('[Browser Error]', err.message);
+            if (page) {
+                try {
+                    const fs = await import('fs');
+                    const path = await import('path');
+                    const dir = path.join('artifacts', 'password-debug', `${payload.requestId}-${Date.now()}`);
+                    fs.mkdirSync(dir, { recursive: true });
+                    await page.screenshot({ path: path.join(dir, 'error.png'), fullPage: true });
+                    fs.writeFileSync(path.join(dir, 'error.html'), await page.content());
+                    fs.writeFileSync(path.join(dir, 'error.txt'), String(err?.message || 'Erro no navegador invisivel'));
+                    console.log(`[Password Debug] Screenshot salvo em ${path.join(dir, 'error.png')}`);
+                } catch (captureError: any) {
+                    console.error('[Password Debug] Falha ao salvar screenshot:', captureError?.message || captureError);
+                }
+            }
             if (/recaptcha_error|login bloqueado|try again in a few minutes|tentar novamente em alguns minutos/i.test(err?.message || '')) {
                 stopRetries = true;
             }
