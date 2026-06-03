@@ -51,6 +51,7 @@ Frontend React + Vite focado em:
   - atualiza automaticamente os secrets `VIKI_PATCHRIGHT_MOTOR_URL` e `VIKI_PATCHRIGHT_MOTOR_TOKEN` do Worker
 - Para servidor/EC2, rode o mesmo script ou exponha `automation-server.ts` por um Cloudflare Tunnel nomeado apontando para `http://localhost:3000`.
 - Para usar `viki-motor.eudorama.com`, alem do ingress do Tunnel, e necessario criar um DNS CNAME proxied para `<tunnel-id>.cfargotunnel.com`. A Cloudflare exige permissao `DNS Write` para essa etapa.
+- O script `LIGAR_MOTOR_TUNNEL.bat` inicia o motor neste PC em `http://localhost:3000`, mantem o tunnel nomeado `eudorama-motor` ligado e atualiza o Worker para chamar `https://viki-motor.eudorama.com`. Enquanto o DNS desse host nao existir, o tunnel fica ligado, mas o dominio ainda nao resolve.
 - Proxy residencial opcional para o Patchright:
   - `PATCHRIGHT_PROXY_URL=http://usuario:senha@host:porta`
   - tambem aceita `VIKI_PROXY_URL` ou `DECODO_PROXY_URL`

@@ -2,11 +2,17 @@ param(
   [int]$Port = 3000,
   [string]$WorkerDir = "viki-worker",
   [string]$LogDir = "artifacts\patchright-motor-tunnel",
+  [string]$NamedTunnel = "eudorama-motor",
+  [string]$PublicMotorUrl = "https://viki-motor.eudorama.com",
+  [switch]$SkipMotor,
   [switch]$RestartMotor,
   [switch]$Once
 )
 
 $ErrorActionPreference = "Stop"
+
+$RepoRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
+Set-Location $RepoRoot
 
 function Write-Info($message) {
   Write-Host "[info] $message"
@@ -43,6 +49,12 @@ function Test-LocalPort($port) {
   return [bool](Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
 }
 
+function Get-ProcessCommandLine($processId) {
+  $process = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+  if (-not $process) { return "" }
+  return [string]$process.CommandLine
+}
+
 function New-MotorToken() {
   $bytes = New-Object byte[] 32
   $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
@@ -63,6 +75,24 @@ function Stop-MotorOnPort($port) {
       Write-Ok "Motor anterior parado. PID $($connection.OwningProcess)."
     }
   }
+
+  $related = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object {
+      $cmd = [string]$_.CommandLine
+      $cmd -match "automation-server\.ts" -or
+      $cmd -match "tsx automation-server" -or
+      $cmd -match "npx -y tsx" -or
+      $cmd -match "run-viki-motor\.ps1"
+    } |
+    Sort-Object ProcessId -Descending
+
+  foreach ($process in $related) {
+    Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+  }
+
+  if ($related.Count -gt 0) {
+    Write-Ok "Cadeia anterior do motor encerrada."
+  }
 }
 
 function Start-MotorIfNeeded($port, $logDir, $restartExisting) {
@@ -78,18 +108,29 @@ function Start-MotorIfNeeded($port, $logDir, $restartExisting) {
 
   $out = Join-Path $logDir "motor.out.log"
   $err = Join-Path $logDir "motor.err.log"
+  Remove-Item -LiteralPath $out, $err -Force -ErrorAction SilentlyContinue
   Write-Info "Iniciando motor Patchright na porta $port..."
-  $safeToken = [string]($env:VIKI_MOTOR_TOKEN).Replace("'", "''")
-  $command = "`$env:PORT='$port'; `$env:VIKI_MOTOR_TOKEN='$safeToken'; npx -y tsx automation-server.ts"
-  $process = Start-Process -WindowStyle Hidden -FilePath powershell.exe -WorkingDirectory (Get-Location) -ArgumentList @(
-    "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-Command",
+  $token = [string]$env:VIKI_MOTOR_TOKEN
+  $safeToken = $token.Replace('"', '\"')
+  $command = "set PORT=$port&& set VIKI_MOTOR_TOKEN=$safeToken&& npx -y tsx automation-server.ts"
+  $process = Start-Process -WindowStyle Hidden -FilePath "cmd.exe" -WorkingDirectory (Get-Location) -ArgumentList @(
+    "/d",
+    "/s",
+    "/c",
     $command
-  ) -RedirectStandardOutput $out -RedirectStandardError $err -PassThru
+  ) -PassThru
 
-  Start-Sleep -Seconds 5
+  Start-Sleep -Seconds 2
+  if ($process.HasExited) {
+    Write-Info "Processo inicial do motor saiu cedo. ExitCode: $($process.ExitCode)."
+  }
+
+  $deadline = (Get-Date).AddSeconds(25)
+  do {
+    if (Test-LocalPort $port) { break }
+    Start-Sleep -Seconds 1
+  } while ((Get-Date) -lt $deadline)
+
   if (-not (Test-LocalPort $port)) {
     throw "Motor nao abriu a porta $port. Confira $err"
   }
@@ -113,6 +154,54 @@ function Start-QuickTunnel($port, $logDir) {
   $url = Wait-ForTunnelUrl $err 45
   Write-Ok "Tunnel ativo: $url"
   return @{ Url = $url; ProcessId = $process.Id; Log = $err }
+}
+
+function Start-NamedTunnelIfNeeded($tunnelName, $workerDir, $logDir) {
+  $existing = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object { ([string]$_.CommandLine) -match "wrangler tunnel run $([regex]::Escape($tunnelName))" } |
+    Select-Object -First 1
+
+  if ($existing) {
+    Write-Ok "Tunnel nomeado '$tunnelName' ja esta rodando. PID $($existing.ProcessId)."
+    return @{ ProcessId = $existing.ProcessId; Log = "" }
+  }
+
+  if (-not (Test-Path $workerDir)) {
+    throw "WorkerDir nao encontrado para iniciar tunnel nomeado: $workerDir"
+  }
+
+  $out = Join-Path $logDir "named-tunnel.out.log"
+  $err = Join-Path $logDir "named-tunnel.err.log"
+  Remove-Item -LiteralPath $out, $err -Force -ErrorAction SilentlyContinue
+
+  Write-Info "Iniciando Cloudflare tunnel nomeado '$tunnelName'..."
+  $command = "npx wrangler tunnel run $tunnelName --log-level info"
+  $process = Start-Process -WindowStyle Hidden -FilePath powershell.exe -WorkingDirectory $workerDir -ArgumentList @(
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-Command",
+    $command
+  ) -RedirectStandardOutput $out -RedirectStandardError $err -PassThru
+
+  Start-Sleep -Seconds 8
+  $commandLine = Get-ProcessCommandLine $process.Id
+  if (-not $commandLine) {
+    throw "Tunnel nomeado '$tunnelName' nao permaneceu rodando. Confira $err"
+  }
+
+  Write-Ok "Tunnel nomeado '$tunnelName' iniciado. PID $($process.Id)."
+  return @{ ProcessId = $process.Id; Log = $err }
+}
+
+function Test-PublicDns($url) {
+  try {
+    $hostName = ([Uri]$url).Host
+    $resolved = Resolve-DnsName $hostName -Type A -ErrorAction Stop
+    return [bool]($resolved | Where-Object { $_.IPAddress } | Select-Object -First 1)
+  } catch {
+    return $false
+  }
 }
 
 function Test-TunnelHealth($url) {
@@ -199,14 +288,52 @@ function Sync-WorkerSecret($workerDir, $secretName, $secretValue) {
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
+$generatedMotorToken = $false
 if (-not ([string]$env:VIKI_MOTOR_TOKEN).Trim()) {
   $env:VIKI_MOTOR_TOKEN = New-MotorToken
+  $generatedMotorToken = $true
   Write-Info "Token do motor gerado para esta execucao."
 }
 
-Start-MotorIfNeeded $Port $LogDir $RestartMotor
+if ($SkipMotor) {
+  if (-not (Test-LocalPort $Port)) {
+    throw "SkipMotor ativo, mas nada esta ouvindo na porta $Port. Inicie o motor antes do tunnel."
+  }
+  Write-Ok "Motor ja esta ouvindo na porta $Port neste PC."
+} else {
+  $shouldRestartMotor = $RestartMotor -or ($generatedMotorToken -and (Test-LocalPort $Port))
+  if ($generatedMotorToken -and (Test-LocalPort $Port) -and -not $RestartMotor) {
+    Write-Info "Motor existente sera reiniciado para usar o token gerado nesta execucao."
+  }
 
-$tunnel = Find-HealthyExistingTunnel
+  Start-MotorIfNeeded $Port $LogDir $shouldRestartMotor
+}
+
+$tunnel = $null
+
+try {
+  Start-NamedTunnelIfNeeded $NamedTunnel $WorkerDir $LogDir | Out-Null
+  Write-Info "Tunnel nomeado '$NamedTunnel' esta configurado para encaminhar $PublicMotorUrl para este PC em http://localhost:$Port."
+  if (Test-PublicDns $PublicMotorUrl) {
+    Write-Info "Testando motor pelo tunnel nomeado: $PublicMotorUrl"
+    if (Test-TunnelHealth $PublicMotorUrl) {
+      $tunnel = @{ Url = $PublicMotorUrl; ProcessId = 0; Log = "" }
+      Write-Ok "Tunnel nomeado respondeu pelo dominio fixo."
+    } else {
+      Write-Info "Dominio fixo existe, mas ainda nao respondeu ao health check."
+    }
+  } else {
+    Write-Info "DNS do dominio fixo ainda nao existe: $PublicMotorUrl"
+    $tunnel = @{ Url = $PublicMotorUrl; ProcessId = 0; Log = ""; PendingDns = $true }
+  }
+} catch {
+  Write-Info "Nao foi possivel usar tunnel nomeado agora: $($_.Exception.Message)"
+}
+
+if (-not $tunnel) {
+  $tunnel = Find-HealthyExistingTunnel
+}
+
 if ($tunnel) {
   Write-Ok "Reaproveitando tunnel saudavel: $($tunnel.Url)"
 } else {
@@ -226,7 +353,11 @@ if ($tunnel) {
 if (-not $tunnel) {
   throw "Nenhum quick tunnel respondeu ao health check."
 }
-Write-Ok "Motor respondeu pelo tunnel."
+if ($tunnel.PendingDns) {
+  Write-Info "Motor local e tunnel nomeado estao ligados. Falta apenas o DNS apontar para o tunnel."
+} else {
+  Write-Ok "Motor respondeu pelo tunnel."
+}
 
 Write-Info "Atualizando secret VIKI_PATCHRIGHT_MOTOR_URL no Worker..."
 Sync-WorkerSecret $WorkerDir "VIKI_PATCHRIGHT_MOTOR_URL" $tunnel.Url

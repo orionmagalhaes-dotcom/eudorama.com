@@ -1313,7 +1313,7 @@ export const submitVikiPasswordAutomationRequest = async (
 
 export const getVikiPasswordAutomationStatus = async (requestId: string): Promise<VikiPasswordAutomationResponse | null> => {
   const statusWebhook = ((import.meta as any).env?.VITE_VIKI_PASSWORD_AUTOMATION_STATUS_WEBHOOK as string | undefined)
-    || 'https://viki-motor.eudorama.com/api/viki-password-automation/status';
+    || 'https://viki-worker.orionmagalhaes.workers.dev/api/viki-password-automation/status';
   const webhookToken = (
     (import.meta as any).env?.VITE_VIKI_PASSWORD_AUTOMATION_TOKEN
     || (import.meta as any).env?.VITE_VIKI_TV_AUTOMATION_TOKEN
