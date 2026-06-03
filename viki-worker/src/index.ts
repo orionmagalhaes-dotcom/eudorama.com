@@ -86,7 +86,6 @@ const INFINITY_PAY_PAYMENT_CHECK_URL = 'https://api.infinitepay.io/invoices/publ
 const INFINITY_PAY_PAYMENT_CHECK_PATH = '/api/infinitypay/payment-check';
 const INFINITY_PAY_ORDER_REGISTER_PATH = '/api/infinitypay/order-register';
 const INFINITY_PAY_ORDER_LOOKUP_PATH = '/api/infinitypay/order';
-const VIKI_LOGIN_COOLDOWN_MS = 30 * 60 * 1000;
 
 const TV_URL_BY_MODEL: Record<TvModel, string> = {
 	samsung: 'https://www.viki.com/samsungtv',
@@ -330,80 +329,8 @@ const ensureSchema = async (env: Env): Promise<void> => {
 		ON infinitypay_orders(phone_number)
 	`).run();
 
-	await env.DB.prepare(`
-		CREATE TABLE IF NOT EXISTS viki_login_cooldowns (
-			kind TEXT NOT NULL,
-			credential_email TEXT NOT NULL,
-			last_attempt_at TEXT NOT NULL,
-			PRIMARY KEY (kind, credential_email)
-		)
-	`).run();
-
 	schemaReady = true;
 };
-
-const normalizeCredentialEmailForCooldown = (value: unknown): string => String(value || '').trim().toLowerCase();
-
-const checkVikiLoginCooldown = async (
-	env: Env,
-	kind: 'tv' | 'password',
-	credentialEmail: string,
-): Promise<{ allowed: true } | { allowed: false; retryAfterSeconds: number; nextAllowedAt: string; lastAttemptAt: string }> => {
-	const email = normalizeCredentialEmailForCooldown(credentialEmail);
-	if (!email) return { allowed: true };
-
-	const row = await env.DB.prepare(
-		'SELECT last_attempt_at FROM viki_login_cooldowns WHERE kind = ? AND credential_email = ?',
-	)
-		.bind(kind, email)
-		.first<{ last_attempt_at: string }>();
-
-	if (!row?.last_attempt_at) return { allowed: true };
-
-	const lastAttemptMs = Date.parse(row.last_attempt_at);
-	if (!Number.isFinite(lastAttemptMs)) return { allowed: true };
-
-	const elapsedMs = Date.now() - lastAttemptMs;
-	if (elapsedMs >= VIKI_LOGIN_COOLDOWN_MS) return { allowed: true };
-
-	const retryAfterSeconds = Math.ceil((VIKI_LOGIN_COOLDOWN_MS - elapsedMs) / 1000);
-	return {
-		allowed: false,
-		retryAfterSeconds,
-		nextAllowedAt: new Date(lastAttemptMs + VIKI_LOGIN_COOLDOWN_MS).toISOString(),
-		lastAttemptAt: row.last_attempt_at,
-	};
-};
-
-const recordVikiLoginAttempt = async (env: Env, kind: 'tv' | 'password', credentialEmail: string): Promise<void> => {
-	const email = normalizeCredentialEmailForCooldown(credentialEmail);
-	if (!email) return;
-
-	await env.DB.prepare(
-		`INSERT INTO viki_login_cooldowns (kind, credential_email, last_attempt_at)
-		 VALUES (?, ?, ?)
-		 ON CONFLICT(kind, credential_email) DO UPDATE SET last_attempt_at = excluded.last_attempt_at`,
-	)
-		.bind(kind, email, nowIso())
-		.run();
-};
-
-const vikiCooldownResponse = (
-	kind: 'tv' | 'password',
-	cooldown: { retryAfterSeconds: number; nextAllowedAt: string; lastAttemptAt: string },
-) => withJson(
-	{
-		success: false,
-		status: 'cooldown',
-		executionStatus: 'failed',
-		message: `Cooldown ativo para ${kind === 'tv' ? 'conexao com TV' : 'troca de senha'}. Tente novamente apos ${cooldown.nextAllowedAt}.`,
-		retryAfterSeconds: cooldown.retryAfterSeconds,
-		nextAllowedAt: cooldown.nextAllowedAt,
-		lastAttemptAt: cooldown.lastAttemptAt,
-	},
-	429,
-	{ 'Retry-After': String(cooldown.retryAfterSeconds) },
-);
 
 const persistStatus = async (
 	env: Env,
@@ -1229,11 +1156,6 @@ export default {
 
 			const requestId = normalizeId((body as Record<string, unknown>)?.requestId) || crypto.randomUUID();
 			const steps = createInitialSteps();
-			const cooldown = await checkVikiLoginCooldown(env, 'tv', validation.normalized.credentialEmail);
-			if (!cooldown.allowed) {
-				return vikiCooldownResponse('tv', cooldown);
-			}
-			await recordVikiLoginAttempt(env, 'tv', validation.normalized.credentialEmail);
 
 			await insertQueuedStatus(env, requestId, steps);
 
@@ -1264,12 +1186,6 @@ export default {
 			}
 
 			const requestId = normalizeId((body as Record<string, unknown>)?.requestId) || crypto.randomUUID();
-			const credentialEmail = String(payloadInput.credentialEmail || '').trim();
-			const cooldown = await checkVikiLoginCooldown(env, 'password', credentialEmail);
-			if (!cooldown.allowed) {
-				return vikiCooldownResponse('password', cooldown);
-			}
-			await recordVikiLoginAttempt(env, 'password', credentialEmail);
 			
 			const steps = [
 				{ key: 'request', label: 'Solicitacao recebida', status: 'success' as StepStatus, updatedAt: nowIso() },
