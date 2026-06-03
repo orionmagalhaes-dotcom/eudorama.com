@@ -320,7 +320,7 @@ try {
       $tunnel = @{ Url = $PublicMotorUrl; ProcessId = 0; Log = "" }
       Write-Ok "Tunnel nomeado respondeu pelo dominio fixo."
     } else {
-      Write-Info "Dominio fixo existe, mas ainda nao respondeu ao health check."
+      throw "Dominio fixo existe, mas nao respondeu ao health check. Reinicie o motor para alinhar o token local com o Worker."
     }
   } else {
     Write-Info "DNS do dominio fixo ainda nao existe: $PublicMotorUrl"
