@@ -28,7 +28,8 @@ import {
     Calendar, Download, Upload, Shield, LayoutGrid, SortAsc, SortDesc, RotateCw,
     ShieldCheck, UsersRound, ArrowUpRight, ArrowDownRight, MessageCircle,
     Sun, Moon, Fingerprint, Copy, Check, Zap, BarChart3, TrendingUp, Wallet, PieChart, Undo2, TrendingDown, Settings2,
-    Activity, Banknote, CreditCard, Eraser, ListFilter, ArrowUpDown, Wifi, Filter, ChevronRight, History, Tv2
+    Activity, Banknote, CreditCard, Eraser, ListFilter, ArrowUpDown, Wifi, Filter, ChevronRight, History, Tv2,
+    UserX, Heart
 } from 'lucide-react';
 
 // --- PROPS INTERFACE ---
@@ -531,7 +532,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     useEffect(() => {
         console.log("DIAGNOSTICO: PAINEL ADMIN CARREGADO EM " + new Date().toISOString());
     }, []);
-    const [activeTab, setActiveTab] = useState<'clients' | 'credentials' | 'buscar_login' | 'danger' | 'finances' | 'trash' | 'history' | 'charge_whatsapp'>('clients');
+    const [activeTab, setActiveTab] = useState<'clients' | 'credentials' | 'buscar_login' | 'danger' | 'finances' | 'trash' | 'history' | 'charge_whatsapp' | 'nao_renovaram'>('clients');
     const [clientFilterStatus, setClientFilterStatus] = useState<'all' | 'expiring' | 'debtor' | 'tolerance'>('all');
     const [clientSortByExpiry, setClientSortByExpiry] = useState(false);
     const [darkMode, setDarkMode] = useState(false);
@@ -665,11 +666,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 if (subs.length === 0) return; // Already empty
 
                 let changed = false;
+                let lastExpiryMs = 0;
+                const lastServices = subs.map(s => s.split('|')[0].trim()).filter(Boolean);
+
                 const activeSubs = subs.filter(s => {
                     const parts = s.split('|');
                     const startDate = parts[1] || client.purchase_date;
                     const duration = parseInt(parts[3] || '1');
                     const toleranceRaw = parts[4] || '';
+                    const expiry = calculateExpiry(startDate, duration);
+                    if (expiry.getTime() > lastExpiryMs) {
+                        lastExpiryMs = expiry.getTime();
+                    }
 
                     if (isExpiredBeyondGrace(startDate, duration, toleranceRaw, 3, now)) {
                         changed = true;
@@ -682,7 +690,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                     if (activeSubs.length === 0) {
                         // Move to trash if no subs left
                         console.log(`[CLEANUP] Movendo ${client.client_name} para lixeira (Sem assinaturas).`);
-                        updates.push(saveClientToDB({ ...client, subscriptions: [], deleted: true }));
+                        const nextProgress = {
+                            ...(client.game_progress || {}),
+                            _expired_at: lastExpiryMs > 0 ? new Date(lastExpiryMs).toISOString() : new Date().toISOString(),
+                            _last_services: lastServices
+                        };
+                        updates.push(saveClientToDB({ ...client, subscriptions: [], deleted: true, game_progress: nextProgress }));
                     } else {
                         // Just update subs
                         console.log(`[CLEANUP] Removendo assinaturas antigas de ${client.client_name}.`);
@@ -1346,6 +1359,78 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
     const deletedClientsList = useMemo(() => {
         return clients.filter(c => c.deleted);
+    }, [clients]);
+
+    const getExpirationDate = (client: ClientDBRow) => {
+        if (client.subscriptions && client.subscriptions.length > 0) {
+            const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
+            let maxExpiryMs = 0;
+            subs.forEach(s => {
+                const parts = s.split('|');
+                const expiry = calculateExpiry(parts[1], parseInt(parts[3] || '1'));
+                if (expiry.getTime() > maxExpiryMs) maxExpiryMs = expiry.getTime();
+            });
+            if (maxExpiryMs > 0) return new Date(maxExpiryMs);
+        }
+        if (client.game_progress?._expired_at) {
+            return new Date(client.game_progress._expired_at);
+        }
+        try {
+            const start = client.purchase_date ? new Date(client.purchase_date) : new Date(client.created_at);
+            const duration = client.duration_months || 1;
+            return calculateExpiry(start.toISOString(), duration);
+        } catch (e) {
+            return client.created_at ? new Date(client.created_at) : new Date();
+        }
+    };
+
+    const getDaysSinceExpiration = (expiryDate: Date) => {
+        const now = new Date();
+        now.setHours(0, 0, 0, 0);
+        const target = new Date(expiryDate);
+        target.setHours(0, 0, 0, 0);
+        const diff = now.getTime() - target.getTime();
+        return Math.floor(diff / (1000 * 60 * 60 * 24));
+    };
+
+    const formatDurationLapsed = (days: number) => {
+        if (days <= 0) return 'Hoje';
+        if (days === 1) return 'Ontem';
+        if (days < 30) return `Há ${days} dias`;
+        const months = Math.floor(days / 30);
+        const remainingDays = days % 30;
+        if (months === 1) {
+            return remainingDays > 0 ? `Há 1 mês e ${remainingDays} dias` : 'Há 1 mês';
+        }
+        return remainingDays > 0 ? `Há ${months} meses e ${remainingDays} dias` : `Há ${months} meses`;
+    };
+
+    const getLastServices = (client: ClientDBRow): string[] => {
+        if (client.subscriptions && client.subscriptions.length > 0) {
+            return normalizeSubscriptions(client.subscriptions, client.duration_months).map(s => s.split('|')[0]);
+        }
+        if (client.game_progress?._last_services && client.game_progress._last_services.length > 0) {
+            return client.game_progress._last_services;
+        }
+        if (client.game_progress?._charge_whatsapp_services && client.game_progress._charge_whatsapp_services.length > 0) {
+            return client.game_progress._charge_whatsapp_services;
+        }
+        return ['Viki Pass'];
+    };
+
+    const naoRenovaramList = useMemo(() => {
+        const deleted = clients.filter(c => c.deleted);
+        return deleted.map(client => {
+            const expiryDate = getExpirationDate(client);
+            const daysSince = getDaysSinceExpiration(expiryDate);
+            const services = getLastServices(client);
+            return {
+                client,
+                expiryDate,
+                daysSince,
+                services
+            };
+        }).sort((a, b) => a.expiryDate.getTime() - b.expiryDate.getTime()); // 'Não renovações mais antigas' (longest lapsed / earliest expiry date first)
     }, [clients]);
 
     const loginSearchResults = useMemo(() => {
@@ -2139,6 +2224,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         { id: 'trash', icon: Trash2, label: 'Lixeira' },
                         { id: 'history', icon: History, label: 'Histórico' },
                         { id: 'charge_whatsapp', icon: MessageCircle, label: 'Cobrança WhatsApp' },
+                        { id: 'nao_renovaram', icon: UserX, label: 'Não Renovaram' },
                         { id: 'danger', icon: AlertTriangle, label: 'Segurança' }
                     ].map(tab => (
                         <button key={tab.id} onClick={() => setActiveTab(tab.id as any)} className={`flex-1 min-w-fit py-3 px-5 rounded-xl text-[10px] font-black uppercase transition-all flex flex-col sm:flex-row items-center justify-center gap-1.5 ${activeTab === tab.id ? 'bg-indigo-600 text-white shadow-md' : 'text-indigo-400 hover:bg-indigo-50 dark:hover:bg-slate-800'}`}>
@@ -3347,6 +3433,80 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
                 {activeTab === 'charge_whatsapp' && (
                     <ChargeWhatsappAutomationPanel clients={clients} />
+                )}
+
+                {activeTab === 'nao_renovaram' && (
+                    <div className="space-y-6 animate-fade-in pb-32">
+                        <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-indigo-100 dark:border-slate-800 shadow-sm space-y-4">
+                            <div className="flex items-center gap-3">
+                                <div className="p-3 bg-red-50 text-red-500 rounded-2xl"><UserX size={24} /></div>
+                                <div>
+                                    <h3 className="text-xl font-black text-gray-900 dark:text-white leading-none">Clientes que não Renovaram</h3>
+                                    <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest mt-1">Clientes inativos ordenados por não renovações mais antigas</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        {naoRenovaramList.length === 0 ? (
+                            <div className="text-center py-20 bg-gray-50 dark:bg-slate-900 rounded-[2.5rem] border-2 border-dashed border-gray-200 dark:border-slate-800">
+                                <UserX className="w-16 h-16 text-gray-200 dark:text-slate-800 mx-auto mb-4" />
+                                <p className="text-gray-400 font-bold uppercase tracking-widest text-sm">Nenhum cliente inativo</p>
+                            </div>
+                        ) : (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                {naoRenovaramList.map(({ client, expiryDate, daysSince, services }) => {
+                                    const cleanPhone = client.phone_number.replace(/\D/g, '');
+                                    const servicesStr = services.join(', ');
+                                    const message = `Olá ${client.client_name || 'Dorameira'}! Sentimos sua falta na EuDorama. ❤️ Notamos que sua assinatura do ${servicesStr} venceu há algum tempo (${expiryDate.toLocaleDateString()}). Preparamos uma oferta muito especial para você retornar a assistir sem anúncios! Que tal conversarmos?`;
+                                    
+                                    return (
+                                        <div key={client.id} className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-red-50 dark:border-slate-800 flex flex-col hover:border-indigo-200 dark:hover:border-slate-700 transition-all animate-slide-up">
+                                            <div className="flex justify-between items-start mb-4">
+                                                <div className="min-w-0">
+                                                    <h3 className="font-black text-gray-900 dark:text-white text-lg truncate leading-tight">{client.client_name || 'Sem Nome'}</h3>
+                                                    <p className="text-xs font-bold text-indigo-400 mt-1 flex items-center gap-1.5">
+                                                        <Phone size={12} /> {client.phone_number}
+                                                    </p>
+                                                    <div className="mt-2 flex flex-wrap gap-1.5">
+                                                        {services.map((s, idx) => (
+                                                            <span key={idx} className="bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 px-2 py-0.5 rounded-md text-[9px] uppercase tracking-widest font-black">
+                                                                {s}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                                <div className="flex gap-2">
+                                                    <button onClick={() => { setClientForm({ ...client, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months) }); setClientModalOpen(true); }} className="p-2.5 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-600 transition-all" title="Ver/Editar Detalhes">
+                                                        <Eye size={16} />
+                                                    </button>
+                                                    <button onClick={() => handleRestoreClient(client)} className="p-2.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-600 transition-all" title="Restaurar da lixeira">
+                                                        <Undo2 size={16} />
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <div className="bg-red-50/50 dark:bg-red-950/20 border border-red-100 dark:border-red-900/30 rounded-2xl p-4 flex justify-between items-center gap-2 mb-4">
+                                                <div className="flex items-center gap-2 text-red-600 dark:text-red-400">
+                                                    <Clock size={16} />
+                                                    <span className="text-xs font-black uppercase tracking-wide">Sem renovar</span>
+                                                </div>
+                                                <span className="text-xs font-black text-red-700 dark:text-red-400 bg-red-100 dark:bg-red-900/30 px-3 py-1 rounded-lg">
+                                                    {formatDurationLapsed(daysSince)}
+                                                </span>
+                                            </div>
+
+                                            <button
+                                                onClick={() => window.open(`https://wa.me/55${cleanPhone}?text=${encodeURIComponent(message)}`, '_blank')}
+                                                className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-black py-3 px-4 rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-emerald-100 dark:shadow-none transition-all text-xs uppercase"
+                                            >
+                                                <MessageCircle size={16} /> Enviar Mensagem Promo
+                                            </button>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </div>
                 )}
             </main>
 
