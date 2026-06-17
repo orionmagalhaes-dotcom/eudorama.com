@@ -5,7 +5,6 @@ import DoramaList from './components/DoramaList';
 import CheckoutModal from './components/CheckoutModal';
 import NameModal from './components/NameModal';
 import Toast from './components/Toast';
-import PriceAdjustmentBanner from './components/PriceAdjustmentBanner';
 import { User, Dorama } from './types';
 import {
   addDoramaToDB,
@@ -25,7 +24,6 @@ import { Heart, X, CheckCircle2, MessageCircle, Gift, Sparkles, Home, Tv2, Palet
 const AdminLogin = lazy(() => import('./components/AdminLogin'));
 const AdminPanel = lazy(() => import('./components/AdminPanel').then(mod => ({ default: mod.AdminPanel })));
 
-type UserNotice = 'price';
 type PwaInstallResult = 'prompted' | 'already_installed' | 'ios_manual' | 'unsupported';
 
 interface BeforeInstallPromptEvent extends Event {
@@ -33,7 +31,6 @@ interface BeforeInstallPromptEvent extends Event {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
 }
 
-const PRICE_NOTICE_KEY = 'eudorama_notice_price_2026_seen';
 const INFINITY_PAY_HANDLE = (import.meta as any).env?.VITE_INFINITY_PAY_HANDLE || 'orion_magalhaes';
 const INFINITY_PAY_ORDER_STORAGE_PREFIX = 'eudorama_ip_order_';
 const INFINITY_PAY_CHECK_RETRY_ATTEMPTS = 4;
@@ -48,8 +45,6 @@ const INFINITY_PAY_NETWORK_FAILURE_HINTS = [
   'network request failed'
 ];
 const normalizePhoneDigits = (value: string) => String(value || '').replace(/\D/g, '');
-
-const getUserNoticeKey = (base: string, phoneNumber: string) => `${base}:${phoneNumber}`;
 
 const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -79,7 +74,6 @@ const App: React.FC = () => {
   const [isDeleting, setIsDeleting] = useState(false);
 
   const [showNameModal, setShowNameModal] = useState(false);
-  const [activeNotice, setActiveNotice] = useState<UserNotice | null>(null);
   const [deferredInstallPrompt, setDeferredInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [isPwaInstalled, setIsPwaInstalled] = useState(false);
   const lastRefreshRef = useRef<number>(0);
@@ -448,25 +442,6 @@ const App: React.FC = () => {
     if (currentUser && (currentUser.name === 'Dorameira' || !currentUser.name)) setShowNameModal(true);
   }, [currentUser?.name]);
 
-  const getPendingNotice = useCallback((phoneNumber: string): UserNotice | null => {
-    const hasSeenPrice = sessionStorage.getItem(getUserNoticeKey(PRICE_NOTICE_KEY, phoneNumber)) === 'true';
-    if (!hasSeenPrice) return 'price';
-    return null;
-  }, []);
-
-  const markNoticeAsSeen = useCallback((phoneNumber: string) => {
-    const key = getUserNoticeKey(PRICE_NOTICE_KEY, phoneNumber);
-    sessionStorage.setItem(key, 'true');
-  }, []);
-
-  useEffect(() => {
-    if (!currentUser || isAdminMode) {
-      setActiveNotice(null);
-      return;
-    }
-    setActiveNotice(getPendingNotice(currentUser.phoneNumber));
-  }, [currentUser?.phoneNumber, isAdminMode, getPendingNotice]);
-
   const handleLogin = (user: User, remember: boolean = false) => {
     setCurrentUser(user);
     const userData = JSON.stringify(user);
@@ -487,21 +462,10 @@ const App: React.FC = () => {
   };
 
   const handleLogout = () => {
-    if (currentUser?.phoneNumber) {
-      sessionStorage.removeItem(getUserNoticeKey(PRICE_NOTICE_KEY, currentUser.phoneNumber));
-    }
-
     setCurrentUser(null);
-    setActiveNotice(null);
     setActiveTab('home');
     localStorage.removeItem('eudorama_session');
     sessionStorage.removeItem('eudorama_session');
-  };
-
-  const handleClosePriceNotice = () => {
-    if (!currentUser) return;
-    markNoticeAsSeen(currentUser.phoneNumber);
-    setActiveNotice(getPendingNotice(currentUser.phoneNumber));
   };
 
   const handleNameSaved = (newName: string) => {
@@ -868,10 +832,6 @@ const App: React.FC = () => {
         </nav>
       </div>
 
-      <PriceAdjustmentBanner
-        isOpen={activeNotice === 'price'}
-        onClose={handleClosePriceNotice}
-      />
     </div>
   );
 };
