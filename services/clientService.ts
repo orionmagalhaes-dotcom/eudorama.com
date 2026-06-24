@@ -125,7 +125,7 @@ export const getAllClients = async (retries = 2): Promise<ClientDBRow[]> => {
   try {
     // OTIMIZAÇÃO EGRESS: Included game_progress to fetch internal observation
     const { data, error } = await supabase.from('clients')
-      .select('id,phone_number,client_name,client_password,subscriptions,duration_months,purchase_date,is_debtor,override_expiration,deleted,created_at,theme_color,last_active_at,game_progress');
+      .select('id,phone_number,client_name,client_password,subscriptions,duration_months,purchase_date,is_debtor,is_contacted,override_expiration,deleted,created_at,theme_color,last_active_at,game_progress');
     if (error) {
       if (retries > 0) {
         await new Promise(r => setTimeout(r, 1000));

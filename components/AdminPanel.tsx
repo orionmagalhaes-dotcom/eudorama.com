@@ -38,6 +38,7 @@ interface AdminPanelProps {
 }
 
 const SERVICES: string[] = ['Viki Pass', 'Kocowa+', 'IQIYI', 'WeTV', 'DramaBox', 'Youku'];
+const DEFAULT_PROMO_MESSAGE_TEMPLATE = 'Ola {nome}! Sentimos sua falta na EuDorama. Notamos que sua assinatura do {servicos} venceu em {data_vencimento} ({tempo_sem_renovar}). Preparamos uma promocao especial para voce voltar a assistir seus doramas. Vamos conversar?';
 const PLAN_OPTIONS: { label: string; value: string }[] = [
     { label: '1 Mês', value: '1' },
     { label: '3 Meses', value: '3' },
@@ -543,6 +544,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const [clientSearch, setClientSearch] = useState('');
     const [loginSearchQuery, setLoginSearchQuery] = useState('');
     const [copiedId, setCopiedId] = useState<string | null>(null);
+    const [promoMessageTemplate, setPromoMessageTemplate] = useState(() => {
+        return localStorage.getItem('admin_promo_message_template') || DEFAULT_PROMO_MESSAGE_TEMPLATE;
+    });
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     // States para o novo filtro de vencimentos
@@ -626,6 +630,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     useEffect(() => {
         localStorage.setItem('admin_ad_spend_per_day', String(adSpendPerDay));
     }, [adSpendPerDay]);
+    useEffect(() => {
+        localStorage.setItem('admin_promo_message_template', promoMessageTemplate);
+    }, [promoMessageTemplate]);
 
     useEffect(() => { loadData(); }, []);
 
@@ -1403,6 +1410,30 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             return remainingDays > 0 ? `Há 1 mês e ${remainingDays} dias` : 'Há 1 mês';
         }
         return remainingDays > 0 ? `Há ${months} meses e ${remainingDays} dias` : `Há ${months} meses`;
+    };
+
+    const getPromotionSentAt = (client: ClientDBRow) => {
+        const sentAt = client.game_progress?._promo_whatsapp_last_at;
+        return sentAt ? String(sentAt) : '';
+    };
+
+    const buildPromotionMessage = (
+        client: ClientDBRow,
+        services: string[],
+        expiryDate: Date,
+        daysSince: number
+    ) => {
+        const replacements: Record<string, string> = {
+            nome: client.client_name || 'Dorameira',
+            servicos: services.join(', '),
+            data_vencimento: expiryDate.toLocaleDateString(),
+            tempo_sem_renovar: formatDurationLapsed(daysSince),
+            whatsapp: client.phone_number
+        };
+
+        return promoMessageTemplate.replace(/\{(nome|servicos|data_vencimento|tempo_sem_renovar|whatsapp)\}/g, (_, key: string) => {
+            return replacements[key] || '';
+        });
     };
 
     const getLastServices = (client: ClientDBRow): string[] => {
@@ -2185,6 +2216,40 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         };
 
         setClients(prev => prev.map(c => c.id === client.id ? { ...c, is_contacted: true, game_progress: nextProgress } : c));
+        await saveClientToDB({
+            id: client.id,
+            phone_number: client.phone_number,
+            is_contacted: true,
+            game_progress: nextProgress
+        });
+    };
+
+    const sendPromotionWhatsAppMessage = async (
+        client: ClientDBRow,
+        services: string[],
+        expiryDate: Date,
+        daysSince: number
+    ) => {
+        const cleanPhone = client.phone_number.replace(/\D/g, '');
+        const message = buildPromotionMessage(client, services, expiryDate, daysSince);
+        window.open(`https://wa.me/55${cleanPhone}?text=${encodeURIComponent(message)}`, '_blank');
+
+        if (!client.id || !client.phone_number) return;
+
+        const nowIso = new Date().toISOString();
+        const nextProgress = {
+            ...(client.game_progress || {}),
+            _promo_whatsapp_last_at: nowIso,
+            _promo_whatsapp_services: services,
+            _promo_whatsapp_message: message
+        };
+
+        setClients(prev => prev.map(c => c.id === client.id ? {
+            ...c,
+            is_contacted: true,
+            game_progress: nextProgress
+        } : c));
+
         await saveClientToDB({
             id: client.id,
             phone_number: client.phone_number,
@@ -3447,6 +3512,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                             </div>
                         </div>
 
+                        <div className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] border border-indigo-100 dark:border-slate-800 shadow-sm space-y-3">
+                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                                <label className="text-[10px] font-black uppercase tracking-widest text-indigo-400 ml-1">Mensagem promocional do WhatsApp</label>
+                                <button
+                                    onClick={() => setPromoMessageTemplate(DEFAULT_PROMO_MESSAGE_TEMPLATE)}
+                                    className="self-start px-4 py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-indigo-600 dark:text-indigo-300 text-[10px] font-black uppercase tracking-widest transition-all"
+                                >
+                                    Restaurar padrao
+                                </button>
+                            </div>
+                            <textarea
+                                className="w-full min-h-[130px] bg-indigo-50 dark:bg-slate-800 p-4 rounded-2xl font-bold text-sm outline-none border-2 border-transparent focus:border-indigo-300 dark:focus:border-indigo-600 resize-y leading-relaxed"
+                                value={promoMessageTemplate}
+                                onChange={e => setPromoMessageTemplate(e.target.value)}
+                                placeholder="Digite a mensagem promocional..."
+                            />
+                            <p className="text-[10px] font-bold text-gray-400">
+                                Variaveis: {'{nome}'}, {'{servicos}'}, {'{data_vencimento}'}, {'{tempo_sem_renovar}'}, {'{whatsapp}'}.
+                            </p>
+                        </div>
+
                         {naoRenovaramList.length === 0 ? (
                             <div className="text-center py-20 bg-gray-50 dark:bg-slate-900 rounded-[2.5rem] border-2 border-dashed border-gray-200 dark:border-slate-800">
                                 <UserX className="w-16 h-16 text-gray-200 dark:text-slate-800 mx-auto mb-4" />
@@ -3455,9 +3541,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         ) : (
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 {naoRenovaramList.map(({ client, expiryDate, daysSince, services }) => {
-                                    const cleanPhone = client.phone_number.replace(/\D/g, '');
-                                    const servicesStr = services.join(', ');
-                                    const message = `Olá ${client.client_name || 'Dorameira'}! Sentimos sua falta na EuDorama. ❤️ Notamos que sua assinatura do ${servicesStr} venceu há algum tempo (${expiryDate.toLocaleDateString()}). Preparamos uma oferta muito especial para você retornar a assistir sem anúncios! Que tal conversarmos?`;
+                                    const promoSentAt = getPromotionSentAt(client);
                                     
                                     return (
                                         <div key={client.id} className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-red-50 dark:border-slate-800 flex flex-col hover:border-indigo-200 dark:hover:border-slate-700 transition-all animate-slide-up">
@@ -3495,8 +3579,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                 </span>
                                             </div>
 
+                                            {promoSentAt && (
+                                                <div className="bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900/30 rounded-2xl p-3 flex items-center justify-between gap-2 mb-4">
+                                                    <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400">
+                                                        <CheckCircle2 size={15} />
+                                                        <span className="text-[10px] font-black uppercase tracking-wide">Promocao enviada</span>
+                                                    </div>
+                                                    <span className="text-[10px] font-black text-emerald-700 dark:text-emerald-300">
+                                                        {new Date(promoSentAt).toLocaleString()}
+                                                    </span>
+                                                </div>
+                                            )}
+
                                             <button
-                                                onClick={() => window.open(`https://wa.me/55${cleanPhone}?text=${encodeURIComponent(message)}`, '_blank')}
+                                                onClick={() => { void sendPromotionWhatsAppMessage(client, services, expiryDate, daysSince); }}
                                                 className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-black py-3 px-4 rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-emerald-100 dark:shadow-none transition-all text-xs uppercase"
                                             >
                                                 <MessageCircle size={16} /> Enviar Mensagem Promo
