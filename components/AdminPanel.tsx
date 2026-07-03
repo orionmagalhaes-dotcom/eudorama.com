@@ -120,7 +120,7 @@ const getFriendlyPasswordStepLabel = (step: VikiPasswordAutomationStep | null) =
 // CAPACITY_LIMITS moved to financeConfig.ts for single source of truth
 
 import { getServicePrice } from '../services/pricingConfig';
-import { getAccountCost, getCostSplit, getRevenueSplit, DEFAULT_AD_SPEND_PER_DAY, DAYS_IN_MONTH, formatCurrency, getCapacityLimit } from '../services/financeConfig';
+import { getAccountCost, getAccountCycleDays, getAccountMonthlyCost, getCostSplit, getRevenueSplit, DEFAULT_AD_SPEND_PER_DAY, DAYS_IN_MONTH, formatCurrency, getCapacityLimit } from '../services/financeConfig';
 import { ChargeWhatsappAutomationPanel } from './ChargeWhatsappAutomationPanel';
 
 const toLocalInput = (isoString: string) => {
@@ -422,7 +422,7 @@ const getCredentialHealth = (service: string, publishedAt: string, currentUsers:
     const daysActive = Math.floor(diffTime / (1000 * 60 * 60 * 24));
     const serviceLower = service.toLowerCase();
     const limit = getCapacityLimit(service);
-    let expiryLimit = 30;
+    let expiryLimit = getAccountCycleDays(service);
     if (serviceLower.includes('kocowa')) expiryLimit = 25;
     const daysRemaining = expiryLimit - daysActive;
     if (daysRemaining < 0) return { label: 'Vencida', color: 'text-red-600 bg-red-50 border-red-200', icon: <AlertTriangle size={14} /> };
@@ -844,7 +844,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
         // --- ACCOUNT COSTS ---
         // Count credentials by service to calculate costs
-        const accountCosts: Record<string, { count: number, costPerAccount: number, totalCost: number }> = {};
+        const accountCosts: Record<string, { count: number, cycleCost: number, cycleDays: number, monthlyCostPerAccount: number, totalCost: number }> = {};
         let totalAccountCosts = 0;
         let orionCosts = 0;
         let iohannaCosts = 0;
@@ -852,20 +852,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         credentials.forEach(cred => {
             if (!cred.isVisible) return;
             const serviceName = cred.service;
-            const cost = getAccountCost(serviceName);
+            const cycleCost = getAccountCost(serviceName);
+            const cycleDays = getAccountCycleDays(serviceName);
+            const monthlyCost = getAccountMonthlyCost(serviceName);
 
-            if (cost > 0) {
+            if (monthlyCost > 0) {
                 if (!accountCosts[serviceName]) {
-                    accountCosts[serviceName] = { count: 0, costPerAccount: cost, totalCost: 0 };
+                    accountCosts[serviceName] = { count: 0, cycleCost, cycleDays, monthlyCostPerAccount: monthlyCost, totalCost: 0 };
                 }
                 accountCosts[serviceName].count++;
-                accountCosts[serviceName].totalCost += cost;
-                totalAccountCosts += cost;
+                accountCosts[serviceName].totalCost += monthlyCost;
+                totalAccountCosts += monthlyCost;
 
                 // Calculate cost split per admin
                 const split = getCostSplit(serviceName);
-                orionCosts += cost * split.orion;
-                iohannaCosts += cost * split.iohanna;
+                orionCosts += monthlyCost * split.orion;
+                iohannaCosts += monthlyCost * split.iohanna;
             }
         });
 
@@ -2684,7 +2686,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                             <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-red-100 dark:border-red-900/20 shadow-sm space-y-6">
                                 <div className="flex flex-col gap-1">
                                     <h3 className="text-xl font-black text-gray-900 dark:text-white">💰 Custos das Contas</h3>
-                                    <p className="text-xs font-bold text-red-400 uppercase tracking-widest">Valor pago mensalmente pelas contas de streaming</p>
+                                    <p className="text-xs font-bold text-red-400 uppercase tracking-widest">Custos convertidos para equivalente mensal</p>
                                 </div>
                                 <div className="overflow-x-auto">
                                     <table className="w-full text-left border-separate border-spacing-y-2">
@@ -2692,8 +2694,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                             <tr className="text-[10px] font-black uppercase text-red-300 tracking-widest">
                                                 <th className="px-4 py-2">Serviço</th>
                                                 <th className="px-4 py-2">Qtd Contas</th>
-                                                <th className="px-4 py-2 text-right">Custo/Conta</th>
-                                                <th className="px-4 py-2 text-right">Custo Total</th>
+                                                <th className="px-4 py-2 text-right">Custo/Ciclo</th>
+                                                <th className="px-4 py-2 text-right">Ciclo</th>
+                                                <th className="px-4 py-2 text-right">Custo Mensal</th>
+                                                <th className="px-4 py-2 text-right">Total Mensal</th>
                                             </tr>
                                         </thead>
                                         <tbody>
@@ -2701,12 +2705,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                 <tr key={name} className="group hover:bg-red-50/50 dark:hover:bg-red-900/10 transition-colors">
                                                     <td className="px-4 py-4 rounded-l-2xl bg-red-50/50 dark:bg-red-900/10"><span className="font-black text-sm text-gray-800 dark:text-gray-200">{name}</span></td>
                                                     <td className="px-4 py-4 bg-red-50/50 dark:bg-red-900/10"><span className="font-bold text-sm text-red-600">{data.count}</span></td>
-                                                    <td className="px-4 py-4 bg-red-50/50 dark:bg-red-900/10 text-right font-bold text-red-400 text-xs">R$ {formatCurrency(data.costPerAccount)}</td>
+                                                    <td className="px-4 py-4 bg-red-50/50 dark:bg-red-900/10 text-right font-bold text-red-400 text-xs">R$ {formatCurrency(data.cycleCost)}</td>
+                                                    <td className="px-4 py-4 bg-red-50/50 dark:bg-red-900/10 text-right font-bold text-red-400 text-xs">{data.cycleDays} dias</td>
+                                                    <td className="px-4 py-4 bg-red-50/50 dark:bg-red-900/10 text-right font-bold text-red-400 text-xs">R$ {formatCurrency(data.monthlyCostPerAccount)}</td>
                                                     <td className="px-4 py-4 rounded-r-2xl bg-red-50/50 dark:bg-red-900/10 text-right font-black text-red-600">R$ {formatCurrency(data.totalCost)}</td>
                                                 </tr>
                                             ))}
                                             <tr className="bg-red-100 dark:bg-red-900/30">
-                                                <td colSpan={3} className="px-4 py-4 rounded-l-2xl font-black text-red-800 dark:text-red-200 uppercase text-xs">Total Custos Contas</td>
+                                                <td colSpan={5} className="px-4 py-4 rounded-l-2xl font-black text-red-800 dark:text-red-200 uppercase text-xs">Total Custos Contas</td>
                                                 <td className="px-4 py-4 rounded-r-2xl text-right font-black text-red-700 dark:text-red-300 text-lg">R$ {formatCurrency(financeStats.totalAccountCosts)}</td>
                                             </tr>
                                         </tbody>

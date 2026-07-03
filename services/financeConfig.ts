@@ -2,7 +2,7 @@
  * Configuração financeira centralizada para custos e divisão de receitas.
  */
 
-// --- CUSTOS DAS CONTAS (por mês, por conta) ---
+// --- CUSTOS DAS CONTAS (por ciclo de cobrança, por conta) ---
 export const ACCOUNT_COSTS: Record<string, number> = {
     'Viki Pass': 37.90,
     'IQIYI': 9.90,
@@ -11,6 +11,12 @@ export const ACCOUNT_COSTS: Record<string, number> = {
     'Kocowa+': 0,
     'DramaBox': 0,
     'Youku': 0,
+};
+
+export const DAYS_IN_MONTH = 30;
+
+export const ACCOUNT_CYCLE_DAYS: Record<string, number> = {
+    'Viki Pass': 35,
 };
 
 // --- DIVISÃO DE CUSTOS (quem paga o quê) ---
@@ -48,14 +54,29 @@ export const getRevenueSplit = (serviceName: string) => {
 
 // --- GASTOS COM ANÚNCIOS ---
 export const DEFAULT_AD_SPEND_PER_DAY = 10.00;
-export const DAYS_IN_MONTH = 30;
 
 // --- HELPERS ---
-export const getAccountCost = (serviceName: string): number => {
-    const key = Object.keys(ACCOUNT_COSTS).find(k =>
+const findAccountKey = (serviceName: string): string | undefined => {
+    return Object.keys(ACCOUNT_COSTS).find(k =>
         serviceName.toLowerCase().includes(k.toLowerCase())
     );
+};
+
+export const getAccountCost = (serviceName: string): number => {
+    const key = findAccountKey(serviceName);
     return key ? ACCOUNT_COSTS[key] : 0;
+};
+
+export const getAccountCycleDays = (serviceName: string): number => {
+    const key = findAccountKey(serviceName);
+    return key ? (ACCOUNT_CYCLE_DAYS[key] || DAYS_IN_MONTH) : DAYS_IN_MONTH;
+};
+
+export const getAccountMonthlyCost = (serviceName: string): number => {
+    const cycleCost = getAccountCost(serviceName);
+    const cycleDays = getAccountCycleDays(serviceName);
+    if (!cycleCost || !cycleDays) return 0;
+    return cycleCost * (DAYS_IN_MONTH / cycleDays);
 };
 
 export const formatCurrency = (value: number): string => {

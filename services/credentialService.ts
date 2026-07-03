@@ -1,5 +1,6 @@
 import { AppCredential, User, ClientDBRow } from '../types';
 import { supabase } from './clientService';
+import { getAccountCycleDays } from './financeConfig';
 
 // Credential cache
 let credentialsCache: { data: AppCredential[]; timestamp: number } | null = null;
@@ -315,7 +316,8 @@ const calculateHealth = (cred: AppCredential, serviceName: string) => {
     const sName = serviceName.toLowerCase();
 
     if (sName.includes('viki')) {
-        if (daysPassed >= 30) alertMsg = 'Conta expirada (30 dias).';
+        const cycleDays = getAccountCycleDays(serviceName);
+        if (daysPassed >= cycleDays) alertMsg = `Conta expirada (${cycleDays} dias).`;
     } else if (sName.includes('kocowa')) {
         if (daysPassed >= 25) alertMsg = 'Proximo do vencimento.';
     }
