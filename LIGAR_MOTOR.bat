@@ -1,6 +1,6 @@
 @echo off
-title MOTOR DE AUTOMACAO EUDORAMA
-echo Iniciando Motor de Automacao...
+title MOTOR DE AUTOMACAO EUDORAMA + TUNNEL
+echo Iniciando Motor de Automacao e Tunnel Cloudflare...
 echo.
-npx -y tsx automation-server.ts
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start-viki-motor-tunnel.ps1" -RestartMotor
 pause

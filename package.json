@@ -20,7 +20,7 @@
     "axios": "^1.15.0",
     "https-proxy-agent": "^9.0.0",
     "lucide-react": "^0.556.0",
-    "patchright": "^1.60.2",
+    "patchright": "^1.61.1",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
     "wrangler": "^4.81.1"

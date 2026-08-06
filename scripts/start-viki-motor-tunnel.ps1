@@ -14,6 +14,26 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 Set-Location $RepoRoot
 
+function Load-DotEnv($envPath) {
+  if (Test-Path $envPath) {
+    Get-Content $envPath | ForEach-Object {
+      $line = $_.Trim()
+      if ($line -and -not $line.StartsWith("#") -and $line.Contains("=")) {
+        $parts = $line.Split("=", 2)
+        $key = $parts[0].Trim()
+        $val = $parts[1].Trim().Trim('"').Trim("'")
+        if ($key -and -not [Environment]::GetEnvironmentVariable($key)) {
+          [Environment]::SetEnvironmentVariable($key, $val)
+          Set-Item -Path "env:$key" -Value $val
+        }
+      }
+    }
+  }
+}
+
+Load-DotEnv (Join-Path $RepoRoot ".env")
+Load-DotEnv (Join-Path $RepoRoot ".env.local")
+
 function Write-Info($message) {
   Write-Host "[info] $message"
 }
@@ -66,13 +86,38 @@ function New-MotorToken() {
   return [Convert]::ToBase64String($bytes).TrimEnd("=").Replace("+", "-").Replace("/", "_")
 }
 
+function Has-CloudflareApiToken() {
+  return -not [string]::IsNullOrWhiteSpace($env:CLOUDFLARE_API_TOKEN)
+}
+
+function Ensure-CloudflareApiToken() {
+  if (Has-CloudflareApiToken) {
+    return
+  }
+  throw "CLOUDFLARE_API_TOKEN nao esta definido. Defina-o antes de rodar este script para permitir comandos 'wrangler'. Veja https://developers.cloudflare.com/fundamentals/api/get-started/create-token/."
+}
+
 function Stop-MotorOnPort($port) {
+  # Tenta parar pelo CommandLine (processos iniciados normalmente)
   $connections = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
   foreach ($connection in $connections) {
     $process = Get-CimInstance Win32_Process -Filter "ProcessId = $($connection.OwningProcess)" -ErrorAction SilentlyContinue
     if ($process -and $process.CommandLine -match "automation-server\.ts") {
       Stop-Process -Id $connection.OwningProcess -Force -ErrorAction SilentlyContinue
       Write-Ok "Motor anterior parado. PID $($connection.OwningProcess)."
+    }
+  }
+
+  # Para qualquer node.exe ouvindo na porta (cobre processos filho com CommandLine vazio)
+  $connections2 = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+  foreach ($connection in $connections2) {
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId = $($connection.OwningProcess)" -ErrorAction SilentlyContinue
+    if ($process -and $process.Name -match "node\.exe") {
+      Write-Info "Encerrando node.exe na porta $port. PID $($connection.OwningProcess)."
+      $prevPref = $ErrorActionPreference
+      $ErrorActionPreference = "SilentlyContinue"
+      $null = & taskkill /PID $($connection.OwningProcess) /F /T 2>&1
+      $ErrorActionPreference = $prevPref
     }
   }
 
@@ -93,6 +138,22 @@ function Stop-MotorOnPort($port) {
   if ($related.Count -gt 0) {
     Write-Ok "Cadeia anterior do motor encerrada."
   }
+
+  Start-Sleep -Seconds 2
+
+  # Verifica se o motor ainda esta rodando (pode ocorrer se o processo foi iniciado
+  # em contexto elevado/administrador e nao pode ser encerrado por este script).
+  if (Test-LocalPort $port) {
+    $stillRunning = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    $targetProcId = if ($stillRunning) { $stillRunning.OwningProcess } else { '?' }
+    throw (
+      "ERRO: Nao foi possivel encerrar o motor na porta $port (PID $targetProcId). " +
+      "Provavelmente ele foi iniciado em um terminal com privilegios de Administrador. " +
+      "Por favor, feche manualmente a janela cmd/PowerShell que esta rodando o motor " +
+      "(verifique o Gerenciador de Tarefas -> Detalhes -> node.exe PID $targetProcId -> Finalizar arvore) " +
+      "e execute o LIGAR_MOTOR_TUNNEL.bat novamente."
+    )
+  }
 }
 
 function Start-MotorIfNeeded($port, $logDir, $restartExisting) {
@@ -102,6 +163,24 @@ function Start-MotorIfNeeded($port, $logDir, $restartExisting) {
   }
 
   if (Test-LocalPort $port) {
+    # Motor esta rodando. Verifica se responde ao token atual.
+    $motorToken = ([string]$env:VIKI_MOTOR_TOKEN).Trim()
+    if ($motorToken) {
+      $testUrl = "http://localhost:$port/api/viki-tv-automation/status?requestId=token-check"
+      $prevPref = $ErrorActionPreference
+      $ErrorActionPreference = "SilentlyContinue"
+      $resp = curl.exe -sS --connect-timeout 3 --max-time 5 -H "Authorization: Bearer $motorToken" $testUrl 2>$null
+      $ErrorActionPreference = $prevPref
+      $respText = [string]($resp -join "")
+      if ($respText.Contains("Nao autorizado")) {
+        throw (
+          "ERRO: O motor na porta $port esta respondendo com token diferente do atual. " +
+          "O motor provavelmente foi iniciado em outro terminal com um token diferente e " +
+          "nao pode ser encerrado automaticamente (verifique se foi iniciado como Administrador). " +
+          "Feche manualmente a janela que esta rodando o motor e execute novamente."
+        )
+      }
+    }
     Write-Ok "Motor ja esta ouvindo na porta $port."
     return
   }
@@ -167,6 +246,8 @@ function Start-QuickTunnel($port, $logDir) {
 }
 
 function Start-NamedTunnelIfNeeded($tunnelName, $workerDir, $logDir) {
+  Ensure-CloudflareApiToken
+
   $existing = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
     Where-Object { ([string]$_.CommandLine) -match "wrangler tunnel run $([regex]::Escape($tunnelName))" } |
     Select-Object -First 1
@@ -185,7 +266,7 @@ function Start-NamedTunnelIfNeeded($tunnelName, $workerDir, $logDir) {
   Remove-Item -LiteralPath $out, $err -Force -ErrorAction SilentlyContinue
 
   Write-Info "Iniciando Cloudflare tunnel nomeado '$tunnelName'..."
-  $command = "npx wrangler tunnel run $tunnelName --log-level info"
+  $command = "npx.cmd wrangler tunnel run $tunnelName --log-level info"
   $process = Start-Process -WindowStyle Hidden -FilePath powershell.exe -WorkingDirectory $workerDir -ArgumentList @(
     "-NoProfile",
     "-ExecutionPolicy",
@@ -214,41 +295,61 @@ function Test-PublicDns($url) {
   }
 }
 
-function Test-TunnelHealth($url) {
+function Test-TunnelHealth($url, $timeoutSeconds = 10) {
   $healthUrl = "$url/api/viki-tv-automation/status?requestId=tunnel-health-check"
   $hostName = ([Uri]$url).Host
-  $headers = @()
   $motorToken = ([string]$env:VIKI_MOTOR_TOKEN).Trim()
+  $headersWithToken = @()
   if ($motorToken) {
-    $headers += @("-H", "Authorization: Bearer $motorToken")
+    $headersWithToken += @("-H", "Authorization: Bearer $motorToken")
   }
-  $resolvedIp = $null
-  try {
-    $resolvedIp = (
-      Resolve-DnsName $hostName -Server 1.1.1.1 -Type A -ErrorAction Stop |
-        Where-Object { $_.IPAddress } |
-        Select-Object -First 1 -ExpandProperty IPAddress
-    )
-  } catch {
-    $resolvedIp = $null
-  }
-  $deadline = (Get-Date).AddSeconds(30)
-  do {
-    $health = ""
+
+  function Resolve-HostVia1111($dnsHostName) {
     try {
-      if ($resolvedIp) {
-        $health = curl.exe -sS @headers --resolve "$hostName`:443`:$resolvedIp" $healthUrl 2>$null
-      } else {
-        $health = curl.exe -sS @headers $healthUrl 2>$null
-      }
+      return (
+        Resolve-DnsName $dnsHostName -Server 1.1.1.1 -Type A -ErrorAction Stop |
+          Where-Object { $_.IPAddress } |
+          Select-Object -First 1 -ExpandProperty IPAddress
+      )
     } catch {
-      $health = ""
+      return $null
     }
-    $healthText = [string]($health -join "")
-    if ($LASTEXITCODE -eq 0 -and $healthText.Contains("requestId")) {
+  }
+
+  function Invoke-HealthCurl($hdrs) {
+    $ip = Resolve-HostVia1111 $hostName
+    try {
+      if ($ip) {
+        # Monta o valor do --resolve sem backtick (que causaria escape incorreto em PS)
+        $resolveVal = $hostName + ":443:" + $ip
+        $result = curl.exe -sS --connect-timeout 8 --max-time 15 @hdrs --resolve $resolveVal $healthUrl 2>$null
+      } else {
+        $result = curl.exe -sS --connect-timeout 8 --max-time 15 @hdrs $healthUrl 2>$null
+      }
+      return @{ ExitCode = $LASTEXITCODE; Body = [string]($result -join "") }
+    } catch {
+      return @{ ExitCode = 1; Body = "" }
+    }
+  }
+
+  $deadline = (Get-Date).AddSeconds($timeoutSeconds)
+  do {
+    # Tenta primeiro com token (motor configurado corretamente)
+    $r = Invoke-HealthCurl $headersWithToken
+    if ($r.ExitCode -eq 0 -and $r.Body.Contains("requestId")) {
       return $true
     }
-    Start-Sleep -Seconds 2
+    # Se falhou e ha token configurado, tenta sem token
+    # (detecta motor iniciado sem VIKI_MOTOR_TOKEN que aceita qualquer requisicao)
+    if ($motorToken -and $r.Body.Contains("Nao autorizado")) {
+      $rNoAuth = Invoke-HealthCurl @()
+
+      if ($rNoAuth.ExitCode -eq 0 -and $rNoAuth.Body.Contains("requestId")) {
+        Write-Info "Motor respondeu sem token - foi iniciado sem VIKI_MOTOR_TOKEN. Sera reiniciado com token correto."
+        return $true
+      }
+    }
+    Start-Sleep -Seconds 1
   } while ((Get-Date) -lt $deadline)
   return $false
 }
@@ -269,7 +370,7 @@ function Find-HealthyExistingTunnel() {
   $uniqueUrls = $urls | Select-Object -Unique
   foreach ($url in $uniqueUrls) {
     Write-Info "Verificando tunnel existente: $url"
-    if (Test-TunnelHealth $url) {
+    if (Test-TunnelHealth $url 3) {
       return @{ Url = $url; ProcessId = 0; Log = "" }
     }
   }
@@ -287,7 +388,10 @@ function Sync-WorkerSecret($workerDir, $secretName, $secretValue) {
     Set-Content -Path $tmp -Value $secretValue -NoNewline
     Push-Location $workerDir
     try {
-      Get-Content -Raw -Path $tmp | npx wrangler secret put $secretName
+      Get-Content -Raw -Path $tmp | npx.cmd wrangler secret put $secretName
+      if ($LASTEXITCODE -ne 0) {
+        Write-Info "Falha ao sincronizar secret $secretName. Verifique CLOUDFLARE_API_TOKEN e os logs do wrangler."
+      }
     } finally {
       Pop-Location
     }
@@ -299,10 +403,22 @@ function Sync-WorkerSecret($workerDir, $secretName, $secretValue) {
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 $generatedMotorToken = $false
+$lastTokenPath = Join-Path $RepoRoot "artifacts\last-motor-token.txt"
 if (-not ([string]$env:VIKI_MOTOR_TOKEN).Trim()) {
-  $env:VIKI_MOTOR_TOKEN = New-MotorToken
-  $generatedMotorToken = $true
-  Write-Info "Token do motor gerado para esta execucao."
+  if (Test-Path $lastTokenPath) {
+    $savedToken = (Get-Content $lastTokenPath -ErrorAction SilentlyContinue).Trim()
+    if ($savedToken) {
+      $env:VIKI_MOTOR_TOKEN = $savedToken
+      Write-Info "Token do motor carregado de artifacts\last-motor-token.txt."
+    }
+  }
+  if (-not ([string]$env:VIKI_MOTOR_TOKEN).Trim()) {
+    $env:VIKI_MOTOR_TOKEN = New-MotorToken
+    $generatedMotorToken = $true
+    New-Item -ItemType Directory -Force -Path (Split-Path $lastTokenPath) | Out-Null
+    Set-Content -Path $lastTokenPath -Value $env:VIKI_MOTOR_TOKEN -NoNewline
+    Write-Info "Novo token do motor gerado e salvo."
+  }
 }
 
 if ($SkipMotor) {
@@ -325,13 +441,11 @@ try {
   Start-NamedTunnelIfNeeded $NamedTunnel $WorkerDir $LogDir | Out-Null
   Write-Info "Tunnel nomeado '$NamedTunnel' esta configurado para encaminhar $PublicMotorUrl para este PC em http://localhost:$Port."
   if (Test-PublicDns $PublicMotorUrl) {
-    Write-Info "Testando motor pelo tunnel nomeado: $PublicMotorUrl"
-    if (Test-TunnelHealth $PublicMotorUrl) {
-      $tunnel = @{ Url = $PublicMotorUrl; ProcessId = 0; Log = "" }
-      Write-Ok "Tunnel nomeado respondeu pelo dominio fixo."
-    } else {
-      throw "Dominio fixo existe, mas nao respondeu ao health check. Reinicie o motor para alinhar o token local com o Worker."
-    }
+    # O token do motor pode ter acabado de ser regenerado. O Worker so recebe o
+    # novo token ao final deste script, portanto um health check aqui falharia
+    # mesmo quando o tunnel nomeado esta correto e ativo.
+    $tunnel = @{ Url = $PublicMotorUrl; ProcessId = 0; Log = "" }
+    Write-Ok "Tunnel nomeado localizado no dominio fixo. O acesso sera validado apos sincronizar o token do Worker."
   } else {
     Write-Info "DNS do dominio fixo ainda nao existe: $PublicMotorUrl"
     $tunnel = @{ Url = $PublicMotorUrl; ProcessId = 0; Log = ""; PendingDns = $true }
@@ -347,10 +461,10 @@ if (-not $tunnel) {
 if ($tunnel) {
   Write-Ok "Reaproveitando tunnel saudavel: $($tunnel.Url)"
 } else {
-  for ($attempt = 1; $attempt -le 3; $attempt += 1) {
+  for ($attempt = 1; $attempt -le 2; $attempt += 1) {
     $candidate = Start-QuickTunnel $Port $LogDir
-    Write-Info "Testando motor pelo tunnel (tentativa $attempt/3)..."
-    if (Test-TunnelHealth $candidate.Url) {
+    Write-Info "Testando motor pelo tunnel (tentativa $attempt/2)..."
+    if (Test-TunnelHealth $candidate.Url 60) {
       $tunnel = $candidate
       break
     }
@@ -378,6 +492,14 @@ if ($motorToken.Trim()) {
   Write-Info "Atualizando secret VIKI_PATCHRIGHT_MOTOR_TOKEN no Worker..."
   Sync-WorkerSecret $WorkerDir "VIKI_PATCHRIGHT_MOTOR_TOKEN" $motorToken.Trim()
   Write-Ok "Token do motor sincronizado."
+}
+
+if (-not $tunnel.PendingDns) {
+  Write-Info "Validando motor pelo tunnel apos sincronizar os secrets..."
+  if (-not (Test-TunnelHealth $tunnel.Url)) {
+    throw "O tunnel '$($tunnel.Url)' nao respondeu ao health check. Confira o ingress do tunnel e os logs em $LogDir"
+  }
+  Write-Ok "Motor respondeu pelo tunnel."
 }
 
 Write-Ok "Fluxo pronto. Clientes continuam chamando o Worker Cloudflare; o Worker chama este motor Patchright pelo tunnel."
