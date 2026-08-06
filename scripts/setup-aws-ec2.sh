@@ -26,8 +26,12 @@ if ! command -v cloudflared &> /dev/null; then
   rm cloudflared.deb
 fi
 
-echo "=== 5. Instalando dependencias do Patchright/Chromium ==="
-npx -y patchright install --with-deps chromium
+echo "=== 5. Instalando dependencias do projeto (npm install) ==="
+cd /home/ubuntu/eudorama.com || true
+npm install
+
+echo "=== 6. Instalando dependencias do Patchright/Chromium ==="
+npx patchright install --with-deps chromium
 
 echo "=== Setup concluido com sucesso! ==="
 echo ""
