@@ -182,8 +182,8 @@ const performLogout = async (page: any): Promise<{ ok: boolean; details: string 
 
   if (await controls.count()) {
     try {
-      await controls.first().click({ timeout: 1500 });
-      await page.waitForTimeout(600);
+      await controls.first().click({ timeout: 1000 });
+      await page.waitForTimeout(300);
     } catch {
       // fallback below
     }
@@ -206,8 +206,8 @@ const performLogout = async (page: any): Promise<{ ok: boolean; details: string 
     topRight.sort((a, b) => b.x - a.x);
     for (const candidate of topRight.slice(0, 3)) {
       try {
-        await genericControls.nth(candidate.index).click({ timeout: 1000 });
-        await page.waitForTimeout(500);
+        await genericControls.nth(candidate.index).click({ timeout: 800 });
+        await page.waitForTimeout(300);
         break;
       } catch {
         // keep trying
@@ -220,14 +220,16 @@ const performLogout = async (page: any): Promise<{ ok: boolean; details: string 
     return { ok: false, details: 'Botao Log Out nao encontrado' };
   }
 
-  await page.waitForTimeout(2500);
-  const bodyText = String(await page.locator('body').innerText()).replace(/\s+/g, ' ').trim();
-  const loggedOutHint = /Log in|Create Account|Install the app|Watchlist/i.test(bodyText);
-  if (!loggedOutHint) {
-    return { ok: true, details: 'Log Out clicado (sem confirmacao textual forte)' };
+  // Polling dinâmico rápido para confirmar logout
+  for (let i = 0; i < 10; i++) {
+    await page.waitForTimeout(200);
+    const bodyText = String(await page.locator('body').innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
+    if (/Log in|Create Account|Install the app|Watchlist/i.test(bodyText)) {
+      return { ok: true, details: 'Logout confirmado' };
+    }
   }
 
-  return { ok: true, details: 'Logout confirmado' };
+  return { ok: true, details: 'Log Out clicado' };
 };
 
 const extractVisibleVikiTvError = async (page: any): Promise<string> => {
@@ -316,7 +318,7 @@ export const runVikiTvAutomationJob = async (
     push(updateStep(status, STEP_KEYS.login, 'running', 'Abrindo pagina de conexao.'));
 
     await page.goto(payload.tvUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
-    await page.waitForTimeout(1200);
+    await page.waitForTimeout(300);
 
     const tvCodeInputSelector = 'input[placeholder*="Enter code" i], input[name="code"], input[name="linkingCode"], input[id="linkingCode"], input[placeholder*="código" i], input[placeholder*="codigo" i]';
     let codeInput = page.locator(tvCodeInputSelector);
@@ -327,46 +329,48 @@ export const runVikiTvAutomationJob = async (
       if (!loginCtaClicked) {
         throw new Error('Botao Log in nao encontrado');
       }
-      // Aguarda nav para pagina de login concluir
       try {
-        await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 });
+        await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 10000 });
       } catch {
-        // pode já ter navegado ou ser SPA
+        // SPA ou já navegou
       }
-      await page.waitForTimeout(1500);
-      // Pode aparecer tela de selecao de metodo (EN: "Continue with Email" | PT: "Continuar com Email")
+      await page.waitForTimeout(300);
       await clickFirstText(page, ['Continue with Email', 'Continuar com Email', 'Continuar com e-mail']).catch(() => false);
-      await page.waitForTimeout(800);
+      await page.waitForTimeout(300);
     }
 
     if (!codeAlreadyVisible) {
-    // EN: "Email" | PT: qualquer input de email
-    const emailInput = page.locator('input[placeholder="Email"], input[type="email"], input[name*="email" i]');
-    // EN: "Password" | PT: "Senha"
-    const passwordInput = page.locator('input[placeholder="Password"], input[placeholder="Senha"], input[type="password"], input[name*="password" i], input[name*="senha" i]');
+      const emailInput = page.locator('input[placeholder="Email"], input[type="email"], input[name*="email" i]');
+      const passwordInput = page.locator('input[placeholder="Password"], input[placeholder="Senha"], input[type="password"], input[name*="password" i], input[name*="senha" i]');
 
-    if (!(await emailInput.count()) || !(await passwordInput.count())) {
-      throw new Error('Formulario de login nao encontrado');
-    }
+      if (!(await emailInput.count()) || !(await passwordInput.count())) {
+        throw new Error('Formulario de login nao encontrado');
+      }
 
-    await emailInput.first().fill(payload.credentialEmail);
-    await passwordInput.first().fill(payload.credentialPassword);
+      await emailInput.first().fill(payload.credentialEmail);
+      await passwordInput.first().fill(payload.credentialPassword);
 
-    // EN: "Continue" | PT: "Continuar", "Prosseguir", "Entrar"
-    const continueClicked = await clickExactText(page, ['Continue', 'Continuar', 'Prosseguir', 'Entrar', 'Log in', 'Fazer login', 'Sign in']);
-    if (!continueClicked) throw new Error('Botao Continue nao encontrado');
+      const continueClicked = await clickExactText(page, ['Continue', 'Continuar', 'Prosseguir', 'Entrar', 'Log in', 'Fazer login', 'Sign in']);
+      if (!continueClicked) throw new Error('Botao Continue nao encontrado');
 
-    await page.waitForTimeout(3500);
-    const stillOnLoginForm = (await page.locator('input[placeholder="Email"], input[type="email"]').count()) > 0;
-    if (stillOnLoginForm) {
-      const bodyText = await page.locator('body').innerText();
-      const vikiLoginErrorText = await extractVisibleVikiLoginError(page);
-      const fs = await import('fs');
-      if (!fs.existsSync('artifacts')) fs.mkdirSync('artifacts');
-      fs.writeFileSync('artifacts/tv_error_body.txt', bodyText);
-      await page.screenshot({ path: 'artifacts/tv_error_login.png', fullPage: true }).catch(() => undefined);
-      throw new Error(vikiLoginErrorText || 'Login nao concluido na Viki');
-    }
+      // Polling inteligente para aguardar conclusão do login
+      for (let i = 0; i < 20; i++) {
+        await page.waitForTimeout(200);
+        const codeVisibleNow = (await page.locator(tvCodeInputSelector).count().catch(() => 0)) > 0;
+        const loginVisibleNow = (await page.locator('input[placeholder="Email"], input[type="email"]').count().catch(() => 0)) > 0;
+        if (codeVisibleNow || !loginVisibleNow) break;
+      }
+
+      const stillOnLoginForm = (await page.locator('input[placeholder="Email"], input[type="email"]').count()) > 0;
+      if (stillOnLoginForm) {
+        const bodyText = await page.locator('body').innerText();
+        const vikiLoginErrorText = await extractVisibleVikiLoginError(page);
+        const fs = await import('fs');
+        if (!fs.existsSync('artifacts')) fs.mkdirSync('artifacts');
+        fs.writeFileSync('artifacts/tv_error_body.txt', bodyText);
+        await page.screenshot({ path: 'artifacts/tv_error_login.png', fullPage: true }).catch(() => undefined);
+        throw new Error(vikiLoginErrorText || 'Login nao concluido na Viki');
+      }
     }
 
     push(updateStep(status, STEP_KEYS.login, 'success', 'Login executado.'));
@@ -374,9 +378,8 @@ export const runVikiTvAutomationJob = async (
 
     codeInput = page.locator(tvCodeInputSelector);
     if (!(await codeInput.count())) {
-      // Some sessions do not redirect automatically; force TV page reload.
       await page.goto(payload.tvUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
-      await page.waitForTimeout(2200);
+      await page.waitForTimeout(500);
       codeInput = page.locator(tvCodeInputSelector);
     }
     if (!(await codeInput.count())) throw new Error('Campo de codigo da TV nao encontrado');
@@ -388,27 +391,40 @@ export const runVikiTvAutomationJob = async (
     ]);
     if (!linkClicked) {
       try {
-        await codeInput.first().press('Enter', { timeout: 3000 });
+        await codeInput.first().press('Enter', { timeout: 2000 });
       } catch {
         // Ignora caso o elemento tenha sido desativado ou sumido
       }
     }
-    
-    await page.waitForTimeout(6000); // Await HTTP response correctly
 
-    const bodyAfterCode = String(await page.locator('body').innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
-    const vikiErrorText = await extractVisibleVikiTvError(page).catch(() => '');
-    const hasErrorAlert = (await page.locator('[role="alert"], .alert, .error, .sc-4f811a15-0').count().catch(() => 0)) > 0;
-    const invalidCode = hasErrorAlert || /Code is not valid|valid.*TV Code|não é válido|código inválido/i.test(bodyAfterCode);
+    // Polling dinâmico rápido aguardando resposta da vinculação do código da TV
+    let bodyAfterCode = '';
+    let hasErrorAlert = false;
+    let invalidCode = false;
+    let isInputStillThere = true;
+    let isSuccessText = false;
 
-    let isInputStillThere = false;
-    try {
-      isInputStillThere = (await page.locator(tvCodeInputSelector).count()) > 0;
-    } catch {
-      isInputStillThere = false;
+    for (let i = 0; i < 24; i++) {
+      await page.waitForTimeout(250);
+      bodyAfterCode = String(await page.locator('body').innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
+      hasErrorAlert = (await page.locator('[role="alert"], .alert, .error, .sc-4f811a15-0').count().catch(() => 0)) > 0;
+      invalidCode = hasErrorAlert || /Code is not valid|valid.*TV Code|não é válido|código inválido/i.test(bodyAfterCode);
+
+      try {
+        isInputStillThere = (await page.locator(tvCodeInputSelector).count()) > 0;
+      } catch {
+        isInputStillThere = false;
+      }
+
+      isSuccessText = /bem-sucedida|conectada|sucesso|success|linked|device linked/i.test(bodyAfterCode);
+
+      // Avança imediatamente se houve erro, se o input sumiu (sucesso) ou se texto de sucesso apareceu
+      if (invalidCode || !isInputStillThere || isSuccessText) {
+        break;
+      }
     }
 
-    const isSuccessText = /bem-sucedida|conectada|sucesso|success|linked|device linked/i.test(bodyAfterCode);
+    const vikiErrorText = await extractVisibleVikiTvError(page).catch(() => '');
 
     if (invalidCode || (isInputStillThere && !isSuccessText)) {
       throw new Error(vikiErrorText || 'O codigo inserido e invalido ou ja expirou. Verifique o codigo exibido na TV e tente novamente.');
