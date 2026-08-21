@@ -213,13 +213,17 @@ const main = async () => {
     await codeInput.first().fill(tvCode);
 
     log('code', 'Clicando em Vincular TV / Link Now...');
-    const linkClicked = await clickByTexts(page, ['Link Now', 'Conectar agora', 'Vincular Agora', 'Vincular TV']);
+    const linkClicked = await clickByTexts(page, [
+      'Link Now', 'Conectar agora', 'Vincular Agora', 'Vincular TV', 'Vincular agora',
+      'Link TV', 'Link Device', 'Conectar', 'Vincular', 'Submit', 'Continue', 'Continuar'
+    ]);
     if (!linkClicked) {
       log('code', 'Botão nao encontrado, pressionando Enter no input...');
-      await codeInput.first().press('Enter');
-    } else {
-      await page.waitForTimeout(500);
-      await codeInput.first().press('Enter'); // fallback
+      try {
+        await codeInput.first().press('Enter', { timeout: 3000 });
+      } catch {
+        // ignora se navegou ou sumiu
+      }
     }
 
     result.codeSent = true;

@@ -382,23 +382,33 @@ export const runVikiTvAutomationJob = async (
     if (!(await codeInput.count())) throw new Error('Campo de codigo da TV nao encontrado');
 
     await codeInput.first().fill(payload.tvCode);
-    const linkClicked = await clickFirstText(page, ['Link Now', 'Conectar agora', 'Vincular Agora', 'Vincular TV']);
+    const linkClicked = await clickFirstText(page, [
+      'Link Now', 'Conectar agora', 'Vincular Agora', 'Vincular TV', 'Vincular agora',
+      'Link TV', 'Link Device', 'Conectar', 'Vincular', 'Submit', 'Continue', 'Continuar'
+    ]);
     if (!linkClicked) {
-      await codeInput.first().press('Enter');
-    } else {
-      await page.waitForTimeout(500);
-      await codeInput.first().press('Enter'); // Fallback
+      try {
+        await codeInput.first().press('Enter', { timeout: 3000 });
+      } catch {
+        // Ignora caso o elemento tenha sido desativado ou sumido
+      }
     }
     
     await page.waitForTimeout(6000); // Await HTTP response correctly
 
-    const bodyAfterCode = String(await page.locator('body').innerText()).replace(/\s+/g, ' ').trim();
-    const vikiErrorText = await extractVisibleVikiTvError(page);
-    const hasErrorAlert = await page.locator('[role="alert"], .alert, .error, .sc-4f811a15-0').count() > 0;
+    const bodyAfterCode = String(await page.locator('body').innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
+    const vikiErrorText = await extractVisibleVikiTvError(page).catch(() => '');
+    const hasErrorAlert = (await page.locator('[role="alert"], .alert, .error, .sc-4f811a15-0').count().catch(() => 0)) > 0;
     const invalidCode = hasErrorAlert || /Code is not valid|valid.*TV Code|não é válido|código inválido/i.test(bodyAfterCode);
 
-    const isInputStillThere = (await codeInput.count()) > 0;
-    const isSuccessText = /bem-sucedida|conectada|sucesso|success/i.test(bodyAfterCode);
+    let isInputStillThere = false;
+    try {
+      isInputStillThere = (await page.locator(tvCodeInputSelector).count()) > 0;
+    } catch {
+      isInputStillThere = false;
+    }
+
+    const isSuccessText = /bem-sucedida|conectada|sucesso|success|linked|device linked/i.test(bodyAfterCode);
 
     if (invalidCode || (isInputStillThere && !isSuccessText)) {
       throw new Error(vikiErrorText || 'O codigo inserido e invalido ou ja expirou. Verifique o codigo exibido na TV e tente novamente.');
