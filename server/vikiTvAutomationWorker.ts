@@ -382,13 +382,32 @@ export const runVikiTvAutomationJob = async (
       await page.waitForTimeout(500);
       codeInput = page.locator(tvCodeInputSelector);
     }
-    if (!(await codeInput.count())) throw new Error('Campo de codigo da TV nao encontrado');
+    const cleanTvCode = String(payload.tvCode || '').toUpperCase().trim();
+    await codeInput.first().focus().catch(() => {});
+    await codeInput.first().click({ clickCount: 3 }).catch(() => {});
+    await page.keyboard.press('Control+A').catch(() => {});
+    await page.keyboard.press('Backspace').catch(() => {});
+    await codeInput.first().fill(cleanTvCode);
+    await page.keyboard.type(cleanTvCode, { delay: 40 }).catch(() => {});
 
-    await codeInput.first().fill(payload.tvCode);
-    const linkClicked = await clickFirstText(page, [
-      'Link Now', 'Conectar agora', 'Vincular Agora', 'Vincular TV', 'Vincular agora',
-      'Link TV', 'Link Device', 'Conectar', 'Vincular', 'Submit', 'Continue', 'Continuar'
-    ]);
+    let linkClicked = false;
+    const formSubmitBtn = page.locator('form button[type="submit"], form button, button[class*="submit" i], button[class*="link" i], [data-testid*="link" i]');
+    if (await formSubmitBtn.count()) {
+      try {
+        await formSubmitBtn.first().click({ timeout: 1500 });
+        linkClicked = true;
+      } catch {
+        linkClicked = false;
+      }
+    }
+
+    if (!linkClicked) {
+      linkClicked = await clickFirstText(page, [
+        'Link Now', 'Conectar agora', 'Vincular Agora', 'Vincular TV', 'Vincular agora',
+        'Link TV', 'Link Device', 'Vincular'
+      ]);
+    }
+
     if (!linkClicked) {
       try {
         await codeInput.first().press('Enter', { timeout: 2000 });
