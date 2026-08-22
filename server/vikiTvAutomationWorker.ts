@@ -309,12 +309,12 @@ export const runVikiTvAutomationJob = async (
     const { chromium, devices } = patchrightModule as any;
 
     const proxy = getPatchrightProxyConfig();
-    const browserSession = await createVikiPatchrightContext(chromium, devices, proxy);
+    const browserSession = await createVikiPatchrightContext(chromium, devices, proxy, payload.credentialEmail);
     browser = browserSession.browser;
     const context = browserSession.context;
     const page = await context.newPage();
 
-    push(updateStep(status, STEP_KEYS.dispatch, 'success', `${proxy ? 'Navegador iniciado com proxy configurado' : 'Navegador iniciado'} usando perfil local persistente.`));
+    push(updateStep(status, STEP_KEYS.dispatch, 'success', `${proxy ? 'Navegador iniciado com proxy configurado' : 'Navegador iniciado'} usando perfil isolado da credencial.`));
     push(updateStep(status, STEP_KEYS.login, 'running', 'Abrindo pagina de conexao.'));
 
     await page.goto(payload.tvUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
@@ -458,10 +458,8 @@ export const runVikiTvAutomationJob = async (
       )
     );
 
-    push(updateStep(status, STEP_KEYS.logout, 'running', 'Executando logout de seguranca.'));
-    const logout = await performLogout(page);
-    if (!logout.ok) throw new Error(logout.details);
-    push(updateStep(status, STEP_KEYS.logout, 'success', logout.details));
+    push(updateStep(status, STEP_KEYS.logout, 'running', 'Preservando sessao isolada da credencial.'));
+    push(updateStep(status, STEP_KEYS.logout, 'success', 'Sessao mantida ativa para conexoes instantaneas.'));
 
     push(updateJob(status, 'success', 'Ciclo concluido com sucesso.'));
   } catch (error: any) {
