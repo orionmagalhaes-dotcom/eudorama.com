@@ -57,7 +57,7 @@ const normalizeTvModel = (value: unknown): VikiTvModel | null => {
   return null;
 };
 
-const normalizeTvCode = (value: unknown): string => String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+const normalizeTvCode = (value: unknown): string => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 6);
 
 const server = createServer(async (req, res) => {
   const parsedUrl = parse(req.url || '', true);

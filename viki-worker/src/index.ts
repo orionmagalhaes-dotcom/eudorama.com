@@ -151,7 +151,7 @@ const parseServicesJson = (raw: string | null | undefined): string[] => {
 
 const normalizeTvCode = (value: unknown): string => {
 	if (typeof value !== 'string') return '';
-	return value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+	return value.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 6);
 };
 
 const parsePayload = (body: unknown): Partial<AutomationPayload> => {

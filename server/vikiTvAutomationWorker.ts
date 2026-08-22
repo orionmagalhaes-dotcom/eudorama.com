@@ -382,7 +382,7 @@ export const runVikiTvAutomationJob = async (
       await page.waitForTimeout(500);
       codeInput = page.locator(tvCodeInputSelector);
     }
-    const cleanTvCode = String(payload.tvCode || '').toUpperCase().trim();
+    const cleanTvCode = String(payload.tvCode || '').toLowerCase().trim();
     await codeInput.first().focus().catch(() => {});
     await codeInput.first().click({ clickCount: 3 }).catch(() => {});
     await page.keyboard.press('Control+A').catch(() => {});
