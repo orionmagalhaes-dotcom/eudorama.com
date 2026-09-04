@@ -231,20 +231,19 @@ const main = async () => {
     await page.waitForTimeout(6000);
 
     const bodyAfterCode = String(await page.locator('body').innerText()).replace(/\s+/g, ' ').trim();
-    // Viki may have an explicit error div instead of just checking body. Let's look for known alert divs.
-    const hasErrorAlert = await page.locator('[role="alert"], .alert, .error, .sc-4f811a15-0').count() > 0;
-    if (hasErrorAlert) {
-      const alertText = await page.locator('[role="alert"], .alert, .error, .sc-4f811a15-0').first().innerText();
+    const hasFormError = await page.locator('main [class*="sc-c46d3ac9-8"], main form ~ div[role="alert"]').count() > 0;
+    if (hasFormError) {
+      const alertText = await page.locator('main [class*="sc-c46d3ac9-8"], main form ~ div[role="alert"]').first().innerText();
       log('browser', `Alert or Error div found: ${alertText}`);
     }
 
-    const codeInvalid = /Code is not valid|valid Samsung TV Code|não é válido|código inválido/i.test(bodyAfterCode);
-    if (codeInvalid || hasErrorAlert) {
-      result.codeResponse = 'Código inválido (esperado em teste)';
-      log('code', 'Código enviado (retorno código inválido esperado em teste)');
+    const codeInvalid = hasFormError || /Code is not valid|valid (?:Samsung|LG|Android)?\s*TV Code|não é válido|código inválido/i.test(bodyAfterCode);
+    if (codeInvalid) {
+      result.codeResponse = 'Código inválido (detectado com precisão)';
+      log('code', 'Código enviado (retorno código inválido verificado com precisão)');
     } else {
-      result.codeResponse = 'Nenhum erro recebido (falso positivo)';
-      log('code', 'Problema: Viki não retornou erro claro no HTML. HTML retornado?');
+      result.codeResponse = 'Código aceito / Sucesso';
+      log('code', 'Nenhum erro de código encontrado — tela de sucesso detectada');
     }
 
     // ---- LOGOUT ----

@@ -620,36 +620,61 @@ const clickByText = async (page: Page, values: string[]): Promise<boolean> => {
 };
 
 const extractVisibleVikiTvError = async (page: Page): Promise<string> => {
-	return page.evaluate(`(() => {
+	return (page.evaluate(`(() => {
 		const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+		const isGlobalNotice = (text) => {
+			const lower = normalize(text).toLowerCase();
+			return lower.includes('termos de uso') || lower.includes('política de privacidade') || lower.includes('politica de privacidade') || lower.includes('rastreamento');
+		};
 		const looksLikeTvCodeError = (value) => {
 			const lower = normalize(value).toLowerCase();
-			if (!lower) return false;
+			if (!lower || isGlobalNotice(lower)) return false;
 			return (/code|tv|c[oó]digo|codigo|televis/i.test(lower) && /invalid|valid|expired|expir|inv[aá]lid|v[aá]lid|n[aã]o|nao/i.test(lower));
 		};
-		const selectors = ['[role="alert"]', '[aria-live]', '.alert', '.error', '[class*="error" i]', '[class*="alert" i]'];
-		const candidates = selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)).map((element) => normalize(element.innerText || element.textContent || '')).filter(Boolean));
-		const allText = normalize(candidates.join(' ') + ' ' + (document.body.innerText || ''));
+
+		// 1. Prioriza erro renderizado diretamente no container do form / componente de linking da Viki
+		const formErrorEl = document.querySelector('main [class*="sc-c46d3ac9-8"], main form ~ div, main form + div');
+		if (formErrorEl) {
+			const text = normalize(formErrorEl.innerText || formErrorEl.textContent || '');
+			if (text && !isGlobalNotice(text)) return text;
+		}
+
+		const selectors = ['main [role="alert"]:not(#__next-route-announcer__)', 'main .alert', 'main .error', 'main [class*="error" i]'];
+		const candidates = selectors.flatMap((selector) =>
+			Array.from(document.querySelectorAll(selector))
+				.map((element) => normalize(element.innerText || element.textContent || ''))
+				.filter((text) => text && !isGlobalNotice(text))
+		);
+
 		const patterns = [
-			/Please enter a valid Samsung TV code\./i,
-			/Please enter a valid LG TV code\./i,
-			/Please enter a valid Android TV code\./i,
-			/Code is not valid\.?/i,
+			/Please enter a valid (?:Samsung|LG|Android)?\\s*TV code\\.?/i,
+			/Code is not valid\\.?/i,
 			/O c[oó]digo[^.!?]*(?:inv[aá]lido|v[aá]lido)[^.!?]*[.!?]?/i,
+			/Por favor, insira um c[oó]digo v[aá]lido/i
 		];
+
+		for (const cand of candidates) {
+			for (const pattern of patterns) {
+				const match = cand.match(pattern);
+				if (match) return match[0];
+			}
+			if (looksLikeTvCodeError(cand)) return cand;
+		}
+
+		// Busca no texto principal (excluindo avisos do topo)
+		const mainEl = document.querySelector('main');
+		const mainText = normalize(mainEl ? mainEl.innerText : '');
 		for (const pattern of patterns) {
-			const match = allText.match(pattern);
+			const match = mainText.match(pattern);
 			if (match) return match[0];
 		}
-		const specific = candidates.find(looksLikeTvCodeError);
-		if (specific) return specific;
-		const bodySentences = normalize(document.body.innerText || '').split(/(?<=[.!?])\\s+/).map(normalize).filter(Boolean);
-		return bodySentences.find(looksLikeTvCodeError) || '';
-	})()`);
+
+		return candidates.find(looksLikeTvCodeError) || '';
+	})()`) as unknown as Promise<string>);
 };
 
 const extractVisibleVikiLoginError = async (page: Page): Promise<string> => {
-	return page.evaluate(`(() => {
+	return (page.evaluate(`(() => {
 		const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
 		const looksLikeLoginError = (value) => {
 			const lower = normalize(value).toLowerCase();
@@ -661,9 +686,9 @@ const extractVisibleVikiLoginError = async (page: Page): Promise<string> => {
 		const allText = normalize(candidates.join(' ') + ' ' + (document.body.innerText || ''));
 		const patterns = [
 			/Oh no, something went wrong!/i,
-			/There has been an unexpected issue\. Please try again in a few minutes\./i,
-			/The email or password you entered did not match our records\. Please double-check and try again\./i,
-			/Your password is incorrect\./i,
+			/There has been an unexpected issue\\. Please try again in a few minutes\\./i,
+			/The email or password you entered did not match our records\\. Please double-check and try again\\./i,
+			/Your password is incorrect\\./i,
 		];
 		for (const pattern of patterns) {
 			const match = allText.match(pattern);
@@ -673,7 +698,7 @@ const extractVisibleVikiLoginError = async (page: Page): Promise<string> => {
 		if (specific) return specific;
 		const bodySentences = normalize(document.body.innerText || '').split(/(?<=[.!?])\\s+/).map(normalize).filter(Boolean);
 		return bodySentences.find(looksLikeLoginError) || '';
-	})()`);
+	})()`) as unknown as Promise<string>);
 };
 
 const clickLoginCta = async (page: Page): Promise<boolean> => {
@@ -889,6 +914,16 @@ const runAutomationAttempt = async (
 		await page.click(codeSelector, { clickCount: 3 });
 		await page.keyboard.press('Backspace');
 		await page.type(codeSelector, payload.tvCode, { delay: 20 });
+		await page.evaluate((code: string) => {
+			const doc = (globalThis as any).document;
+			const input = doc?.querySelector('input[name="linkingCode"], input[id="linkingCode"], input[placeholder*="código" i], input[placeholder*="codigo" i], input[placeholder*="code" i]');
+			if (input) {
+				input.value = code;
+				input.dispatchEvent(new Event('input', { bubbles: true }));
+				input.dispatchEvent(new Event('change', { bubbles: true }));
+			}
+		}, payload.tvCode);
+		await sleep(300);
 
 		const clickedLink = await clickByText(page, ['link now', 'conectar agora', 'vincular agora', 'vincular tv']);
 		if (!clickedLink) {
@@ -898,21 +933,21 @@ const runAutomationAttempt = async (
 			await page.keyboard.press('Enter');
 		}
 
-		await sleep(6000); // aguarda resposta HTTP
+		await sleep(4000); // aguarda resposta HTTP
 		const vikiErrorText = await extractVisibleVikiTvError(page);
-		const { afterCode, hasErrorDiv, isInputStillThere } = await page.evaluate(() => {
+		const { afterCode, hasFormErrorDiv, isInputStillThere } = await page.evaluate(() => {
 			const doc = (globalThis as any).document;
-			const errDiv = doc?.querySelector('[role="alert"], .alert, .error, .sc-4f811a15-0');
-            const inputField = doc?.querySelector('input[name="linkingCode"], input[id="linkingCode"], input[name="code"]');
+			const formErrDiv = doc?.querySelector('main [class*="sc-c46d3ac9-8"], main form ~ div[role="alert"], main form + div[role="alert"]');
+			const inputField = doc?.querySelector('input[name="linkingCode"], input[id="linkingCode"], input[name="code"]');
 			return {
 				afterCode: doc?.body?.innerText || '',
-				hasErrorDiv: !!errDiv,
-                isInputStillThere: !!inputField
+				hasFormErrorDiv: !!formErrDiv,
+				isInputStillThere: !!inputField
 			};
 		});
 		const afterCodeClean = afterCode.replace(/\s+/g, ' ');
-		const invalid = hasErrorDiv || /code is not valid|valid samsung tv code|valid lg tv code|valid android tv code|não é válido|código inválido/i.test(afterCodeClean);
-		const isSuccessText = /bem-sucedida|conectada|sucesso|success/i.test(afterCodeClean);
+		const invalid = Boolean(vikiErrorText) || hasFormErrorDiv || /code is not valid|valid (?:samsung|lg|android)?\s*tv code|não é válido|código inválido/i.test(afterCodeClean);
+		const isSuccessText = /bem-sucedida|conectada|sucesso|success|linked my device|device linked/i.test(afterCodeClean);
 
 		if (invalid || (isInputStillThere && !isSuccessText)) {
 			throw new Error(vikiErrorText || 'O codigo inserido e invalido ou ja expirou. Verifique o codigo exibido na TV e tente novamente.');

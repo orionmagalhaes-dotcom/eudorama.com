@@ -235,29 +235,54 @@ const performLogout = async (page: any): Promise<{ ok: boolean; details: string 
 const extractVisibleVikiTvError = async (page: any): Promise<string> => {
   return page.evaluate(`(() => {
     const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+    const isGlobalNotice = (text) => {
+      const lower = normalize(text).toLowerCase();
+      return lower.includes('termos de uso') || lower.includes('política de privacidade') || lower.includes('politica de privacidade') || lower.includes('rastreamento');
+    };
     const looksLikeTvCodeError = (value) => {
       const lower = normalize(value).toLowerCase();
-      if (!lower) return false;
+      if (!lower || isGlobalNotice(lower)) return false;
       return (/code|tv|c[oó]digo|codigo|televis/i.test(lower) && /invalid|valid|expired|expir|inv[aá]lid|v[aá]lid|n[aã]o|nao/i.test(lower));
     };
-    const selectors = ['[role="alert"]', '[aria-live]', '.alert', '.error', '[class*="error" i]', '[class*="alert" i]'];
-    const candidates = selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)).map((element) => normalize(element.innerText || element.textContent || '')).filter(Boolean));
-    const allText = normalize(candidates.join(' ') + ' ' + (document.body.innerText || ''));
+
+    // 1. Prioriza erro renderizado diretamente no container do form / componente de linking da Viki
+    const formErrorEl = document.querySelector('main [class*="sc-c46d3ac9-8"], main form ~ div, main form + div');
+    if (formErrorEl) {
+      const text = normalize(formErrorEl.innerText || formErrorEl.textContent || '');
+      if (text && !isGlobalNotice(text)) return text;
+    }
+
+    const selectors = ['main [role="alert"]:not(#__next-route-announcer__)', 'main .alert', 'main .error', 'main [class*="error" i]'];
+    const candidates = selectors.flatMap((selector) =>
+      Array.from(document.querySelectorAll(selector))
+        .map((element) => normalize(element.innerText || element.textContent || ''))
+        .filter((text) => text && !isGlobalNotice(text))
+    );
+
     const patterns = [
-      /Please enter a valid Samsung TV code\./i,
-      /Please enter a valid LG TV code\./i,
-      /Please enter a valid Android TV code\./i,
-      /Code is not valid\.?/i,
-      /O c[oó]digo[^.!?]*(?:inv[aá]lido|v[aá]lido)[^.!?]*[.!?]?/i
+      /Please enter a valid (?:Samsung|LG|Android)?\\s*TV code\\.?/i,
+      /Code is not valid\\.?/i,
+      /O c[oó]digo[^.!?]*(?:inv[aá]lido|v[aá]lido)[^.!?]*[.!?]?/i,
+      /Por favor, insira um c[oó]digo v[aá]lido/i
     ];
+
+    for (const cand of candidates) {
+      for (const pattern of patterns) {
+        const match = cand.match(pattern);
+        if (match) return match[0];
+      }
+      if (looksLikeTvCodeError(cand)) return cand;
+    }
+
+    // Busca no texto principal (excluindo avisos do topo)
+    const mainEl = document.querySelector('main');
+    const mainText = normalize(mainEl ? mainEl.innerText : '');
     for (const pattern of patterns) {
-      const match = allText.match(pattern);
+      const match = mainText.match(pattern);
       if (match) return match[0];
     }
-    const specific = candidates.find(looksLikeTvCodeError);
-    if (specific) return specific;
-    const bodySentences = normalize(document.body.innerText || '').split(/(?<=[.!?])\\s+/).map(normalize).filter(Boolean);
-    return bodySentences.find(looksLikeTvCodeError) || '';
+
+    return candidates.find(looksLikeTvCodeError) || '';
   })()`);
 };
 
@@ -383,18 +408,27 @@ export const runVikiTvAutomationJob = async (
       codeInput = page.locator(tvCodeInputSelector);
     }
     const cleanTvCode = String(payload.tvCode || '').toLowerCase().trim();
+    // Preenchimento do código com disparo de eventos React
     await codeInput.first().focus().catch(() => {});
     await codeInput.first().click({ clickCount: 3 }).catch(() => {});
     await page.keyboard.press('Control+A').catch(() => {});
     await page.keyboard.press('Backspace').catch(() => {});
     await codeInput.first().fill(cleanTvCode);
-    await page.keyboard.type(cleanTvCode, { delay: 40 }).catch(() => {});
+    await page.evaluate(`(() => {
+      const input = document.querySelector('input[name="linkingCode"], input[id="linkingCode"], input[placeholder*="código" i], input[placeholder*="codigo" i], input[placeholder*="code" i]');
+      if (input) {
+        input.value = "${cleanTvCode}";
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    })()`);
+    await page.waitForTimeout(300);
 
     let linkClicked = false;
     const formSubmitBtn = page.locator('form button[type="submit"], form button, button[class*="submit" i], button[class*="link" i], [data-testid*="link" i]');
     if (await formSubmitBtn.count()) {
       try {
-        await formSubmitBtn.first().click({ timeout: 1500 });
+        await formSubmitBtn.first().click({ timeout: 2000 });
         linkClicked = true;
       } catch {
         linkClicked = false;
@@ -416,18 +450,22 @@ export const runVikiTvAutomationJob = async (
       }
     }
 
-    // Polling dinâmico rápido aguardando resposta da vinculação do código da TV
+    // Polling dinâmico aguardando resposta da vinculação do código da TV
     let bodyAfterCode = '';
-    let hasErrorAlert = false;
     let invalidCode = false;
     let isInputStillThere = true;
     let isSuccessText = false;
+    let realTvErrorText = '';
 
-    for (let i = 0; i < 24; i++) {
-      await page.waitForTimeout(250);
+    for (let i = 0; i < 30; i++) {
+      await page.waitForTimeout(300);
       bodyAfterCode = String(await page.locator('body').innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
-      hasErrorAlert = (await page.locator('[role="alert"], .alert, .error, .sc-4f811a15-0').count().catch(() => 0)) > 0;
-      invalidCode = hasErrorAlert || /Code is not valid|valid.*TV Code|não é válido|código inválido/i.test(bodyAfterCode);
+
+      // Extrai erro real específico da vinculação (ignora termos de uso / anúncios)
+      realTvErrorText = await extractVisibleVikiTvError(page).catch(() => '');
+      const hasFormErrorEl = (await page.locator('main [class*="sc-c46d3ac9-8"], main form ~ div[role="alert"], main form + div[role="alert"]').count().catch(() => 0)) > 0;
+
+      invalidCode = Boolean(realTvErrorText) || hasFormErrorEl || /Code is not valid|valid (?:Samsung|LG|Android)?\s*TV Code|código.*não é válido|código inválido/i.test(bodyAfterCode);
 
       try {
         isInputStillThere = (await page.locator(tvCodeInputSelector).count()) > 0;
@@ -435,18 +473,16 @@ export const runVikiTvAutomationJob = async (
         isInputStillThere = false;
       }
 
-      isSuccessText = /bem-sucedida|conectada|sucesso|success|linked|device linked/i.test(bodyAfterCode);
+      isSuccessText = /bem-sucedida|conectada|sucesso|success|linked my device|device linked|tvLoginSuccessful/i.test(bodyAfterCode);
 
-      // Avança imediatamente se houve erro, se o input sumiu (sucesso) ou se texto de sucesso apareceu
+      // Conclui imediatamente se houve erro real, ou se o input sumiu (sucesso), ou se texto de sucesso apareceu
       if (invalidCode || !isInputStillThere || isSuccessText) {
         break;
       }
     }
 
-    const vikiErrorText = await extractVisibleVikiTvError(page).catch(() => '');
-
     if (invalidCode || (isInputStillThere && !isSuccessText)) {
-      throw new Error(vikiErrorText || 'O codigo inserido e invalido ou ja expirou. Verifique o codigo exibido na TV e tente novamente.');
+      throw new Error(realTvErrorText || 'O codigo inserido e invalido ou ja expirou. Verifique o codigo exibido na TV e tente novamente.');
     }
 
     push(
