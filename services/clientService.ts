@@ -125,7 +125,7 @@ export const getAllClients = async (retries = 2): Promise<ClientDBRow[]> => {
   try {
     // OTIMIZAÇÃO EGRESS: Included game_progress to fetch internal observation
     const { data, error } = await supabase.from('clients')
-      .select('id,phone_number,client_name,client_password,subscriptions,duration_months,purchase_date,is_debtor,is_contacted,override_expiration,deleted,created_at,theme_color,last_active_at,game_progress');
+      .select('id,phone_number,client_name,client_password,subscriptions,duration_months,purchase_date,is_debtor,is_contacted,override_expiration,deleted,created_at,theme_color,last_active_at,game_progress,manual_credentials');
     if (error) {
       if (retries > 0) {
         await new Promise(r => setTimeout(r, 1000));
@@ -244,6 +244,13 @@ export const processUserLogin = (userRows: ClientDBRow[]): { user: User | null, 
 
   const combinedServices = Array.from(allServices);
   const localData = getLocalUserData(primaryPhone);
+  const mergedManualCredentials: Record<string, string> = {};
+  userRows.forEach(row => {
+    if (row.manual_credentials && typeof row.manual_credentials === 'object') {
+      Object.assign(mergedManualCredentials, row.manual_credentials);
+    }
+  });
+
   return {
     user: {
       id: bestRow.id,
@@ -261,7 +268,8 @@ export const processUserLogin = (userRows: ClientDBRow[]): { user: User | null, 
       gameProgress: bestRow.game_progress || {},
       themeColor: bestRow.theme_color,
       backgroundImage: bestRow.background_image,
-      profileImage: bestRow.profile_image
+      profileImage: bestRow.profile_image,
+      manualCredentials: mergedManualCredentials
     },
     error: null
   };
@@ -280,6 +288,11 @@ export const saveClientToDB = async (client: Partial<ClientDBRow>): Promise<{ su
     } else if (payload.phone_number) {
       const { data } = await supabase.from('clients').select('*').eq('phone_number', payload.phone_number).single();
       if (data) oldData = data as ClientDBRow;
+    }
+
+    // Preserve existing manual_credentials if not provided in payload
+    if (payload.manual_credentials === undefined && oldData?.manual_credentials) {
+      payload.manual_credentials = oldData.manual_credentials;
     }
 
     // Handle Observation -> game_progress mapping
@@ -421,6 +434,23 @@ export const saveClientToDB = async (client: Partial<ClientDBRow>): Promise<{ su
 
     return { success: true, msg: "Salvo com sucesso!" };
   } catch (e: any) { return { success: false, msg: `Erro: ${e.message}` }; }
+};
+
+export const updateClientManualCredentials = async (
+  clientId: string,
+  serviceKey: string,
+  credentialId: string
+): Promise<boolean> => {
+  try {
+    const { data, error } = await supabase.from('clients').select('manual_credentials').eq('id', clientId).single();
+    if (error) return false;
+    const current = (data?.manual_credentials && typeof data.manual_credentials === 'object') ? data.manual_credentials : {};
+    const updated = { ...current, [serviceKey]: credentialId };
+    const { error: updateError } = await supabase.from('clients').update({ manual_credentials: updated }).eq('id', clientId);
+    return !updateError;
+  } catch {
+    return false;
+  }
 };
 
 export const updateDoramaInDB = async (dorama: Dorama): Promise<boolean> => {

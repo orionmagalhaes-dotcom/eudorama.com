@@ -234,7 +234,10 @@ async function syncPasswordToDatabase(email: string, newPassword: string): Promi
     const supabase = createClient(url, key);
     
     console.log(`[DB Sync] Atualizando supabase para a conta ${email}...`);
-    const { error } = await supabase.from('credentials').update({ password: newPassword }).eq('email', email);
+    const { error } = await supabase.from('credentials').update({
+      password: newPassword,
+      published_at: new Date().toISOString()
+    }).eq('email', email);
     
     if (error) {
        console.error('[DB Sync Error] Erro ao sincronizar nova senha:', error.message);

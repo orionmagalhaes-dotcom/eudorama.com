@@ -32,3 +32,5 @@ scripts/.cobranca-whatsapp.lock
 # Local env for WuzAPI docker example
 docker/wuzapi/.env
 
+scratch/
+

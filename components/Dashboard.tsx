@@ -165,7 +165,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
     const [tempName, setTempName] = useState(user.name);
     const [isSyncing, setIsSyncing] = useState(false);
     const [isRefreshing, setIsRefreshing] = useState(false);
-    const [credentialUpdates, setCredentialUpdates] = useState<{ name: string, date: string }[]>([]);
+    const [credentialUpdates, setCredentialUpdates] = useState<{ name: string; date: string; credId?: string; password?: string }[]>([]);
     const [showVikiTvModal, setShowVikiTvModal] = useState(false);
     const [activeVikiService, setActiveVikiService] = useState<string>('Viki Pass');
     const [selectedVikiTvModel, setSelectedVikiTvModel] = useState<VikiTvModel | null>(null);
@@ -288,18 +288,41 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
 
                 // Check for updates
                 if (result.credential) {
-                    const ackDate = user.gameProgress?._credential_acks?.[name] || '1970-01-01';
+                    const rawAck = user.gameProgress?._credential_acks?.[name];
+                    let ackDate = '1970-01-01';
+                    let ackCredId: string | null = null;
+                    let ackPassword: string | null = null;
+
+                    if (typeof rawAck === 'string') {
+                        if (rawAck.includes('::')) {
+                            const parts = rawAck.split('::');
+                            ackDate = parts[0] || '1970-01-01';
+                            ackCredId = parts[1] || null;
+                            ackPassword = parts[2] || null;
+                        } else {
+                            ackDate = rawAck;
+                        }
+                    }
+
                     const pubDate = result.credential.publishedAt || '1970-01-01';
                     const ackTime = new Date(ackDate).getTime();
                     const pubTime = new Date(pubDate).getTime();
 
-                    // CUTOFF: Updates before this date are ignored (to prevent spam for existing users)
-                    // Set to roughly the time of deploying this feature: Jan 31, 2026
-                    const CUTOFF_TIME = new Date('2026-01-31T03:00:00.000Z').getTime(); // 00:00 BRT
+                    const CUTOFF_TIME = new Date('2026-01-31T03:00:00.000Z').getTime();
 
-                    console.log(`[UPDATE CHECK] ${name}: pubDate=${pubDate}, ackDate=${ackDate}, isNewer=${pubTime > ackTime}, afterCutoff=${pubTime >= CUTOFF_TIME}`);
+                    // Detect changes:
+                    // 1. Password changed since ack
+                    const passwordChanged = !!(ackPassword && ackPassword !== result.credential.password);
+                    // 2. Credential assignment changed since ack
+                    const credChanged = !!(ackCredId && ackCredId !== result.credential.id);
+                    // 3. Published date is strictly newer than acknowledged date
+                    const isNewer = pubTime > ackTime && pubTime >= CUTOFF_TIME;
 
-                    if (pubTime > ackTime && pubTime >= CUTOFF_TIME) {
+                    if (rawAck) {
+                        if (passwordChanged || credChanged || isNewer) {
+                            (result as any).hasNewUpdate = true;
+                        }
+                    } else if (pubTime >= CUTOFF_TIME) {
                         (result as any).hasNewUpdate = true;
                     }
                 }
@@ -318,16 +341,18 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                 };
             }));
 
-            const updates = results.filter(r => r.hasNewUpdate && r.cred).map(r => ({ name: r.name, date: r.cred!.publishedAt }));
+            const updates = results
+                .filter(r => r.hasNewUpdate && r.cred)
+                .map(r => ({
+                    name: r.name,
+                    date: r.cred!.publishedAt,
+                    credId: r.cred!.id,
+                    password: r.cred!.password
+                }));
             if (updates.length > 0) {
                 setCredentialUpdates(prev => {
                     const existingNames = new Set(prev.map(p => p.name));
-                    // Only add if not already in the list AND not already acknowledged in user data (double check)
-                    const newOnes = updates.filter(u => {
-                        if (existingNames.has(u.name)) return false;
-                        const ackDate = user.gameProgress?._credential_acks?.[u.name] || '1970-01-01';
-                        return new Date(u.date).getTime() > new Date(ackDate).getTime();
-                    });
+                    const newOnes = updates.filter(u => !existingNames.has(u.name));
                     if (newOnes.length === 0) return prev;
                     return [...prev, ...newOnes];
                 });
@@ -703,7 +728,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
         // 1. Prepare batch update map
         const newAcks: Record<string, string> = {};
         credentialUpdates.forEach(u => {
-            newAcks[u.name] = u.date;
+            newAcks[u.name] = `${u.date}::${u.credId || ''}::${u.password || ''}`;
         });
 
         // 2. Clear local state IMMEDIATELY to close modal

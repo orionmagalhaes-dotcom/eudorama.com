@@ -1,7 +1,14 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { AppCredential, ClientDBRow, User } from '../types';
-import { fetchCredentials, saveCredential, deleteCredential } from '../services/credentialService';
+import {
+    fetchCredentials,
+    saveCredential,
+    deleteCredential,
+    getAssignedCredentialId,
+    getCanonicalServiceKey,
+    distributeUnassignedClients
+} from '../services/credentialService';
 import {
     getAllClients,
     saveClientToDB,
@@ -1088,7 +1095,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 let assigned: AppCredential | undefined;
                 let previousVersionNotFound = false;
 
-                if (detail.isActive) {
+                // 1. Primary source of truth: client's persistent manual_credentials
+                const linkedCredId = getAssignedCredentialId(client.manual_credentials, serviceLower);
+                if (linkedCredId) {
+                    assigned = serviceCreds.find(c => c.id === linkedCredId);
+                }
+
+                if (!assigned && detail.isActive) {
                     const rankMap = getRankMapForService(serviceLower, false);
                     const rank = rankMap.get(client.id);
                     if (rank !== undefined) assigned = serviceCreds[rank % serviceCreds.length];
@@ -1229,7 +1242,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         const nextExitHistory: Record<string, CredentialExitEntry[]> = { ...credentialExitHistory };
         let exitHistoryChanged = false;
 
-        Object.entries(previousSnapshot).forEach(([associationKey, previousEntry]) => {
+        Object.entries(previousSnapshot).forEach(([associationKey, previousEntryRaw]) => {
+            const previousEntry = previousEntryRaw as CredentialAssignmentSnapshotEntry;
             if (currentAssignments[associationKey]) return;
 
             const eventKey = `${associationKey}::${previousEntry.credentialVersion}::${previousEntry.assignedAt}`;
@@ -1253,7 +1267,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         });
 
         const nextSnapshot: Record<string, CredentialAssignmentSnapshotEntry> = {};
-        Object.entries(currentAssignments).forEach(([associationKey, currentEntry]) => {
+        Object.entries(currentAssignments).forEach(([associationKey, currentEntryRaw]) => {
+            const currentEntry = currentEntryRaw as CredentialAssignmentCurrentEntry;
             const previous = previousSnapshot[associationKey];
             nextSnapshot[associationKey] = {
                 ...currentEntry,
@@ -1515,14 +1530,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 let assignedLogin = "Não vinculada";
                 let assignedPassword = "-";
                 if (serviceCreds.length > 0) {
-                    const rank = getRankMapForService(serviceLower).get(client.id);
-                    if (rank !== undefined) {
-                        const credIndex = rank % serviceCreds.length;
-                        assignedLogin = serviceCreds[credIndex].email;
-                        assignedPassword = serviceCreds[credIndex].password || "-";
+                    const linkedCredId = getAssignedCredentialId(client.manual_credentials, serviceLower);
+                    const assignedCred = linkedCredId ? serviceCreds.find(c => c.id === linkedCredId) : null;
+                    if (assignedCred) {
+                        assignedLogin = assignedCred.email;
+                        assignedPassword = assignedCred.password || "-";
+                    } else {
+                        const rank = getRankMapForService(serviceLower).get(client.id);
+                        if (rank !== undefined) {
+                            const credIndex = rank % serviceCreds.length;
+                            assignedLogin = serviceCreds[credIndex].email;
+                            assignedPassword = serviceCreds[credIndex].password || "-";
+                        }
                     }
                 }
-                const hasCredential = assignedLogin !== "NÃ£o vinculada" && assignedPassword !== "-";
+                const hasCredential = assignedLogin !== "Não vinculada" && assignedPassword !== "-";
                 return { serviceName, serviceLower, login: assignedLogin, password: assignedPassword, hasCredential, daysLeft, isExpired: daysLeft < 0 };
             });
             return { clientId: client.id, clientName: client.client_name || "Sem Nome", phoneNumber: client.phone_number, accesses: subAccesses };
@@ -3208,7 +3230,39 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         <div className="space-y-8">
                             {Object.entries(groupedCredentials).map(([serviceName, creds]) => (
                                 <div key={serviceName} className="space-y-4">
-                                    <h4 className="text-xs font-black text-indigo-400 uppercase tracking-widest px-2">{serviceName}</h4>
+                                    <div className="flex flex-wrap items-center justify-between gap-3 px-2">
+                                        <h4 className="text-xs font-black text-indigo-400 uppercase tracking-widest">{serviceName}</h4>
+                                        <div className="flex items-center gap-2">
+                                            <button
+                                                onClick={async () => {
+                                                    if (!confirm(`Deseja distribuir os clientes de ${serviceName} que ainda não possuem credencial vinculada por igual entre as contas disponíveis?`)) return;
+                                                    setLoading(true);
+                                                    const res = await distributeUnassignedClients(serviceName, clients, false);
+                                                    alert(`✅ Distribuição concluída! ${res.assignedCount} clientes vinculados.${res.errors > 0 ? ` (${res.errors} erros)` : ''}`);
+                                                    await loadData();
+                                                    setLoading(false);
+                                                }}
+                                                className="px-3 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-[10px] font-black uppercase transition-all shadow-sm flex items-center gap-1.5"
+                                                title="Distribui clientes sem vínculo por igual com restos aleatórios"
+                                            >
+                                                <UsersRound size={12} /> Distribuir por Igual
+                                            </button>
+                                            <button
+                                                onClick={async () => {
+                                                    if (!confirm(`⚠️ ATENÇÃO: Deseja REDISTRIBUIR TODOS os clientes de ${serviceName} por igual entre todas as credenciais ativas? Isso vai refazer o vínculo de todos os clientes deste serviço.`)) return;
+                                                    setLoading(true);
+                                                    const res = await distributeUnassignedClients(serviceName, clients, true);
+                                                    alert(`✅ Rebalanceamento concluído! ${res.assignedCount} clientes distribuídos por igual.${res.errors > 0 ? ` (${res.errors} erros)` : ''}`);
+                                                    await loadData();
+                                                    setLoading(false);
+                                                }}
+                                                className="p-1.5 rounded-xl bg-gray-100 hover:bg-amber-100 text-gray-500 hover:text-amber-800 text-[10px] font-black uppercase transition-all shadow-sm"
+                                                title="Redistribui todos os clientes deste serviço por igual"
+                                            >
+                                                <RotateCw size={12} />
+                                            </button>
+                                        </div>
+                                    </div>
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                         {(creds as AppCredential[]).map(c => {
                                             const details = credentialClientDetails[c.id];
@@ -3717,9 +3771,33 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                         const durationStr = parts[3] || String(clientForm.duration_months || 1);
                                         const duration = parseInt(durationStr);
                                         const expiryDate = calculateExpiry(startDate, duration);
+                                        const availableServiceCreds = credentials.filter(c => c.isVisible && !(c.email || '').toLowerCase().includes('demo') && matchesCredentialService(c.service, serviceName.toLowerCase()));
+                                        const assignedCredId = getAssignedCredentialId(clientForm.manual_credentials, serviceName) || '';
                                         return (
                                             <div key={i} className="flex flex-col p-5 bg-gray-50 dark:bg-slate-800 rounded-3xl border border-indigo-50 dark:border-slate-700 gap-4 shadow-sm">
                                                 <div className="flex justify-between items-center"><p className="font-black text-gray-800 dark:text-white uppercase">{serviceName}</p><div className="flex gap-2"><button onClick={() => { void sendWhatsAppMessage(clientForm.phone_number || '', clientForm.client_name || 'Dorameira', serviceName, expiryDate, clientForm, startDate); }} className="p-2 text-emerald-500 hover:bg-emerald-50 rounded-xl" title="Mandar cobrança WhatsApp"><MessageCircle size={20} /></button><button onClick={() => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; n.splice(i, 1); setClientForm({ ...clientForm, subscriptions: n }); }} className="p-2 text-red-400 hover:bg-red-50 rounded-xl" title="Remover Assinatura"><Trash2 size={20} /></button></div></div>
+                                                <div className="space-y-1">
+                                                    <label className="text-[9px] font-black uppercase text-indigo-400 ml-1">Conta Vinculada ({availableServiceCreds.length} disponíveis)</label>
+                                                    <select
+                                                        className="w-full bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-bold outline-none border border-indigo-50"
+                                                        value={assignedCredId}
+                                                        onChange={(e) => {
+                                                            const chosenId = e.target.value;
+                                                            const currentManual = clientForm.manual_credentials || {};
+                                                            const nextManual = {
+                                                                ...currentManual,
+                                                                [serviceName]: chosenId,
+                                                                [getCanonicalServiceKey(serviceName)]: chosenId
+                                                            };
+                                                            setClientForm({ ...clientForm, manual_credentials: nextManual });
+                                                        }}
+                                                    >
+                                                        <option value="">-- Automático (Distribuição por igual) --</option>
+                                                        {availableServiceCreds.map(c => (
+                                                            <option key={c.id} value={c.id}>📧 {c.email}</option>
+                                                        ))}
+                                                    </select>
+                                                </div>
                                                 <div className="space-y-3"><div className="grid grid-cols-2 gap-3"><div className="space-y-1"><label className="text-[9px] font-black uppercase text-indigo-400 ml-1">Data de Início</label><input type="date" className="w-full bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-bold outline-none border border-indigo-50" value={toDateInput(startDate)} onChange={(e) => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; if (n[i]) { const p = n[i].split('|'); n[i] = `${p[0]}|${new Date(e.target.value).toISOString()}|${p[2]}|${p[3] || '1'}|${p[4] || ''}|${p[5] || p[1]}`; setClientForm({ ...clientForm, subscriptions: n }); } }} /></div><div className="space-y-1"><label className="text-[9px] font-black uppercase text-indigo-400 ml-1">Plano</label><div className="flex gap-1.5"><select className="flex-1 bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-black outline-none border border-indigo-50 h-[34px]" value={durationStr} onChange={(e) => { const n = [...((clientForm.subscriptions as string[] | undefined) || [])]; if (n[i]) { const p = n[i].split('|'); n[i] = `${p[0]}|${p[1]}|${p[2]}|${e.target.value}|${p[4] || ''}|${p[5] || p[1]}`; setClientForm({ ...clientForm, subscriptions: n }); } }}>{PLAN_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}</select><button onClick={() => handleModalSmartRenew(i)} className="p-1.5 bg-indigo-600 text-white rounded-xl shadow-sm hover:bg-indigo-700 transition-all active:scale-90" title="Renovação Inteligente"><Zap size={16} /></button></div></div></div><div className="grid grid-cols-1 gap-2"><div className="bg-indigo-50/50 dark:bg-slate-900/50 p-2.5 rounded-xl border border-indigo-100/50 flex justify-between items-center"><span className="text-[9px] font-black text-indigo-400 uppercase">Fim</span><span className="text-xs font-black text-indigo-600">{expiryDate.toLocaleDateString()}</span></div></div><div className="flex gap-2 items-center mt-2"><input type="number" min="1" max="365" placeholder="Dias" className="w-20 bg-white dark:bg-slate-900 p-2 rounded-xl text-xs font-bold outline-none border border-emerald-200 focus:border-emerald-400 text-center" value={daysToAddInputs[i] || ''} onChange={(e) => setDaysToAddInputs({ ...daysToAddInputs, [i]: parseInt(e.target.value) || 0 })} /><button onClick={() => { handleModalAddDays(i, daysToAddInputs[i] || 0); setDaysToAddInputs({ ...daysToAddInputs, [i]: 0 }); }} className="flex-1 bg-emerald-500 text-white p-2 rounded-xl text-[10px] font-black uppercase hover:bg-emerald-600 transition-all flex items-center justify-center gap-1" title="Adicionar dias manualmente à assinatura"><Plus size={14} /> Adicionar Dias</button></div></div>
                                             </div>
                                         );
