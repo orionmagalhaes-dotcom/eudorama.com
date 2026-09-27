@@ -603,20 +603,30 @@ const persistInfinityPayPaymentCheckResult = async (
 
 const clickByText = async (page: Page, values: string[]): Promise<boolean> => {
 	const targets = values.map((item) => item.toLowerCase());
-	return page.evaluate((texts: string[]) => {
-		const doc = (globalThis as any).document;
-		if (!doc) return false;
-		const elements = Array.from(doc.querySelectorAll('button,a,[role="button"]')) as any[];
-		for (const element of elements) {
-			const text = String(element?.textContent || '').trim().toLowerCase();
-			if (!text) continue;
-			if (texts.some((candidate) => text.includes(candidate))) {
-				element.click();
-				return true;
-			}
+	const elements = await page.$$('button,a,[role="button"]');
+
+	for (const element of elements) {
+		const matches = await element.evaluate((node: any, texts: string[]) => {
+			const htmlElement = node as any;
+			const text = String(htmlElement.innerText || htmlElement.textContent || '').trim().toLowerCase();
+			const style = (globalThis as any).getComputedStyle(htmlElement);
+			const visible = style.display !== 'none' && style.visibility !== 'hidden' && htmlElement.getClientRects().length > 0;
+			const disabled = Boolean(htmlElement.disabled) || htmlElement.getAttribute('aria-disabled') === 'true';
+			return visible && !disabled && texts.some((candidate) => text.includes(candidate));
+		}, targets);
+
+		if (!matches) continue;
+		try {
+			// Usa o clique nativo do Puppeteer: a Viki ignora, em alguns fluxos,
+			// eventos artificiais disparados com element.click() dentro da pagina.
+			await element.click();
+			return true;
+		} catch {
+			// Tenta o próximo elemento compatível.
 		}
-		return false;
-	}, targets);
+	}
+
+	return false;
 };
 
 const extractVisibleVikiTvError = async (page: Page): Promise<string> => {
@@ -636,7 +646,9 @@ const extractVisibleVikiTvError = async (page: Page): Promise<string> => {
 		const formErrorEl = document.querySelector('main [class*="sc-c46d3ac9-8"], main form ~ div, main form + div');
 		if (formErrorEl) {
 			const text = normalize(formErrorEl.innerText || formErrorEl.textContent || '');
-			if (text && !isGlobalNotice(text)) return text;
+			// O seletor também encontra contêineres normais do formulário. Só considere
+			// o conteúdo um erro se ele realmente tiver o padrão de erro do código.
+			if (text && !isGlobalNotice(text) && looksLikeTvCodeError(text)) return text;
 		}
 
 		const selectors = ['main [role="alert"]:not(#__next-route-announcer__)', 'main .alert', 'main .error', 'main [class*="error" i]'];
@@ -925,28 +937,26 @@ const runAutomationAttempt = async (
 		}, payload.tvCode);
 		await sleep(300);
 
-		const clickedLink = await clickByText(page, ['link now', 'conectar agora', 'vincular agora', 'vincular tv']);
+		const clickedLink = await clickByText(page, [
+			'link now', 'conectar agora', 'vincular agora', 'vincular tv',
+			'link tv', 'link device', 'conectar', 'vincular', 'submit', 'continue', 'continuar'
+		]);
 		if (!clickedLink) {
-			await page.keyboard.press('Enter');
-		} else {
-			await sleep(500);
 			await page.keyboard.press('Enter');
 		}
 
 		await sleep(4000); // aguarda resposta HTTP
 		const vikiErrorText = await extractVisibleVikiTvError(page);
-		const { afterCode, hasFormErrorDiv, isInputStillThere } = await page.evaluate(() => {
+		const { afterCode, isInputStillThere } = await page.evaluate(() => {
 			const doc = (globalThis as any).document;
-			const formErrDiv = doc?.querySelector('main [class*="sc-c46d3ac9-8"], main form ~ div[role="alert"], main form + div[role="alert"]');
 			const inputField = doc?.querySelector('input[name="linkingCode"], input[id="linkingCode"], input[name="code"]');
 			return {
 				afterCode: doc?.body?.innerText || '',
-				hasFormErrorDiv: !!formErrDiv,
 				isInputStillThere: !!inputField
 			};
 		});
 		const afterCodeClean = afterCode.replace(/\s+/g, ' ');
-		const invalid = Boolean(vikiErrorText) || hasFormErrorDiv || /code is not valid|valid (?:samsung|lg|android)?\s*tv code|não é válido|código inválido/i.test(afterCodeClean);
+		const invalid = Boolean(vikiErrorText) || /code is not valid|valid (?:samsung|lg|android)?\s*tv code|não é válido|código inválido/i.test(afterCodeClean);
 		const isSuccessText = /bem-sucedida|conectada|sucesso|success|linked my device|device linked/i.test(afterCodeClean);
 
 		if (invalid || (isInputStillThere && !isSuccessText)) {

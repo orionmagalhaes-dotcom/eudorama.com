@@ -249,7 +249,9 @@ const extractVisibleVikiTvError = async (page: any): Promise<string> => {
     const formErrorEl = document.querySelector('main [class*="sc-c46d3ac9-8"], main form ~ div, main form + div');
     if (formErrorEl) {
       const text = normalize(formErrorEl.innerText || formErrorEl.textContent || '');
-      if (text && !isGlobalNotice(text)) return text;
+      // O seletor também encontra contêineres normais do formulário. Só considere
+      // o conteúdo um erro se ele realmente tiver o padrão de erro do código.
+      if (text && !isGlobalNotice(text) && looksLikeTvCodeError(text)) return text;
     }
 
     const selectors = ['main [role="alert"]:not(#__next-route-announcer__)', 'main .alert', 'main .error', 'main [class*="error" i]'];
@@ -438,7 +440,7 @@ export const runVikiTvAutomationJob = async (
     if (!linkClicked) {
       linkClicked = await clickFirstText(page, [
         'Link Now', 'Conectar agora', 'Vincular Agora', 'Vincular TV', 'Vincular agora',
-        'Link TV', 'Link Device', 'Vincular'
+        'Link TV', 'Link Device', 'Conectar', 'Vincular', 'Submit', 'Continue', 'Continuar'
       ]);
     }
 
@@ -463,9 +465,7 @@ export const runVikiTvAutomationJob = async (
 
       // Extrai erro real específico da vinculação (ignora termos de uso / anúncios)
       realTvErrorText = await extractVisibleVikiTvError(page).catch(() => '');
-      const hasFormErrorEl = (await page.locator('main [class*="sc-c46d3ac9-8"], main form ~ div[role="alert"], main form + div[role="alert"]').count().catch(() => 0)) > 0;
-
-      invalidCode = Boolean(realTvErrorText) || hasFormErrorEl || /Code is not valid|valid (?:Samsung|LG|Android)?\s*TV Code|código.*não é válido|código inválido/i.test(bodyAfterCode);
+      invalidCode = Boolean(realTvErrorText) || /Code is not valid|valid (?:Samsung|LG|Android)?\s*TV Code|código.*não é válido|código inválido/i.test(bodyAfterCode);
 
       try {
         isInputStillThere = (await page.locator(tvCodeInputSelector).count()) > 0;
