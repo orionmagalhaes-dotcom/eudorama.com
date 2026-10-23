@@ -635,6 +635,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const [orionPeriod, setOrionPeriod] = useState(0);
     const [iohannaPeriod, setIohannaPeriod] = useState(0);
     const [hasConsulted, setHasConsulted] = useState(false);
+    const [showIndividualAccounts, setShowIndividualAccounts] = useState(false);
 
     const [projectionMonths, setProjectionMonths] = useState<number>(1);
     const [statsReferenceDate, setStatsReferenceDate] = useState<number>(() => {
@@ -1030,9 +1031,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     }, [clients.length, credentials.length, adSpendPerDay, adSpendEnabled]);
 
     const filteredFlatVencimentos = useMemo(() => {
-        return flatVencimentos.filter(item => {
+        return (flatVencimentos || []).filter(item => {
+            if (!item) return false;
             if (vencimentosServiceFilter !== 'ALL') {
-                if (!item.service.toLowerCase().includes(vencimentosServiceFilter.toLowerCase())) {
+                if (!String(item.service || '').toLowerCase().includes(vencimentosServiceFilter.toLowerCase())) {
                     return false;
                 }
             }
@@ -1043,12 +1045,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             } else if (vencimentosStatusFilter === 'expired') {
                 if (item.daysRemaining >= 0) return false;
             }
-            if (vencimentosSearchTerm.trim()) {
+            if (vencimentosSearchTerm && vencimentosSearchTerm.trim()) {
                 const term = vencimentosSearchTerm.toLowerCase().trim();
-                const matchName = item.clientName.toLowerCase().includes(term);
-                const matchPhone = item.phoneNumber.toLowerCase().includes(term);
-                const matchService = item.service.toLowerCase().includes(term);
-                const matchCred = (item.assignedCredentialEmail || '').toLowerCase().includes(term);
+                const matchName = String(item.clientName || '').toLowerCase().includes(term);
+                const matchPhone = String(item.phoneNumber || '').toLowerCase().includes(term);
+                const matchService = String(item.service || '').toLowerCase().includes(term);
+                const matchCred = String(item.assignedCredentialEmail || '').toLowerCase().includes(term);
                 return matchName || matchPhone || matchService || matchCred;
             }
             return true;
@@ -3120,11 +3122,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                 </span>
                                             </div>
 
-                                            {groupedVencimentos
+                                            {(groupedVencimentos || [])
                                                 .filter(clientData => {
-                                                    if (!vencimentosSearchTerm.trim()) return true;
-                                                    const term = vencimentosSearchTerm.toLowerCase();
-                                                    return clientData.name.toLowerCase().includes(term) || clientData.phone.includes(term);
+                                                    if (!clientData) return false;
+                                                    if (!vencimentosSearchTerm || !vencimentosSearchTerm.trim()) return true;
+                                                    const term = vencimentosSearchTerm.toLowerCase().trim();
+                                                    const nameMatch = String(clientData.name || '').toLowerCase().includes(term);
+                                                    const phoneMatch = String(clientData.phone || '').includes(term);
+                                                    return nameMatch || phoneMatch;
                                                 })
                                                 .map((clientData, idx) => (
                                                 <div key={idx} className="bg-gray-50 dark:bg-slate-800/50 rounded-[2rem] overflow-hidden border border-gray-100 dark:border-slate-800 shadow-sm">
