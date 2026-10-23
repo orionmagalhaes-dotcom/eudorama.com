@@ -209,6 +209,17 @@ const getDaysRemaining = (expiryDate: Date) => {
     return Math.ceil((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 };
 
+const getServiceBadgeClass = (service: string) => {
+    const s = String(service || '').toLowerCase();
+    if (s.includes('viki')) return 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300 border-blue-200 dark:border-blue-800';
+    if (s.includes('kocowa')) return 'bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300 border-purple-200 dark:border-purple-800';
+    if (s.includes('iqiyi')) return 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800';
+    if (s.includes('wetv')) return 'bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300 border-orange-200 dark:border-orange-800';
+    if (s.includes('dramabox')) return 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300 border-rose-200 dark:border-rose-800';
+    if (s.includes('youku')) return 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800';
+    return 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300 border-gray-200 dark:border-gray-700';
+};
+
 const getToleranceEndDate = (raw?: string | null) => {
     if (!raw) return null;
     const toleranceDate = new Date(raw);
@@ -594,10 +605,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     // States para a consulta otimizada de vencimentos
-    const [dateStart, setDateStart] = useState('');
-    const [dateEnd, setDateEnd] = useState('');
+    const [dateStart, setDateStart] = useState(() => {
+        const now = new Date();
+        const start = new Date(now.getFullYear(), now.getMonth(), 1);
+        return `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
+    });
+    const [dateEnd, setDateEnd] = useState(() => {
+        const now = new Date();
+        const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+        return `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')}`;
+    });
     const [groupedVencimentos, setGroupedVencimentos] = useState<any[]>([]);
+    const [flatVencimentos, setFlatVencimentos] = useState<any[]>([]);
     const [periodAccounts, setPeriodAccounts] = useState<any[]>([]);
+    const [vencimentosViewMode, setVencimentosViewMode] = useState<'flat' | 'grouped' | 'apps'>('flat');
+    const [vencimentosSearchTerm, setVencimentosSearchTerm] = useState('');
+    const [vencimentosServiceFilter, setVencimentosServiceFilter] = useState('ALL');
+    const [vencimentosStatusFilter, setVencimentosStatusFilter] = useState('ALL');
     const [periodCosts, setPeriodCosts] = useState<{
         accounts: number;
         orionAccounts: number;
@@ -611,7 +635,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const [orionPeriod, setOrionPeriod] = useState(0);
     const [iohannaPeriod, setIohannaPeriod] = useState(0);
     const [hasConsulted, setHasConsulted] = useState(false);
-    const [showIndividualAccounts, setShowIndividualAccounts] = useState(false);
 
     const [projectionMonths, setProjectionMonths] = useState<number>(1);
     const [statsReferenceDate, setStatsReferenceDate] = useState<number>(() => {
@@ -785,41 +808,101 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         setLoading(false);
     };
 
+    const parseBoundaryDate = (dateStr: string, isEnd = false): Date => {
+        if (!dateStr) return new Date();
+        const clean = dateStr.trim();
+        if (clean.includes('T')) {
+            const d = new Date(clean);
+            if (isEnd) d.setHours(23, 59, 59, 999);
+            else d.setHours(0, 0, 0, 0);
+            return d;
+        }
+        const parts = clean.split('-');
+        if (parts.length === 3) {
+            const year = parseInt(parts[0], 10);
+            const month = parseInt(parts[1], 10) - 1;
+            const day = parseInt(parts[2], 10);
+            if (isEnd) {
+                return new Date(year, month, day, 23, 59, 59, 999);
+            }
+            return new Date(year, month, day, 0, 0, 0, 0);
+        }
+        const d = new Date(clean);
+        if (isEnd) d.setHours(23, 59, 59, 999);
+        else d.setHours(0, 0, 0, 0);
+        return d;
+    };
+
     const handleConsultVencimentos = (customStart?: string, customEnd?: string) => {
         const sDate = customStart ?? dateStart;
         const eDate = customEnd ?? dateEnd;
         if (!sDate || !eDate) return;
-        const start = new Date(sDate);
-        start.setHours(0, 0, 0, 0);
-        const end = new Date(eDate);
-        end.setHours(23, 59, 59, 999);
+        const start = parseBoundaryDate(sDate, false);
+        const end = parseBoundaryDate(eDate, true);
 
         // 1. Assinaturas de clientes vencendo no período (Receitas)
         const activeClients = clients.filter(c => !c.deleted);
         const clientMap: Record<string, any> = {};
+        const allExpiringAccounts: any[] = [];
         let globalSum = 0;
         let orionPeriodRevenue = 0;
         let iohannaPeriodRevenue = 0;
 
         activeClients.forEach(client => {
             const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
-            subs.forEach(sub => {
+            subs.forEach((sub, subIdx) => {
                 const parts = sub.split('|');
                 const sName = parts[0];
                 const startDate = parts[1];
                 const duration = parseInt(parts[3] || '1');
                 const expiry = calculateExpiry(startDate, duration);
 
-                if (expiry >= start && expiry <= end) {
+                // Normalização para comparação exata no calendário sem divergência de fuso horário
+                const expForComparison = new Date(expiry.getFullYear(), expiry.getMonth(), expiry.getDate(), 12, 0, 0);
+
+                if (expForComparison >= start && expForComparison <= end) {
                     const price = getServicePrice(sName, duration);
                     const split = getRevenueSplit(sName);
+                    const orionShare = price * split.orion;
+                    const iohannaShare = price * split.iohanna;
+                    const daysLeft = getDaysRemaining(new Date(expiry));
 
+                    // Credencial vinculada
+                    let assignedEmail: string | undefined;
+                    const credId = getAssignedCredentialId(client.manual_credentials, sName);
+                    if (credId) {
+                        const foundCred = credentials.find(c => c.id === credId);
+                        if (foundCred) assignedEmail = foundCred.email;
+                    }
+
+                    // Objeto individual de conta de cliente que vence
+                    allExpiringAccounts.push({
+                        id: `${client.id || client.phone_number}_${sName}_${startDate}_${subIdx}`,
+                        clientId: client.id,
+                        clientName: client.client_name || 'Sem Nome',
+                        phoneNumber: client.phone_number,
+                        service: sName,
+                        startDate,
+                        duration,
+                        expiry,
+                        daysRemaining: daysLeft,
+                        price,
+                        orionRevenue: orionShare,
+                        iohannaRevenue: iohannaShare,
+                        isMonthly: duration === 1,
+                        assignedCredentialEmail: assignedEmail,
+                        clientRef: client
+                    });
+
+                    // Agrupamento por cliente
                     if (!clientMap[client.phone_number]) {
                         clientMap[client.phone_number] = {
+                            id: client.id,
                             name: client.client_name || 'Sem Nome',
                             phone: client.phone_number,
                             vencimentos: [],
-                            totalUser: 0
+                            totalUser: 0,
+                            clientRef: client
                         };
                     }
 
@@ -827,13 +910,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         service: sName,
                         expiry: expiry,
                         price: price,
-                        isMonthly: duration === 1
+                        isMonthly: duration === 1,
+                        daysRemaining: daysLeft,
+                        startDate,
+                        assignedCredentialEmail: assignedEmail
                     });
 
                     clientMap[client.phone_number].totalUser += price;
                     globalSum += price;
-                    orionPeriodRevenue += price * split.orion;
-                    iohannaPeriodRevenue += price * split.iohanna;
+                    orionPeriodRevenue += orionShare;
+                    iohannaPeriodRevenue += iohannaShare;
                 }
             });
         });
@@ -847,7 +933,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         credentials.forEach(cred => {
             if (!cred.isVisible) return;
             const expiry = getAccountExpiryDate(cred.publishedAt, cred.service);
-            if (expiry >= start && expiry <= end) {
+            const expForComparison = new Date(expiry.getFullYear(), expiry.getMonth(), expiry.getDate(), 12, 0, 0);
+            if (expForComparison >= start && expForComparison <= end) {
                 const cost = getAccountCost(cred.service);
                 const split = getCostSplit(cred.service);
                 const orionShare = cost * split.orion;
@@ -872,14 +959,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
         // 3. Gastos com anúncios proporcionais aos dias do período
         const diffMs = end.getTime() - start.getTime();
-        const periodDays = Math.max(1, Math.round(diffMs / (1000 * 60 * 60 * 24)) + 1);
+        const periodDays = Math.max(1, Math.round(diffMs / (1000 * 60 * 60 * 24)));
         const periodAdSpend = adSpendEnabled ? (adSpendPerDay * periodDays) : 0;
         const orionAdSpendPeriod = periodAdSpend * 0.70;
         const iohannaAdSpendPeriod = periodAdSpend * 0.30;
 
-        const finalResults = Object.values(clientMap).sort((a, b) => a.name.localeCompare(b.name));
-        setGroupedVencimentos(finalResults);
-        setPeriodAccounts(expiringAccounts.sort((a, b) => a.expiryDate.getTime() - b.expiryDate.getTime()));
+        // Ordenações
+        allExpiringAccounts.sort((a, b) => a.expiry.getTime() - b.expiry.getTime());
+        const finalGrouped = Object.values(clientMap).sort((a, b) => a.name.localeCompare(b.name));
+        expiringAccounts.sort((a, b) => a.expiryDate.getTime() - b.expiryDate.getTime());
+
+        setFlatVencimentos(allExpiringAccounts);
+        setGroupedVencimentos(finalGrouped);
+        setPeriodAccounts(expiringAccounts);
         setTotalPeriod(globalSum);
         setOrionPeriod(orionPeriodRevenue);
         setIohannaPeriod(iohannaPeriodRevenue);
@@ -895,7 +987,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         setHasConsulted(true);
     };
 
-    const applyQuickPeriod = (type: 'today' | 'next7' | 'next15' | 'thisMonth' | 'nextMonth') => {
+    const applyQuickPeriod = (type: 'today' | 'next7' | 'next15' | 'next30' | 'thisMonth' | 'nextMonth') => {
         const now = new Date();
         let s = new Date(now);
         let e = new Date(now);
@@ -906,6 +998,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             e.setDate(e.getDate() + 7);
         } else if (type === 'next15') {
             e.setDate(e.getDate() + 15);
+        } else if (type === 'next30') {
+            e.setDate(e.getDate() + 30);
         } else if (type === 'thisMonth') {
             s = new Date(now.getFullYear(), now.getMonth(), 1);
             e = new Date(now.getFullYear(), now.getMonth() + 1, 0);
@@ -927,6 +1021,39 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         setDateEnd(eStr);
         handleConsultVencimentos(sStr, eStr);
     };
+
+    // Auto-consulta inicial quando os clientes e credenciais carregam
+    useEffect(() => {
+        if (clients.length > 0 && dateStart && dateEnd) {
+            handleConsultVencimentos(dateStart, dateEnd);
+        }
+    }, [clients.length, credentials.length, adSpendPerDay, adSpendEnabled]);
+
+    const filteredFlatVencimentos = useMemo(() => {
+        return flatVencimentos.filter(item => {
+            if (vencimentosServiceFilter !== 'ALL') {
+                if (!item.service.toLowerCase().includes(vencimentosServiceFilter.toLowerCase())) {
+                    return false;
+                }
+            }
+            if (vencimentosStatusFilter === 'today') {
+                if (item.daysRemaining !== 0) return false;
+            } else if (vencimentosStatusFilter === 'next7') {
+                if (item.daysRemaining < 0 || item.daysRemaining > 7) return false;
+            } else if (vencimentosStatusFilter === 'expired') {
+                if (item.daysRemaining >= 0) return false;
+            }
+            if (vencimentosSearchTerm.trim()) {
+                const term = vencimentosSearchTerm.toLowerCase().trim();
+                const matchName = item.clientName.toLowerCase().includes(term);
+                const matchPhone = item.phoneNumber.toLowerCase().includes(term);
+                const matchService = item.service.toLowerCase().includes(term);
+                const matchCred = (item.assignedCredentialEmail || '').toLowerCase().includes(term);
+                return matchName || matchPhone || matchService || matchCred;
+            }
+            return true;
+        });
+    }, [flatVencimentos, vencimentosServiceFilter, vencimentosStatusFilter, vencimentosSearchTerm]);
 
     const copyToClipboard = (text: string, id: string) => {
         navigator.clipboard.writeText(text.trim());
@@ -2623,6 +2750,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                 </button>
                                 <button
                                     type="button"
+                                    onClick={() => applyQuickPeriod('next30')}
+                                    className="px-3 py-1.5 rounded-xl bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 text-indigo-700 dark:text-indigo-300 text-xs font-black uppercase transition-all"
+                                >
+                                    Próximos 30 dias
+                                </button>
+                                <button
+                                    type="button"
                                     onClick={() => applyQuickPeriod('thisMonth')}
                                     className="px-3 py-1.5 rounded-xl bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 text-indigo-700 dark:text-indigo-300 text-xs font-black uppercase transition-all"
                                 >
@@ -2642,18 +2776,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                     <label className="text-[10px] font-black uppercase text-gray-400 ml-1">Data de Início</label>
                                     <input
                                         type="date"
-                                        className="w-full bg-gray-50 dark:bg-slate-800 p-4 rounded-2xl border-2 border-transparent focus:border-indigo-600 outline-none font-bold"
+                                        className="w-full bg-gray-50 dark:bg-slate-800 p-4 rounded-2xl border-2 border-transparent focus:border-indigo-600 outline-none font-bold text-gray-800 dark:text-white"
                                         value={dateStart}
-                                        onChange={e => setDateStart(e.target.value)}
+                                        onChange={e => {
+                                            const v = e.target.value;
+                                            setDateStart(v);
+                                            if (v && dateEnd) handleConsultVencimentos(v, dateEnd);
+                                        }}
                                     />
                                 </div>
                                 <div className="space-y-1">
                                     <label className="text-[10px] font-black uppercase text-gray-400 ml-1">Data de Fim</label>
                                     <input
                                         type="date"
-                                        className="w-full bg-gray-50 dark:bg-slate-800 p-4 rounded-2xl border-2 border-transparent focus:border-indigo-600 outline-none font-bold"
+                                        className="w-full bg-gray-50 dark:bg-slate-800 p-4 rounded-2xl border-2 border-transparent focus:border-indigo-600 outline-none font-bold text-gray-800 dark:text-white"
                                         value={dateEnd}
-                                        onChange={e => setDateEnd(e.target.value)}
+                                        onChange={e => {
+                                            const v = e.target.value;
+                                            setDateEnd(v);
+                                            if (dateStart && v) handleConsultVencimentos(dateStart, v);
+                                        }}
                                     />
                                 </div>
                                 <button
@@ -2672,7 +2814,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                             <div>
                                                 <p className="text-[10px] font-black uppercase text-indigo-200">Receitas Clientes</p>
                                                 <h4 className="text-3xl font-black">R$ {formatCurrency(totalPeriod)}</h4>
-                                                <p className="text-[10px] text-indigo-200">{groupedVencimentos.length} clientes ativos</p>
+                                                <p className="text-[10px] text-indigo-200">{flatVencimentos.length} contas ({groupedVencimentos.length} clientes)</p>
                                             </div>
                                             <div>
                                                 <p className="text-[10px] font-black uppercase text-indigo-200">Custos Contas Apps</p>
@@ -2746,151 +2888,394 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                         </div>
                                     </div>
 
-                                    {/* CONTAS DOS APPS QUE VENCEM NO PERÍODO (CUSTOS A PAGAR) */}
-                                    <div className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] border border-red-100 dark:border-red-900/30 shadow-sm space-y-4">
-                                        <div className="flex justify-between items-center">
-                                            <div className="flex items-center gap-2">
-                                                <AlertTriangle size={20} className="text-red-500" />
-                                                <h4 className="font-black text-base text-gray-900 dark:text-white">
-                                                    Contas dos Apps que Vencem no Período ({periodAccounts.length})
-                                                </h4>
-                                            </div>
-                                            <span className="text-xs font-black text-red-600 bg-red-50 dark:bg-red-900/30 px-3 py-1 rounded-xl">
-                                                Total Custos: R$ {formatCurrency(periodCosts.accounts)}
-                                            </span>
+                                    {/* SELETOR DE VISUALIZAÇÃO: TODAS AS CONTAS / POR CLIENTE / CONTAS DE APPS */}
+                                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pt-2">
+                                        <div className="flex bg-gray-100 dark:bg-slate-800 p-1.5 rounded-2xl gap-1">
+                                            <button
+                                                type="button"
+                                                onClick={() => setVencimentosViewMode('flat')}
+                                                className={`px-4 py-2 rounded-xl text-xs font-black uppercase transition-all ${
+                                                    vencimentosViewMode === 'flat'
+                                                        ? 'bg-indigo-600 text-white shadow-md'
+                                                        : 'text-gray-600 dark:text-gray-300 hover:text-indigo-600'
+                                                }`}
+                                            >
+                                                Todas as Contas ({flatVencimentos.length})
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setVencimentosViewMode('grouped')}
+                                                className={`px-4 py-2 rounded-xl text-xs font-black uppercase transition-all ${
+                                                    vencimentosViewMode === 'grouped'
+                                                        ? 'bg-indigo-600 text-white shadow-md'
+                                                        : 'text-gray-600 dark:text-gray-300 hover:text-indigo-600'
+                                                }`}
+                                            >
+                                                Por Cliente ({groupedVencimentos.length})
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setVencimentosViewMode('apps')}
+                                                className={`px-4 py-2 rounded-xl text-xs font-black uppercase transition-all ${
+                                                    vencimentosViewMode === 'apps'
+                                                        ? 'bg-indigo-600 text-white shadow-md'
+                                                        : 'text-gray-600 dark:text-gray-300 hover:text-indigo-600'
+                                                }`}
+                                            >
+                                                Contas de Apps ({periodAccounts.length})
+                                            </button>
                                         </div>
 
-                                        {periodAccounts.length === 0 ? (
-                                            <div className="py-6 text-center text-xs font-bold text-gray-400 bg-gray-50 dark:bg-slate-800/50 rounded-2xl border border-dashed border-gray-200 dark:border-slate-700">
-                                                ✅ Nenhuma conta de app (credencial) vence no período selecionado.
-                                            </div>
-                                        ) : (
-                                            <div className="overflow-x-auto">
-                                                <table className="w-full text-left">
-                                                    <thead>
-                                                        <tr className="text-[10px] font-black uppercase text-gray-400 border-b border-gray-100 dark:border-slate-800">
-                                                            <th className="px-3 py-2">App</th>
-                                                            <th className="px-3 py-2">Conta / E-mail</th>
-                                                            <th className="px-3 py-2">Vencimento</th>
-                                                            <th className="px-3 py-2">Status</th>
-                                                            <th className="px-3 py-2 text-right">Custo Total</th>
-                                                            <th className="px-3 py-2 text-right">Orion</th>
-                                                            <th className="px-3 py-2 text-right">Iohanna</th>
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody className="divide-y divide-gray-100 dark:divide-slate-800">
-                                                        {periodAccounts.map((acc, aIdx) => (
-                                                            <tr key={acc.id || aIdx} className="text-sm">
-                                                                <td className="px-3 py-3 font-bold text-gray-800 dark:text-gray-200">
-                                                                    <span className="px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 font-black text-xs">
-                                                                        {acc.service}
-                                                                    </span>
-                                                                </td>
-                                                                <td className="px-3 py-3 font-medium text-gray-700 dark:text-gray-300 font-mono text-xs">
-                                                                    {acc.email}
-                                                                </td>
-                                                                <td className="px-3 py-3 font-bold text-gray-700 dark:text-gray-300 text-xs">
-                                                                    {acc.expiryDate.toLocaleDateString()}
-                                                                </td>
-                                                                <td className="px-3 py-3 text-xs">
-                                                                    {acc.daysRemaining < 0 ? (
-                                                                        <span className="px-2 py-0.5 rounded-lg bg-red-100 text-red-700 font-black text-[10px] uppercase">
-                                                                            Vencida há {Math.abs(acc.daysRemaining)}d
-                                                                        </span>
-                                                                    ) : acc.daysRemaining === 0 ? (
-                                                                        <span className="px-2 py-0.5 rounded-lg bg-amber-100 text-amber-800 font-black text-[10px] uppercase">
-                                                                            Vence Hoje
-                                                                        </span>
-                                                                    ) : (
-                                                                        <span className="px-2 py-0.5 rounded-lg bg-emerald-100 text-emerald-800 font-black text-[10px] uppercase">
-                                                                            Em {acc.daysRemaining}d
-                                                                        </span>
-                                                                    )}
-                                                                </td>
-                                                                <td className="px-3 py-3 text-right font-black text-red-600">
-                                                                    R$ {formatCurrency(acc.cost)}
-                                                                </td>
-                                                                <td className="px-3 py-3 text-right font-bold text-blue-600 text-xs">
-                                                                    R$ {formatCurrency(acc.orionCost)}
-                                                                </td>
-                                                                <td className="px-3 py-3 text-right font-bold text-pink-600 text-xs">
-                                                                    R$ {formatCurrency(acc.iohannaCost)}
-                                                                </td>
-                                                            </tr>
-                                                        ))}
-                                                    </tbody>
-                                                </table>
+                                        {vencimentosViewMode !== 'apps' && (
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <div className="relative flex-1 sm:w-64">
+                                                    <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                                                    <input
+                                                        type="text"
+                                                        placeholder="Buscar cliente, tel ou app..."
+                                                        className="w-full bg-gray-50 dark:bg-slate-800 pl-9 pr-3 py-2 rounded-xl border border-gray-200 dark:border-slate-700 text-xs font-bold outline-none focus:border-indigo-600"
+                                                        value={vencimentosSearchTerm}
+                                                        onChange={e => setVencimentosSearchTerm(e.target.value)}
+                                                    />
+                                                </div>
+                                                <select
+                                                    value={vencimentosServiceFilter}
+                                                    onChange={e => setVencimentosServiceFilter(e.target.value)}
+                                                    className="bg-gray-50 dark:bg-slate-800 px-3 py-2 rounded-xl border border-gray-200 dark:border-slate-700 text-xs font-bold outline-none text-gray-700 dark:text-gray-200"
+                                                >
+                                                    <option value="ALL">Todos os Apps</option>
+                                                    {SERVICES.map(s => (
+                                                        <option key={s} value={s}>{s}</option>
+                                                    ))}
+                                                </select>
+                                                <select
+                                                    value={vencimentosStatusFilter}
+                                                    onChange={e => setVencimentosStatusFilter(e.target.value)}
+                                                    className="bg-gray-50 dark:bg-slate-800 px-3 py-2 rounded-xl border border-gray-200 dark:border-slate-700 text-xs font-bold outline-none text-gray-700 dark:text-gray-200"
+                                                >
+                                                    <option value="ALL">Todos os Prazos</option>
+                                                    <option value="today">Vencem Hoje</option>
+                                                    <option value="next7">Próximos 7 dias</option>
+                                                    <option value="expired">Já Vencidas</option>
+                                                </select>
                                             </div>
                                         )}
                                     </div>
 
-                                    {/* ASSINATURAS DOS CLIENTES QUE VENCEM NO PERÍODO */}
-                                    <div className="space-y-4">
-                                        <div className="flex justify-between items-center px-2">
-                                            <h4 className="font-black text-base text-gray-900 dark:text-white flex items-center gap-2">
-                                                <Users size={18} className="text-indigo-600" />
-                                                Assinaturas de Clientes que Vencem no Período ({groupedVencimentos.length})
-                                            </h4>
-                                            <span className="text-xs font-black text-indigo-600 bg-indigo-50 dark:bg-indigo-900/30 px-3 py-1 rounded-xl">
-                                                Total Receitas: R$ {formatCurrency(totalPeriod)}
-                                            </span>
-                                        </div>
-
-                                        {groupedVencimentos.map((clientData, idx) => (
-                                            <div key={idx} className="bg-gray-50 dark:bg-slate-800/50 rounded-[2rem] overflow-hidden border border-gray-100 dark:border-slate-800 shadow-sm">
-                                                <div className="bg-white dark:bg-slate-900 px-6 py-4 flex justify-between items-center border-b border-gray-100 dark:border-slate-800">
-                                                    <div>
-                                                        <h4 className="font-black text-gray-900 dark:text-white flex items-center gap-2">
-                                                            <ChevronRight size={18} className="text-indigo-600" />
-                                                            {clientData.name}
-                                                        </h4>
-                                                        <p className="text-[10px] font-bold text-gray-400 ml-6">{clientData.phone}</p>
-                                                    </div>
-                                                    <div className="text-right">
-                                                        <span className="text-[10px] font-black text-indigo-400 uppercase block">Total Cliente</span>
-                                                        <span className="font-black text-indigo-600">R$ {clientData.totalUser.toFixed(2).replace('.', ',')}</span>
-                                                    </div>
+                                    {/* 1. VISÃO TODAS AS CONTAS QUE VENCEM NO PERÍODO */}
+                                    {vencimentosViewMode === 'flat' && (
+                                        <div className="bg-white dark:bg-slate-900 rounded-[2rem] border border-gray-100 dark:border-slate-800 shadow-sm overflow-hidden space-y-4 p-6">
+                                            <div className="flex justify-between items-center pb-2 border-b border-gray-100 dark:border-slate-800">
+                                                <div>
+                                                    <h4 className="font-black text-base text-gray-900 dark:text-white flex items-center gap-2">
+                                                        <Clock size={18} className="text-indigo-600" />
+                                                        Todas as Contas que Vencem no Período ({filteredFlatVencimentos.length})
+                                                    </h4>
+                                                    <p className="text-[11px] font-medium text-gray-400">
+                                                        Exibindo cada conta e assinatura individualmente em ordem cronológica de vencimento
+                                                    </p>
                                                 </div>
+                                                <span className="text-xs font-black text-indigo-600 bg-indigo-50 dark:bg-indigo-900/30 px-3 py-1.5 rounded-xl">
+                                                    Total: R$ {formatCurrency(filteredFlatVencimentos.reduce((sum, item) => sum + item.price, 0))}
+                                                </span>
+                                            </div>
 
-                                                <div className="p-4 overflow-x-auto">
+                                            {filteredFlatVencimentos.length === 0 ? (
+                                                <div className="py-12 text-center text-xs font-bold text-gray-400 bg-gray-50 dark:bg-slate-800/50 rounded-2xl border border-dashed border-gray-200 dark:border-slate-700">
+                                                    Nenhuma conta de cliente vence dentro do período selecionado.
+                                                </div>
+                                            ) : (
+                                                <div className="overflow-x-auto">
                                                     <table className="w-full text-left">
                                                         <thead>
-                                                            <tr className="text-[9px] font-black uppercase text-gray-400 tracking-[0.1em]">
-                                                                <th className="px-4 py-2">Aplicativo</th>
-                                                                <th className="px-4 py-2">Vencimento</th>
-                                                                <th className="px-4 py-2 text-right">Preço</th>
+                                                            <tr className="text-[10px] font-black uppercase text-gray-400 border-b border-gray-100 dark:border-slate-800">
+                                                                <th className="px-3 py-3">Vencimento</th>
+                                                                <th className="px-3 py-3">Aplicativo</th>
+                                                                <th className="px-3 py-3">Cliente / Contato</th>
+                                                                <th className="px-3 py-3 text-right">Valor</th>
+                                                                <th className="px-3 py-3 text-center">Divisão</th>
+                                                                <th className="px-3 py-3 text-right">Ação</th>
                                                             </tr>
                                                         </thead>
                                                         <tbody className="divide-y divide-gray-100 dark:divide-slate-800">
-                                                            {clientData.vencimentos.map((v, vIdx) => (
-                                                                <tr key={vIdx} className="text-sm">
-                                                                    <td className="px-4 py-3 font-bold text-gray-700 dark:text-gray-300">
-                                                                        <div className="flex items-center gap-2">
-                                                                            <div className={`w-2 h-2 rounded-full ${v.isMonthly ? 'bg-green-500' : 'bg-gray-300'}`}></div>
-                                                                            {v.service}
-                                                                            {!v.isMonthly && <span className="text-[8px] bg-gray-200 text-gray-600 px-1 rounded">NÃO MENSAL</span>}
-                                                                        </div>
+                                                            {filteredFlatVencimentos.map(acc => {
+                                                                const isExpired = acc.daysRemaining < 0;
+                                                                const isToday = acc.daysRemaining === 0;
+
+                                                                return (
+                                                                    <tr key={acc.id} className="hover:bg-gray-50/80 dark:hover:bg-slate-800/40 transition-colors">
+                                                                        {/* DATA & STATUS */}
+                                                                        <td className="px-3 py-3 whitespace-nowrap">
+                                                                            <div className="flex flex-col">
+                                                                                <span className="font-black text-xs text-gray-900 dark:text-white">
+                                                                                    {acc.expiry.toLocaleDateString()}
+                                                                                </span>
+                                                                                <span className="mt-0.5">
+                                                                                    {isExpired ? (
+                                                                                        <span className="px-2 py-0.5 rounded-lg bg-red-100 text-red-700 font-black text-[9px] uppercase">
+                                                                                            Vencida há {Math.abs(acc.daysRemaining)}d
+                                                                                        </span>
+                                                                                    ) : isToday ? (
+                                                                                        <span className="px-2 py-0.5 rounded-lg bg-amber-100 text-amber-800 font-black text-[9px] uppercase">
+                                                                                            Vence Hoje
+                                                                                        </span>
+                                                                                    ) : (
+                                                                                        <span className={`px-2 py-0.5 rounded-lg font-black text-[9px] uppercase ${
+                                                                                            acc.daysRemaining <= 3 ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
+                                                                                        }`}>
+                                                                                            Em {acc.daysRemaining} dias
+                                                                                        </span>
+                                                                                    )}
+                                                                                </span>
+                                                                            </div>
+                                                                        </td>
+
+                                                                        {/* APLICATIVO */}
+                                                                        <td className="px-3 py-3 whitespace-nowrap">
+                                                                            <div className="flex items-center gap-2">
+                                                                                <span className={`px-2.5 py-1 rounded-xl font-black text-xs border ${getServiceBadgeClass(acc.service)}`}>
+                                                                                    {acc.service}
+                                                                                </span>
+                                                                                <span className="text-[10px] font-bold text-gray-400">
+                                                                                    {acc.duration === 1 ? '1 Mês' : `${acc.duration} Meses`}
+                                                                                </span>
+                                                                            </div>
+                                                                        </td>
+
+                                                                        {/* CLIENTE & TELEFONE */}
+                                                                        <td className="px-3 py-3">
+                                                                            <div className="flex flex-col">
+                                                                                <span className="font-black text-sm text-gray-900 dark:text-white">
+                                                                                    {acc.clientName}
+                                                                                </span>
+                                                                                <span className="text-[11px] font-medium text-gray-500 dark:text-gray-400">
+                                                                                    {acc.phoneNumber}
+                                                                                </span>
+                                                                                {acc.assignedCredentialEmail && (
+                                                                                    <span className="text-[10px] font-mono text-indigo-500 mt-0.5 flex items-center gap-1">
+                                                                                        <Key size={10} /> {acc.assignedCredentialEmail}
+                                                                                    </span>
+                                                                                )}
+                                                                            </div>
+                                                                        </td>
+
+                                                                        {/* VALOR */}
+                                                                        <td className="px-3 py-3 text-right whitespace-nowrap">
+                                                                            <span className="font-black text-sm text-indigo-600 dark:text-indigo-400">
+                                                                                R$ {formatCurrency(acc.price)}
+                                                                            </span>
+                                                                        </td>
+
+                                                                        {/* DIVISÃO */}
+                                                                        <td className="px-3 py-3 text-center whitespace-nowrap">
+                                                                            <div className="inline-flex items-center gap-1.5 text-[10px] font-bold bg-gray-50 dark:bg-slate-800 px-2 py-1 rounded-xl">
+                                                                                <span className="text-blue-600">O: R$ {formatCurrency(acc.orionRevenue)}</span>
+                                                                                <span className="text-gray-300">|</span>
+                                                                                <span className="text-pink-600">I: R$ {formatCurrency(acc.iohannaRevenue)}</span>
+                                                                            </div>
+                                                                        </td>
+
+                                                                        {/* AÇÕES */}
+                                                                        <td className="px-3 py-3 text-right whitespace-nowrap">
+                                                                            <div className="flex items-center justify-end gap-1.5">
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={() => sendWhatsAppMessage(acc.phoneNumber, acc.clientName, acc.service, acc.expiry, acc.clientRef, acc.startDate)}
+                                                                                    className="p-2 bg-emerald-50 text-emerald-700 hover:bg-emerald-600 hover:text-white rounded-xl transition-all shadow-sm flex items-center gap-1 text-[11px] font-bold"
+                                                                                    title="Cobrar / Lembrar via WhatsApp"
+                                                                                >
+                                                                                    <MessageCircle size={14} />
+                                                                                    <span className="hidden sm:inline">WhatsApp</span>
+                                                                                </button>
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={() => copyToClipboard(`${acc.clientName} - ${acc.service} - Vence: ${acc.expiry.toLocaleDateString()} - R$ ${formatCurrency(acc.price)}`, acc.id)}
+                                                                                    className="p-2 bg-gray-100 hover:bg-gray-200 text-gray-700 dark:bg-slate-800 dark:text-gray-300 rounded-xl transition-all"
+                                                                                    title="Copiar dados da conta"
+                                                                                >
+                                                                                    {copiedId === acc.id ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
+                                                                                </button>
+                                                                            </div>
+                                                                        </td>
+                                                                    </tr>
+                                                                );
+                                                            })}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {/* 2. VISÃO AGRUPADA POR CLIENTE */}
+                                    {vencimentosViewMode === 'grouped' && (
+                                        <div className="space-y-4">
+                                            <div className="flex justify-between items-center px-2">
+                                                <h4 className="font-black text-base text-gray-900 dark:text-white flex items-center gap-2">
+                                                    <Users size={18} className="text-indigo-600" />
+                                                    Clientes com Contas a Vencer no Período ({groupedVencimentos.length})
+                                                </h4>
+                                                <span className="text-xs font-black text-indigo-600 bg-indigo-50 dark:bg-indigo-900/30 px-3 py-1 rounded-xl">
+                                                    Total Receitas: R$ {formatCurrency(totalPeriod)}
+                                                </span>
+                                            </div>
+
+                                            {groupedVencimentos
+                                                .filter(clientData => {
+                                                    if (!vencimentosSearchTerm.trim()) return true;
+                                                    const term = vencimentosSearchTerm.toLowerCase();
+                                                    return clientData.name.toLowerCase().includes(term) || clientData.phone.includes(term);
+                                                })
+                                                .map((clientData, idx) => (
+                                                <div key={idx} className="bg-gray-50 dark:bg-slate-800/50 rounded-[2rem] overflow-hidden border border-gray-100 dark:border-slate-800 shadow-sm">
+                                                    <div className="bg-white dark:bg-slate-900 px-6 py-4 flex justify-between items-center border-b border-gray-100 dark:border-slate-800">
+                                                        <div>
+                                                            <h4 className="font-black text-gray-900 dark:text-white flex items-center gap-2">
+                                                                <ChevronRight size={18} className="text-indigo-600" />
+                                                                {clientData.name}
+                                                            </h4>
+                                                            <p className="text-[10px] font-bold text-gray-400 ml-6">{clientData.phone}</p>
+                                                        </div>
+                                                        <div className="text-right">
+                                                            <span className="text-[10px] font-black text-indigo-400 uppercase block">Total Cliente</span>
+                                                            <span className="font-black text-indigo-600">R$ {formatCurrency(clientData.totalUser)}</span>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="p-4 overflow-x-auto">
+                                                        <table className="w-full text-left">
+                                                            <thead>
+                                                                <tr className="text-[9px] font-black uppercase text-gray-400 tracking-[0.1em]">
+                                                                    <th className="px-4 py-2">Aplicativo</th>
+                                                                    <th className="px-4 py-2">Vencimento</th>
+                                                                    <th className="px-4 py-2 text-right">Preço</th>
+                                                                    <th className="px-4 py-2 text-right">Ação</th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody className="divide-y divide-gray-100 dark:divide-slate-800">
+                                                                {clientData.vencimentos.map((v: any, vIdx: number) => (
+                                                                    <tr key={vIdx} className="text-sm">
+                                                                        <td className="px-4 py-3 font-bold text-gray-700 dark:text-gray-300">
+                                                                            <div className="flex items-center gap-2">
+                                                                                <div className={`w-2 h-2 rounded-full ${v.isMonthly ? 'bg-green-500' : 'bg-gray-300'}`}></div>
+                                                                                {v.service}
+                                                                                {!v.isMonthly && <span className="text-[8px] bg-gray-200 text-gray-600 px-1 rounded">NÃO MENSAL</span>}
+                                                                            </div>
+                                                                        </td>
+                                                                        <td className="px-4 py-3 text-gray-500 font-medium">
+                                                                            {v.expiry.toLocaleDateString()}
+                                                                            <span className="text-xs text-gray-400 ml-2 font-bold">
+                                                                                ({v.daysRemaining < 0 ? `Venceu há ${Math.abs(v.daysRemaining)}d` : v.daysRemaining === 0 ? 'Vence Hoje' : `Em ${v.daysRemaining}d`})
+                                                                            </span>
+                                                                        </td>
+                                                                        <td className={`px-4 py-3 text-right font-black ${v.isMonthly ? 'text-indigo-600' : 'text-gray-400'}`}>
+                                                                            R$ {formatCurrency(v.price)}
+                                                                        </td>
+                                                                        <td className="px-4 py-3 text-right">
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => sendWhatsAppMessage(clientData.phone, clientData.name, v.service, v.expiry, clientData.clientRef, v.startDate)}
+                                                                                className="p-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-600 hover:text-white rounded-lg transition-all"
+                                                                                title="Avisar cliente via WhatsApp"
+                                                                            >
+                                                                                <MessageCircle size={14} />
+                                                                            </button>
+                                                                        </td>
+                                                                    </tr>
+                                                                ))}
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                </div>
+                                            ))}
+
+                                            {groupedVencimentos.length === 0 && (
+                                                <div className="text-center py-10 bg-gray-50 dark:bg-slate-800/40 rounded-3xl border-2 border-dashed border-gray-200 dark:border-slate-700">
+                                                    <p className="text-gray-400 font-bold uppercase tracking-widest text-sm">Nenhum vencimento de cliente neste período.</p>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {/* 3. VISÃO CONTAS DOS APPS QUE VENCEM NO PERÍODO (CUSTOS A PAGAR) */}
+                                    {vencimentosViewMode === 'apps' && (
+                                        <div className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] border border-red-100 dark:border-red-900/30 shadow-sm space-y-4">
+                                            <div className="flex justify-between items-center">
+                                                <div className="flex items-center gap-2">
+                                                    <AlertTriangle size={20} className="text-red-500" />
+                                                    <h4 className="font-black text-base text-gray-900 dark:text-white">
+                                                        Contas dos Apps que Vencem no Período ({periodAccounts.length})
+                                                    </h4>
+                                                </div>
+                                                <span className="text-xs font-black text-red-600 bg-red-50 dark:bg-red-900/30 px-3 py-1 rounded-xl">
+                                                    Total Custos: R$ {formatCurrency(periodCosts.accounts)}
+                                                </span>
+                                            </div>
+
+                                            {periodAccounts.length === 0 ? (
+                                                <div className="py-6 text-center text-xs font-bold text-gray-400 bg-gray-50 dark:bg-slate-800/50 rounded-2xl border border-dashed border-gray-200 dark:border-slate-700">
+                                                    ✅ Nenhuma conta de app (credencial) vence no período selecionado.
+                                                </div>
+                                            ) : (
+                                                <div className="overflow-x-auto">
+                                                    <table className="w-full text-left">
+                                                        <thead>
+                                                            <tr className="text-[10px] font-black uppercase text-gray-400 border-b border-gray-100 dark:border-slate-800">
+                                                                <th className="px-3 py-2">App</th>
+                                                                <th className="px-3 py-2">Conta / E-mail</th>
+                                                                <th className="px-3 py-2">Vencimento</th>
+                                                                <th className="px-3 py-2">Status</th>
+                                                                <th className="px-3 py-2 text-right">Custo Total</th>
+                                                                <th className="px-3 py-2 text-right">Orion</th>
+                                                                <th className="px-3 py-2 text-right">Iohanna</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody className="divide-y divide-gray-100 dark:divide-slate-800">
+                                                            {periodAccounts.map((acc, aIdx) => (
+                                                                <tr key={acc.id || aIdx} className="text-sm">
+                                                                    <td className="px-3 py-3 font-bold text-gray-800 dark:text-gray-200">
+                                                                        <span className="px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 font-black text-xs">
+                                                                            {acc.service}
+                                                                        </span>
                                                                     </td>
-                                                                    <td className="px-4 py-3 text-gray-500 font-medium">
-                                                                        {v.expiry.toLocaleDateString()}
+                                                                    <td className="px-3 py-3 font-medium text-gray-700 dark:text-gray-300 font-mono text-xs">
+                                                                        {acc.email}
                                                                     </td>
-                                                                    <td className={`px-4 py-3 text-right font-black ${v.isMonthly ? 'text-indigo-600' : 'text-gray-400'}`}>
-                                                                        R$ {v.price.toFixed(2).replace('.', ',')}
+                                                                    <td className="px-3 py-3 font-bold text-gray-700 dark:text-gray-300 text-xs">
+                                                                        {acc.expiryDate.toLocaleDateString()}
+                                                                    </td>
+                                                                    <td className="px-3 py-3 text-xs">
+                                                                        {acc.daysRemaining < 0 ? (
+                                                                            <span className="px-2 py-0.5 rounded-lg bg-red-100 text-red-700 font-black text-[10px] uppercase">
+                                                                                Vencida há {Math.abs(acc.daysRemaining)}d
+                                                                            </span>
+                                                                        ) : acc.daysRemaining === 0 ? (
+                                                                            <span className="px-2 py-0.5 rounded-lg bg-amber-100 text-amber-800 font-black text-[10px] uppercase">
+                                                                                Vence Hoje
+                                                                            </span>
+                                                                        ) : (
+                                                                            <span className="px-2 py-0.5 rounded-lg bg-emerald-100 text-emerald-800 font-black text-[10px] uppercase">
+                                                                                Em {acc.daysRemaining}d
+                                                                            </span>
+                                                                        )}
+                                                                    </td>
+                                                                    <td className="px-3 py-3 text-right font-black text-red-600">
+                                                                        R$ {formatCurrency(acc.cost)}
+                                                                    </td>
+                                                                    <td className="px-3 py-3 text-right font-bold text-blue-600 text-xs">
+                                                                        R$ {formatCurrency(acc.orionCost)}
+                                                                    </td>
+                                                                    <td className="px-3 py-3 text-right font-bold text-pink-600 text-xs">
+                                                                        R$ {formatCurrency(acc.iohannaCost)}
                                                                     </td>
                                                                 </tr>
                                                             ))}
                                                         </tbody>
                                                     </table>
                                                 </div>
-                                            </div>
-                                        ))}
-
-                                        {groupedVencimentos.length === 0 && (
-                                            <div className="text-center py-10 bg-gray-50 dark:bg-slate-800/40 rounded-3xl border-2 border-dashed border-gray-200 dark:border-slate-700">
-                                                <p className="text-gray-400 font-bold uppercase tracking-widest text-sm">Nenhum vencimento de cliente neste período.</p>
-                                            </div>
-                                        )}
-                                    </div>
+                                            )}
+                                        </div>
+                                    )}
                                 </div>
                             )}
                         </div>
