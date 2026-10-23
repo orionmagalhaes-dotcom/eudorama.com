@@ -127,7 +127,20 @@ const getFriendlyPasswordStepLabel = (step: VikiPasswordAutomationStep | null) =
 // CAPACITY_LIMITS moved to financeConfig.ts for single source of truth
 
 import { getServicePrice } from '../services/pricingConfig';
-import { getAccountCost, getAccountCycleDays, getAccountMonthlyCost, getCostSplit, getRevenueSplit, DEFAULT_AD_SPEND_PER_DAY, DAYS_IN_MONTH, formatCurrency, getCapacityLimit } from '../services/financeConfig';
+import { 
+    getAccountCost, 
+    getAccountCycleDays, 
+    getAccountMonthlyCost, 
+    getCostSplit, 
+    getRevenueSplit, 
+    DEFAULT_AD_SPEND_PER_DAY, 
+    DAYS_IN_MONTH, 
+    formatCurrency, 
+    getCapacityLimit,
+    getAccountExpiryDate,
+    getAccountDaysRemaining,
+    getAccountStatus
+} from '../services/financeConfig';
 import { ChargeWhatsappAutomationPanel } from './ChargeWhatsappAutomationPanel';
 
 const toLocalInput = (isoString: string) => {
@@ -429,18 +442,42 @@ const getCredentialHealth = (service: string, publishedAt: string, currentUsers:
     const daysActive = Math.floor(diffTime / (1000 * 60 * 60 * 24));
     const serviceLower = service.toLowerCase();
     const limit = getCapacityLimit(service);
-    let expiryLimit = getAccountCycleDays(service);
-    if (serviceLower.includes('kocowa')) expiryLimit = 25;
+    const expiryLimit = getAccountCycleDays(service);
     const daysRemaining = expiryLimit - daysActive;
-    if (daysRemaining < 0) return { label: 'Vencida', color: 'text-red-600 bg-red-50 border-red-200', icon: <AlertTriangle size={14} /> };
+    const expiryDate = new Date(pubDate);
+    expiryDate.setDate(expiryDate.getDate() + expiryLimit);
 
-    if (serviceLower.includes('viki')) {
-        if (currentUsers >= 8) return { label: 'Superlotada', color: 'text-orange-600 bg-orange-50 border-orange-200', icon: <UsersRound size={14} /> };
-        if (currentUsers >= 7) return { label: 'Cheia', color: 'text-amber-700 bg-amber-50 border-amber-200', icon: <UsersRound size={14} /> };
+    if (daysRemaining < 0) {
+        return { 
+            label: 'Vencida', 
+            color: 'text-red-600 bg-red-50 border-red-200 dark:bg-red-900/30 dark:text-red-300 dark:border-red-800', 
+            icon: <AlertTriangle size={14} />,
+            daysRemaining,
+            expiryDate,
+            daysActive,
+            cycleDays: expiryLimit
+        };
     }
 
-    if (currentUsers >= limit && limit < 9000) return { label: 'Superlotada', color: 'text-orange-600 bg-orange-50 border-orange-200', icon: <UsersRound size={14} /> };
-    return { label: 'Saudavel', color: 'text-green-600 bg-green-50 border-green-200', icon: <CheckCircle2 size={14} /> };
+    if (daysRemaining <= 5) {
+        return { 
+            label: daysRemaining === 0 ? 'Vence Hoje' : `Vence em ${daysRemaining}d`, 
+            color: 'text-amber-700 bg-amber-50 border-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-800', 
+            icon: <Clock size={14} />,
+            daysRemaining,
+            expiryDate,
+            daysActive,
+            cycleDays: expiryLimit
+        };
+    }
+
+    if (serviceLower.includes('viki')) {
+        if (currentUsers >= 8) return { label: 'Superlotada', color: 'text-orange-600 bg-orange-50 border-orange-200 dark:bg-orange-900/30 dark:text-orange-300', icon: <UsersRound size={14} />, daysRemaining, expiryDate, daysActive, cycleDays: expiryLimit };
+        if (currentUsers >= 7) return { label: 'Cheia', color: 'text-amber-700 bg-amber-50 border-amber-200 dark:bg-amber-900/30 dark:text-amber-300', icon: <UsersRound size={14} />, daysRemaining, expiryDate, daysActive, cycleDays: expiryLimit };
+    }
+
+    if (currentUsers >= limit && limit < 9000) return { label: 'Superlotada', color: 'text-orange-600 bg-orange-50 border-orange-200 dark:bg-orange-900/30 dark:text-orange-300', icon: <UsersRound size={14} />, daysRemaining, expiryDate, daysActive, cycleDays: expiryLimit };
+    return { label: 'Saudável', color: 'text-green-600 bg-green-50 border-green-200 dark:bg-green-900/30 dark:text-green-300', icon: <CheckCircle2 size={14} />, daysRemaining, expiryDate, daysActive, cycleDays: expiryLimit };
 };
 
 const CREDENTIAL_ASSIGNMENT_SNAPSHOT_KEY = 'credential_assignment_snapshot_v2';
@@ -556,13 +593,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     });
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    // States para o novo filtro de vencimentos
+    // States para a consulta otimizada de vencimentos
     const [dateStart, setDateStart] = useState('');
     const [dateEnd, setDateEnd] = useState('');
     const [groupedVencimentos, setGroupedVencimentos] = useState<any[]>([]);
+    const [periodAccounts, setPeriodAccounts] = useState<any[]>([]);
+    const [periodCosts, setPeriodCosts] = useState<{
+        accounts: number;
+        orionAccounts: number;
+        iohannaAccounts: number;
+        adSpend: number;
+        orionAdSpend: number;
+        iohannaAdSpend: number;
+        days: number;
+    }>({ accounts: 0, orionAccounts: 0, iohannaAccounts: 0, adSpend: 0, orionAdSpend: 0, iohannaAdSpend: 0, days: 0 });
     const [totalPeriod, setTotalPeriod] = useState(0);
     const [orionPeriod, setOrionPeriod] = useState(0);
     const [iohannaPeriod, setIohannaPeriod] = useState(0);
+    const [hasConsulted, setHasConsulted] = useState(false);
+    const [showIndividualAccounts, setShowIndividualAccounts] = useState(false);
 
     const [projectionMonths, setProjectionMonths] = useState<number>(1);
     const [statsReferenceDate, setStatsReferenceDate] = useState<number>(() => {
@@ -736,13 +785,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         setLoading(false);
     };
 
-    const handleConsultVencimentos = () => {
-        if (!dateStart || !dateEnd) return;
-        const start = new Date(dateStart);
+    const handleConsultVencimentos = (customStart?: string, customEnd?: string) => {
+        const sDate = customStart ?? dateStart;
+        const eDate = customEnd ?? dateEnd;
+        if (!sDate || !eDate) return;
+        const start = new Date(sDate);
         start.setHours(0, 0, 0, 0);
-        const end = new Date(dateEnd);
+        const end = new Date(eDate);
         end.setHours(23, 59, 59, 999);
 
+        // 1. Assinaturas de clientes vencendo no período (Receitas)
         const activeClients = clients.filter(c => !c.deleted);
         const clientMap: Record<string, any> = {};
         let globalSum = 0;
@@ -786,11 +838,94 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             });
         });
 
+        // 2. Contas dos apps (credenciais) vencendo no período (Custos reais das contas)
+        const expiringAccounts: any[] = [];
+        let totalAccCost = 0;
+        let orionAccCost = 0;
+        let iohannaAccCost = 0;
+
+        credentials.forEach(cred => {
+            if (!cred.isVisible) return;
+            const expiry = getAccountExpiryDate(cred.publishedAt, cred.service);
+            if (expiry >= start && expiry <= end) {
+                const cost = getAccountCost(cred.service);
+                const split = getCostSplit(cred.service);
+                const orionShare = cost * split.orion;
+                const iohannaShare = cost * split.iohanna;
+
+                expiringAccounts.push({
+                    id: cred.id,
+                    service: cred.service,
+                    email: cred.email,
+                    expiryDate: expiry,
+                    daysRemaining: getAccountDaysRemaining(cred.publishedAt, cred.service),
+                    cost,
+                    orionCost: orionShare,
+                    iohannaCost: iohannaShare
+                });
+
+                totalAccCost += cost;
+                orionAccCost += orionShare;
+                iohannaAccCost += iohannaShare;
+            }
+        });
+
+        // 3. Gastos com anúncios proporcionais aos dias do período
+        const diffMs = end.getTime() - start.getTime();
+        const periodDays = Math.max(1, Math.round(diffMs / (1000 * 60 * 60 * 24)) + 1);
+        const periodAdSpend = adSpendEnabled ? (adSpendPerDay * periodDays) : 0;
+        const orionAdSpendPeriod = periodAdSpend * 0.70;
+        const iohannaAdSpendPeriod = periodAdSpend * 0.30;
+
         const finalResults = Object.values(clientMap).sort((a, b) => a.name.localeCompare(b.name));
         setGroupedVencimentos(finalResults);
+        setPeriodAccounts(expiringAccounts.sort((a, b) => a.expiryDate.getTime() - b.expiryDate.getTime()));
         setTotalPeriod(globalSum);
         setOrionPeriod(orionPeriodRevenue);
         setIohannaPeriod(iohannaPeriodRevenue);
+        setPeriodCosts({
+            accounts: totalAccCost,
+            orionAccounts: orionAccCost,
+            iohannaAccounts: iohannaAccCost,
+            adSpend: periodAdSpend,
+            orionAdSpend: orionAdSpendPeriod,
+            iohannaAdSpend: iohannaAdSpendPeriod,
+            days: periodDays
+        });
+        setHasConsulted(true);
+    };
+
+    const applyQuickPeriod = (type: 'today' | 'next7' | 'next15' | 'thisMonth' | 'nextMonth') => {
+        const now = new Date();
+        let s = new Date(now);
+        let e = new Date(now);
+
+        if (type === 'today') {
+            // hoje
+        } else if (type === 'next7') {
+            e.setDate(e.getDate() + 7);
+        } else if (type === 'next15') {
+            e.setDate(e.getDate() + 15);
+        } else if (type === 'thisMonth') {
+            s = new Date(now.getFullYear(), now.getMonth(), 1);
+            e = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+        } else if (type === 'nextMonth') {
+            s = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+            e = new Date(now.getFullYear(), now.getMonth() + 2, 0);
+        }
+
+        const formatIso = (d: Date) => {
+            const year = d.getFullYear();
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        };
+
+        const sStr = formatIso(s);
+        const eStr = formatIso(e);
+        setDateStart(sStr);
+        setDateEnd(eStr);
+        handleConsultVencimentos(sStr, eStr);
     };
 
     const copyToClipboard = (text: string, id: string) => {
@@ -2460,12 +2595,54 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                 </div>
                             </div>
 
+                            {/* BOTOES RAPIDOS DE PERIODO */}
+                            <div className="flex flex-wrap gap-2 pt-2 border-t border-gray-100 dark:border-slate-800">
+                                <span className="text-[10px] font-black uppercase text-gray-400 self-center mr-1 flex items-center gap-1">
+                                    <Zap size={12} className="text-amber-500" /> Filtros Rápidos:
+                                </span>
+                                <button
+                                    type="button"
+                                    onClick={() => applyQuickPeriod('today')}
+                                    className="px-3 py-1.5 rounded-xl bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 text-indigo-700 dark:text-indigo-300 text-xs font-black uppercase transition-all"
+                                >
+                                    Hoje
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => applyQuickPeriod('next7')}
+                                    className="px-3 py-1.5 rounded-xl bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 text-indigo-700 dark:text-indigo-300 text-xs font-black uppercase transition-all"
+                                >
+                                    Próximos 7 dias
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => applyQuickPeriod('next15')}
+                                    className="px-3 py-1.5 rounded-xl bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 text-indigo-700 dark:text-indigo-300 text-xs font-black uppercase transition-all"
+                                >
+                                    Próximos 15 dias
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => applyQuickPeriod('thisMonth')}
+                                    className="px-3 py-1.5 rounded-xl bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 text-indigo-700 dark:text-indigo-300 text-xs font-black uppercase transition-all"
+                                >
+                                    Este Mês
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => applyQuickPeriod('nextMonth')}
+                                    className="px-3 py-1.5 rounded-xl bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 text-indigo-700 dark:text-indigo-300 text-xs font-black uppercase transition-all"
+                                >
+                                    Próximo Mês
+                                </button>
+                            </div>
+
                             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-end">
                                 <div className="space-y-1">
                                     <label className="text-[10px] font-black uppercase text-gray-400 ml-1">Data de Início</label>
                                     <input
                                         type="date"
-                                        className="w-full bg-gray-50 p-4 rounded-2xl border-2 border-transparent focus:border-indigo-600 outline-none font-bold"
+                                        className="w-full bg-gray-50 dark:bg-slate-800 p-4 rounded-2xl border-2 border-transparent focus:border-indigo-600 outline-none font-bold"
                                         value={dateStart}
                                         onChange={e => setDateStart(e.target.value)}
                                     />
@@ -2474,40 +2651,57 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                     <label className="text-[10px] font-black uppercase text-gray-400 ml-1">Data de Fim</label>
                                     <input
                                         type="date"
-                                        className="w-full bg-gray-50 p-4 rounded-2xl border-2 border-transparent focus:border-indigo-600 outline-none font-bold"
+                                        className="w-full bg-gray-50 dark:bg-slate-800 p-4 rounded-2xl border-2 border-transparent focus:border-indigo-600 outline-none font-bold"
                                         value={dateEnd}
                                         onChange={e => setDateEnd(e.target.value)}
                                     />
                                 </div>
                                 <button
-                                    onClick={handleConsultVencimentos}
+                                    onClick={() => handleConsultVencimentos()}
                                     className="bg-indigo-600 text-white font-black py-4 rounded-2xl shadow-lg hover:bg-indigo-700 transition-all flex items-center justify-center gap-2 active:scale-95"
                                 >
-                                    Consultar Vencimentos
+                                    <Filter size={18} /> Consultar Vencimentos
                                 </button>
                             </div>
 
-                            {groupedVencimentos.length > 0 && (
+                            {hasConsulted && (
                                 <div className="mt-8 space-y-8 animate-slide-up">
-                                    <div className="bg-indigo-600 p-6 rounded-[2rem] text-white shadow-xl">
-                                        <div className="flex justify-between items-center mb-4">
+                                    {/* CARD PRINCIPAL DO PERÍODO */}
+                                    <div className="bg-indigo-600 p-6 rounded-[2rem] text-white shadow-xl space-y-4">
+                                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pb-4 border-b border-indigo-500">
                                             <div>
-                                                <p className="text-[10px] font-black uppercase text-indigo-200">Previsão Total do Período</p>
-                                                <h4 className="text-4xl font-black">R$ {totalPeriod.toFixed(2).replace('.', ',')}</h4>
+                                                <p className="text-[10px] font-black uppercase text-indigo-200">Receitas Clientes</p>
+                                                <h4 className="text-3xl font-black">R$ {formatCurrency(totalPeriod)}</h4>
+                                                <p className="text-[10px] text-indigo-200">{groupedVencimentos.length} clientes ativos</p>
                                             </div>
-                                            <div className="text-right">
-                                                <p className="text-[10px] font-black uppercase text-indigo-200">Clientes Ativos</p>
-                                                <h4 className="text-2xl font-black">{groupedVencimentos.length}</h4>
+                                            <div>
+                                                <p className="text-[10px] font-black uppercase text-indigo-200">Custos Contas Apps</p>
+                                                <h4 className="text-3xl font-black text-red-200">- R$ {formatCurrency(periodCosts.accounts)}</h4>
+                                                <p className="text-[10px] text-indigo-200">{periodAccounts.length} contas vencendo</p>
+                                            </div>
+                                            <div>
+                                                <p className="text-[10px] font-black uppercase text-indigo-200">Anúncios ({periodCosts.days}d)</p>
+                                                <h4 className="text-3xl font-black text-amber-200">- R$ {formatCurrency(periodCosts.adSpend)}</h4>
+                                                <p className="text-[10px] text-indigo-200">{adSpendEnabled ? 'Marketing ativo' : 'Desativado'}</p>
+                                            </div>
+                                            <div className="bg-white/15 p-3 rounded-2xl flex flex-col justify-center">
+                                                <p className="text-[10px] font-black uppercase text-emerald-200">Lucro Líquido</p>
+                                                <h4 className="text-3xl font-black text-emerald-300">
+                                                    R$ {formatCurrency(totalPeriod - periodCosts.accounts - periodCosts.adSpend)}
+                                                </h4>
                                             </div>
                                         </div>
 
                                         {/* ADMIN SPLIT - PERÍODO */}
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-4 border-t border-indigo-500">
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
                                             {/* ORION */}
                                             <div className="bg-white/10 rounded-2xl p-4 space-y-2">
-                                                <div className="flex items-center gap-2">
-                                                    <div className="w-8 h-8 bg-blue-500 rounded-xl flex items-center justify-center text-white font-black text-sm">O</div>
-                                                    <span className="font-black text-sm">Orion</span>
+                                                <div className="flex items-center justify-between">
+                                                    <div className="flex items-center gap-2">
+                                                        <div className="w-8 h-8 bg-blue-500 rounded-xl flex items-center justify-center text-white font-black text-sm">O</div>
+                                                        <span className="font-black text-sm">Orion</span>
+                                                    </div>
+                                                    <span className="text-[9px] font-bold uppercase text-indigo-200">70% Viki, Kocowa, IQIYI, DramaBox | Paga IQIYI (100%) + Viki (70%)</span>
                                                 </div>
                                                 <div className="grid grid-cols-3 gap-2 text-center">
                                                     <div>
@@ -2516,20 +2710,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                     </div>
                                                     <div>
                                                         <p className="text-[8px] font-bold text-indigo-200 uppercase">Custos</p>
-                                                        <p className="font-bold text-sm text-red-300">- R$ {formatCurrency(financeStats.orion.costs + financeStats.orion.adSpend)}</p>
+                                                        <p className="font-bold text-sm text-red-300">- R$ {formatCurrency(periodCosts.orionAccounts + periodCosts.orionAdSpend)}</p>
                                                     </div>
                                                     <div className="bg-white/10 rounded-xl py-1">
                                                         <p className="text-[8px] font-bold text-emerald-200 uppercase">Líquido</p>
-                                                        <p className="font-black text-sm text-emerald-300">R$ {formatCurrency(orionPeriod - financeStats.orion.costs - financeStats.orion.adSpend)}</p>
+                                                        <p className="font-black text-sm text-emerald-300">R$ {formatCurrency(orionPeriod - periodCosts.orionAccounts - periodCosts.orionAdSpend)}</p>
                                                     </div>
                                                 </div>
                                             </div>
 
                                             {/* IOHANNA */}
                                             <div className="bg-white/10 rounded-2xl p-4 space-y-2">
-                                                <div className="flex items-center gap-2">
-                                                    <div className="w-8 h-8 bg-pink-500 rounded-xl flex items-center justify-center text-white font-black text-sm">I</div>
-                                                    <span className="font-black text-sm">Iohanna</span>
+                                                <div className="flex items-center justify-between">
+                                                    <div className="flex items-center gap-2">
+                                                        <div className="w-8 h-8 bg-pink-500 rounded-xl flex items-center justify-center text-white font-black text-sm">I</div>
+                                                        <span className="font-black text-sm">Iohanna</span>
+                                                    </div>
+                                                    <span className="text-[9px] font-bold uppercase text-pink-200">70% WeTV, Youku | Paga Viki (30%)</span>
                                                 </div>
                                                 <div className="grid grid-cols-3 gap-2 text-center">
                                                     <div>
@@ -2538,18 +2735,107 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                     </div>
                                                     <div>
                                                         <p className="text-[8px] font-bold text-indigo-200 uppercase">Custos</p>
-                                                        <p className="font-bold text-sm text-red-300">- R$ {formatCurrency(financeStats.iohanna.costs + financeStats.iohanna.adSpend)}</p>
+                                                        <p className="font-bold text-sm text-red-300">- R$ {formatCurrency(periodCosts.iohannaAccounts + periodCosts.iohannaAdSpend)}</p>
                                                     </div>
                                                     <div className="bg-white/10 rounded-xl py-1">
                                                         <p className="text-[8px] font-bold text-emerald-200 uppercase">Líquido</p>
-                                                        <p className="font-black text-sm text-emerald-300">R$ {formatCurrency(iohannaPeriod - financeStats.iohanna.costs - financeStats.iohanna.adSpend)}</p>
+                                                        <p className="font-black text-sm text-emerald-300">R$ {formatCurrency(iohannaPeriod - periodCosts.iohannaAccounts - periodCosts.iohannaAdSpend)}</p>
                                                     </div>
                                                 </div>
                                             </div>
                                         </div>
                                     </div>
 
+                                    {/* CONTAS DOS APPS QUE VENCEM NO PERÍODO (CUSTOS A PAGAR) */}
+                                    <div className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] border border-red-100 dark:border-red-900/30 shadow-sm space-y-4">
+                                        <div className="flex justify-between items-center">
+                                            <div className="flex items-center gap-2">
+                                                <AlertTriangle size={20} className="text-red-500" />
+                                                <h4 className="font-black text-base text-gray-900 dark:text-white">
+                                                    Contas dos Apps que Vencem no Período ({periodAccounts.length})
+                                                </h4>
+                                            </div>
+                                            <span className="text-xs font-black text-red-600 bg-red-50 dark:bg-red-900/30 px-3 py-1 rounded-xl">
+                                                Total Custos: R$ {formatCurrency(periodCosts.accounts)}
+                                            </span>
+                                        </div>
+
+                                        {periodAccounts.length === 0 ? (
+                                            <div className="py-6 text-center text-xs font-bold text-gray-400 bg-gray-50 dark:bg-slate-800/50 rounded-2xl border border-dashed border-gray-200 dark:border-slate-700">
+                                                ✅ Nenhuma conta de app (credencial) vence no período selecionado.
+                                            </div>
+                                        ) : (
+                                            <div className="overflow-x-auto">
+                                                <table className="w-full text-left">
+                                                    <thead>
+                                                        <tr className="text-[10px] font-black uppercase text-gray-400 border-b border-gray-100 dark:border-slate-800">
+                                                            <th className="px-3 py-2">App</th>
+                                                            <th className="px-3 py-2">Conta / E-mail</th>
+                                                            <th className="px-3 py-2">Vencimento</th>
+                                                            <th className="px-3 py-2">Status</th>
+                                                            <th className="px-3 py-2 text-right">Custo Total</th>
+                                                            <th className="px-3 py-2 text-right">Orion</th>
+                                                            <th className="px-3 py-2 text-right">Iohanna</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody className="divide-y divide-gray-100 dark:divide-slate-800">
+                                                        {periodAccounts.map((acc, aIdx) => (
+                                                            <tr key={acc.id || aIdx} className="text-sm">
+                                                                <td className="px-3 py-3 font-bold text-gray-800 dark:text-gray-200">
+                                                                    <span className="px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 font-black text-xs">
+                                                                        {acc.service}
+                                                                    </span>
+                                                                </td>
+                                                                <td className="px-3 py-3 font-medium text-gray-700 dark:text-gray-300 font-mono text-xs">
+                                                                    {acc.email}
+                                                                </td>
+                                                                <td className="px-3 py-3 font-bold text-gray-700 dark:text-gray-300 text-xs">
+                                                                    {acc.expiryDate.toLocaleDateString()}
+                                                                </td>
+                                                                <td className="px-3 py-3 text-xs">
+                                                                    {acc.daysRemaining < 0 ? (
+                                                                        <span className="px-2 py-0.5 rounded-lg bg-red-100 text-red-700 font-black text-[10px] uppercase">
+                                                                            Vencida há {Math.abs(acc.daysRemaining)}d
+                                                                        </span>
+                                                                    ) : acc.daysRemaining === 0 ? (
+                                                                        <span className="px-2 py-0.5 rounded-lg bg-amber-100 text-amber-800 font-black text-[10px] uppercase">
+                                                                            Vence Hoje
+                                                                        </span>
+                                                                    ) : (
+                                                                        <span className="px-2 py-0.5 rounded-lg bg-emerald-100 text-emerald-800 font-black text-[10px] uppercase">
+                                                                            Em {acc.daysRemaining}d
+                                                                        </span>
+                                                                    )}
+                                                                </td>
+                                                                <td className="px-3 py-3 text-right font-black text-red-600">
+                                                                    R$ {formatCurrency(acc.cost)}
+                                                                </td>
+                                                                <td className="px-3 py-3 text-right font-bold text-blue-600 text-xs">
+                                                                    R$ {formatCurrency(acc.orionCost)}
+                                                                </td>
+                                                                <td className="px-3 py-3 text-right font-bold text-pink-600 text-xs">
+                                                                    R$ {formatCurrency(acc.iohannaCost)}
+                                                                </td>
+                                                            </tr>
+                                                        ))}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* ASSINATURAS DOS CLIENTES QUE VENCEM NO PERÍODO */}
                                     <div className="space-y-4">
+                                        <div className="flex justify-between items-center px-2">
+                                            <h4 className="font-black text-base text-gray-900 dark:text-white flex items-center gap-2">
+                                                <Users size={18} className="text-indigo-600" />
+                                                Assinaturas de Clientes que Vencem no Período ({groupedVencimentos.length})
+                                            </h4>
+                                            <span className="text-xs font-black text-indigo-600 bg-indigo-50 dark:bg-indigo-900/30 px-3 py-1 rounded-xl">
+                                                Total Receitas: R$ {formatCurrency(totalPeriod)}
+                                            </span>
+                                        </div>
+
                                         {groupedVencimentos.map((clientData, idx) => (
                                             <div key={idx} className="bg-gray-50 dark:bg-slate-800/50 rounded-[2rem] overflow-hidden border border-gray-100 dark:border-slate-800 shadow-sm">
                                                 <div className="bg-white dark:bg-slate-900 px-6 py-4 flex justify-between items-center border-b border-gray-100 dark:border-slate-800">
@@ -2598,12 +2884,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                 </div>
                                             </div>
                                         ))}
+
+                                        {groupedVencimentos.length === 0 && (
+                                            <div className="text-center py-10 bg-gray-50 dark:bg-slate-800/40 rounded-3xl border-2 border-dashed border-gray-200 dark:border-slate-700">
+                                                <p className="text-gray-400 font-bold uppercase tracking-widest text-sm">Nenhum vencimento de cliente neste período.</p>
+                                            </div>
+                                        )}
                                     </div>
-                                </div>
-                            )}
-                            {groupedVencimentos.length === 0 && dateStart && dateEnd && (
-                                <div className="text-center py-10 bg-gray-50 rounded-3xl border-2 border-dashed border-gray-200">
-                                    <p className="text-gray-400 font-bold uppercase tracking-widest text-sm">Nenhum vencimento encontrado neste período.</p>
                                 </div>
                             )}
                         </div>
@@ -2706,9 +2993,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         {/* CUSTOS DAS CONTAS */}
                         {Object.keys(financeStats.accountCosts).length > 0 && (
                             <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-red-100 dark:border-red-900/20 shadow-sm space-y-6">
-                                <div className="flex flex-col gap-1">
-                                    <h3 className="text-xl font-black text-gray-900 dark:text-white">💰 Custos das Contas</h3>
-                                    <p className="text-xs font-bold text-red-400 uppercase tracking-widest">Custos convertidos para equivalente mensal</p>
+                                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                                    <div className="flex flex-col gap-1">
+                                        <h3 className="text-xl font-black text-gray-900 dark:text-white">💰 Custos das Contas</h3>
+                                        <p className="text-xs font-bold text-red-400 uppercase tracking-widest">
+                                            Gastos com apps: IQIYI (R$ 10 Orion) e Viki Pass (R$ 40 - 70% Orion / 30% Iohanna)
+                                        </p>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowIndividualAccounts(!showIndividualAccounts)}
+                                        className="px-4 py-2 rounded-xl bg-red-50 dark:bg-red-900/30 hover:bg-red-100 text-red-700 dark:text-red-300 text-xs font-black uppercase transition-all flex items-center gap-1.5"
+                                    >
+                                        <Clock size={14} />
+                                        {showIndividualAccounts ? 'Ocultar Contas Individuais' : 'Ver Vencimento de Cada Conta'}
+                                    </button>
                                 </div>
                                 <div className="overflow-x-auto">
                                     <table className="w-full text-left border-separate border-spacing-y-2">
@@ -2740,6 +3039,85 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                         </tbody>
                                     </table>
                                 </div>
+
+                                {showIndividualAccounts && (
+                                    <div className="pt-4 border-t border-red-100 dark:border-red-900/30 space-y-3 animate-fade-in">
+                                        <div className="flex justify-between items-center">
+                                            <h4 className="text-sm font-black text-gray-800 dark:text-white uppercase tracking-wider flex items-center gap-1.5">
+                                                <Calendar size={15} className="text-red-500" />
+                                                Vencimento e Custos de Cada Conta Ativa ({credentials.filter(c => c.isVisible).length})
+                                            </h4>
+                                        </div>
+                                        <div className="overflow-x-auto">
+                                            <table className="w-full text-left">
+                                                <thead>
+                                                    <tr className="text-[10px] font-black uppercase text-gray-400 border-b border-gray-100 dark:border-slate-800">
+                                                        <th className="px-3 py-2">App</th>
+                                                        <th className="px-3 py-2">E-mail da Conta</th>
+                                                        <th className="px-3 py-2">Início do Ciclo</th>
+                                                        <th className="px-3 py-2">Vencimento</th>
+                                                        <th className="px-3 py-2">Status</th>
+                                                        <th className="px-3 py-2 text-right">Custo / Ciclo</th>
+                                                        <th className="px-3 py-2 text-right">Quem Paga</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-gray-100 dark:divide-slate-800">
+                                                    {credentials
+                                                        .filter(c => c.isVisible)
+                                                        .map(c => {
+                                                            const expiry = getAccountExpiryDate(c.publishedAt, c.service);
+                                                            const daysLeft = getAccountDaysRemaining(c.publishedAt, c.service);
+                                                            const cost = getAccountCost(c.service);
+                                                            const split = getCostSplit(c.service);
+                                                            return (
+                                                                <tr key={c.id} className="text-sm">
+                                                                    <td className="px-3 py-2.5 font-bold text-gray-800 dark:text-gray-200">
+                                                                        <span className="px-2 py-0.5 rounded bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300 font-black text-[11px]">
+                                                                            {c.service}
+                                                                        </span>
+                                                                    </td>
+                                                                    <td className="px-3 py-2.5 font-mono text-xs text-gray-700 dark:text-gray-300">
+                                                                        {c.email}
+                                                                    </td>
+                                                                    <td className="px-3 py-2.5 text-xs text-gray-500">
+                                                                        {new Date(c.publishedAt).toLocaleDateString()}
+                                                                    </td>
+                                                                    <td className="px-3 py-2.5 text-xs font-bold text-gray-800 dark:text-white">
+                                                                        {expiry.toLocaleDateString()}
+                                                                    </td>
+                                                                    <td className="px-3 py-2.5 text-xs">
+                                                                        {daysLeft < 0 ? (
+                                                                            <span className="px-2 py-0.5 rounded-lg bg-red-100 text-red-700 font-black text-[10px] uppercase">
+                                                                                Vencida há {Math.abs(daysLeft)}d
+                                                                            </span>
+                                                                        ) : daysLeft <= 5 ? (
+                                                                            <span className="px-2 py-0.5 rounded-lg bg-amber-100 text-amber-800 font-black text-[10px] uppercase">
+                                                                                Vence em {daysLeft}d
+                                                                            </span>
+                                                                        ) : (
+                                                                            <span className="px-2 py-0.5 rounded-lg bg-emerald-100 text-emerald-800 font-black text-[10px] uppercase">
+                                                                                Em dia ({daysLeft}d)
+                                                                            </span>
+                                                                        )}
+                                                                    </td>
+                                                                    <td className="px-3 py-2.5 text-right font-black text-red-600">
+                                                                        {cost > 0 ? `R$ ${formatCurrency(cost)}` : 'R$ 0,00'}
+                                                                    </td>
+                                                                    <td className="px-3 py-2.5 text-right text-xs font-bold text-gray-500">
+                                                                        {cost === 0
+                                                                            ? '-'
+                                                                            : split.orion === 1
+                                                                            ? 'Orion 100%'
+                                                                            : `Orion ${(split.orion * 100).toFixed(0)}% / Iohanna ${(split.iohanna * 100).toFixed(0)}%`}
+                                                                    </td>
+                                                                </tr>
+                                                            );
+                                                        })}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         )}
 
@@ -2806,7 +3184,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                             <span className="font-black text-emerald-600">+ R$ {formatCurrency(financeStats.orion.revenue)}</span>
                                         </div>
                                         <div className="flex justify-between items-center p-3 bg-white/50 dark:bg-slate-800/50 rounded-xl">
-                                            <span className="text-xs font-bold text-gray-500">Custos Contas</span>
+                                            <span className="text-xs font-bold text-gray-500">Custos Contas (IQIYI 100% + Viki 70%)</span>
                                             <span className="font-black text-red-500">- R$ {formatCurrency(financeStats.orion.costs)}</span>
                                         </div>
                                         <div className="flex justify-between items-center p-3 bg-white/50 dark:bg-slate-800/50 rounded-xl">
@@ -2835,7 +3213,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                             <span className="font-black text-emerald-600">+ R$ {formatCurrency(financeStats.iohanna.revenue)}</span>
                                         </div>
                                         <div className="flex justify-between items-center p-3 bg-white/50 dark:bg-slate-800/50 rounded-xl">
-                                            <span className="text-xs font-bold text-gray-500">Custos Contas</span>
+                                            <span className="text-xs font-bold text-gray-500">Custos Contas (Viki 30%)</span>
                                             <span className="font-black text-red-500">- R$ {formatCurrency(financeStats.iohanna.costs)}</span>
                                         </div>
                                         <div className="flex justify-between items-center p-3 bg-white/50 dark:bg-slate-800/50 rounded-xl">
@@ -3309,9 +3687,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                     ) : null}
                                                     <p className="font-bold text-lg text-gray-800 dark:text-white break-all">{c.email}</p>
                                                     <p className="font-mono text-sm text-indigo-400 dark:text-indigo-300 mt-1 bg-indigo-50/50 dark:bg-indigo-900/30 p-2 rounded-lg inline-block">{c.password}</p>
-                                                    <div className="mt-5 pt-4 border-t border-indigo-50 dark:border-slate-800 flex justify-between items-center text-xs font-bold text-gray-400 dark:text-gray-500">
-                                                        <span className="flex items-center gap-1.5"><Calendar size={14} /> {new Date(c.publishedAt).toLocaleDateString()}</span>
-                                                        <span className="flex items-center gap-1.5"><Users size={14} /> {count} ativos</span>
+                                                    <div className="mt-4 pt-3 border-t border-indigo-50 dark:border-slate-800 space-y-2">
+                                                        <div className="flex justify-between items-center text-xs font-bold text-gray-400 dark:text-gray-500">
+                                                            <span className="flex items-center gap-1.5" title="Data em que o ciclo da conta iniciou">
+                                                                <Calendar size={13} /> Início: {new Date(c.publishedAt).toLocaleDateString()}
+                                                            </span>
+                                                            <span className="flex items-center gap-1.5"><Users size={13} /> {count} ativos</span>
+                                                        </div>
+                                                        <div className="flex justify-between items-center text-xs font-bold">
+                                                            <span className={`flex items-center gap-1.5 ${health.daysRemaining < 0 ? 'text-red-500' : health.daysRemaining <= 5 ? 'text-amber-500' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                                                                <Clock size={13} />
+                                                                <span>Vence: {health.expiryDate?.toLocaleDateString()} ({health.daysRemaining >= 0 ? `${health.daysRemaining}d restantes` : `vencida há ${Math.abs(health.daysRemaining)}d`})</span>
+                                                            </span>
+                                                            {getAccountCost(c.service) > 0 && (
+                                                                <span className="text-[10px] font-black uppercase text-indigo-600 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-900/40 px-2 py-0.5 rounded-lg" title={`Custo por ciclo: R$ ${formatCurrency(getAccountCost(c.service))}`}>
+                                                                    R$ {formatCurrency(getAccountCost(c.service))}
+                                                                </span>
+                                                            )}
+                                                        </div>
                                                     </div>
                                                     {isExpanded && (
                                                         <div className="mt-4 bg-indigo-50/60 dark:bg-slate-800/60 rounded-2xl p-4 border border-indigo-100">

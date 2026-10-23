@@ -406,18 +406,17 @@ const calculateHealth = (cred: AppCredential, serviceName: string) => {
 
     const diffTime = today.getTime() - dateCreated.getTime();
     const daysPassed = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+    const cycleDays = getAccountCycleDays(serviceName);
+    const daysRemaining = cycleDays - daysPassed;
 
     let alertMsg: string | null = null;
-    const sName = serviceName.toLowerCase();
-
-    if (sName.includes('viki')) {
-        const cycleDays = getAccountCycleDays(serviceName);
-        if (daysPassed >= cycleDays) alertMsg = `Conta expirada (${cycleDays} dias).`;
-    } else if (sName.includes('kocowa')) {
-        if (daysPassed >= 25) alertMsg = 'Proximo do vencimento.';
+    if (daysRemaining < 0) {
+        alertMsg = `Conta expirada (${cycleDays} dias).`;
+    } else if (daysRemaining <= 5) {
+        alertMsg = daysRemaining === 0 ? 'Conta vence hoje.' : `Próximo do vencimento (${daysRemaining} dias restantes).`;
     }
 
-    return { alert: alertMsg, daysActive: daysPassed };
+    return { alert: alertMsg, daysActive: daysPassed, daysRemaining, cycleDays };
 };
 
 export const getClientsUsingCredential = async (credential: AppCredential, clients: ClientDBRow[]): Promise<ClientDBRow[]> => {
