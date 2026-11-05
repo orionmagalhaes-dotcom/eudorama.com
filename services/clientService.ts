@@ -306,6 +306,16 @@ export const saveClientToDB = async (client: Partial<ClientDBRow>): Promise<{ su
       delete payload.observation;
     }
 
+    if (payload.deleted) {
+      const currentProgress = payload.game_progress || oldData?.game_progress || (oldData as any)?.gameProgress || {};
+      const deletedAt = currentProgress._deleted_at || (oldData?.game_progress as any)?._deleted_at || new Date().toISOString();
+      payload.game_progress = { ...currentProgress, _deleted_at: deletedAt };
+    } else if (payload.deleted === false && oldData?.deleted) {
+      const currentProgress = { ...(payload.game_progress || oldData?.game_progress || {}) };
+      delete (currentProgress as any)._deleted_at;
+      payload.game_progress = currentProgress;
+    }
+
     if (!payload.id || payload.id === '') delete payload.id;
     if (hasSubscriptionsInPayload && !Array.isArray(payload.subscriptions)) {
       payload.subscriptions = normalizeClientSubscriptionsForUpdate(

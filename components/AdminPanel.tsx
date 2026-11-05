@@ -36,7 +36,7 @@ import {
     ShieldCheck, UsersRound, ArrowUpRight, ArrowDownRight, MessageCircle,
     Sun, Moon, Fingerprint, Copy, Check, Zap, BarChart3, TrendingUp, Wallet, PieChart, Undo2, TrendingDown, Settings2,
     Activity, Banknote, CreditCard, Eraser, ListFilter, ArrowUpDown, Wifi, Filter, ChevronRight, History, Tv2,
-    UserX, Heart
+    UserX, Heart, ChevronLeft, Send, CalendarCheck, Sparkles, Layers
 } from 'lucide-react';
 
 // --- PROPS INTERFACE ---
@@ -602,6 +602,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const [promoMessageTemplate, setPromoMessageTemplate] = useState(() => {
         return localStorage.getItem('admin_promo_message_template') || DEFAULT_PROMO_MESSAGE_TEMPLATE;
     });
+    const [promoSelectedBlock, setPromoSelectedBlock] = useState<number>(1);
+    const [promoFilterStatus, setPromoFilterStatus] = useState<'all' | 'pending' | 'sent'>('all');
+    const [promoSearchQuery, setPromoSearchQuery] = useState<string>('');
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     // States para a consulta otimizada de vencimentos
@@ -779,6 +782,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         console.log(`[CLEANUP] Movendo ${client.client_name} para lixeira (Sem assinaturas).`);
                         const nextProgress = {
                             ...(client.game_progress || {}),
+                            _deleted_at: client.game_progress?._deleted_at || new Date().toISOString(),
                             _expired_at: lastExpiryMs > 0 ? new Date(lastExpiryMs).toISOString() : new Date().toISOString(),
                             _last_services: lastServices
                         };
@@ -1672,6 +1676,58 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         }
     };
 
+    const getClientDeletionDate = (client: ClientDBRow): Date => {
+        if (client.game_progress?._deleted_at) {
+            const parsed = new Date(client.game_progress._deleted_at);
+            if (!isNaN(parsed.getTime())) return parsed;
+        }
+
+        if (historyLogs && historyLogs.length > 0) {
+            const cleanPhone = (client.phone_number || '').replace(/\D/g, '');
+            const clientNameLower = (client.client_name || '').trim().toLowerCase();
+            const matchedLog = historyLogs.find(log => {
+                if (log.action !== 'Cliente Removido') return false;
+                const det = (log.details || '').toLowerCase();
+                if (cleanPhone && cleanPhone.length >= 8 && det.includes(cleanPhone)) return true;
+                if (clientNameLower && clientNameLower.length >= 3 && det.includes(clientNameLower)) return true;
+                return false;
+            });
+            if (matchedLog?.created_at) {
+                const parsed = new Date(matchedLog.created_at);
+                if (!isNaN(parsed.getTime())) return parsed;
+            }
+        }
+
+        if (client.game_progress?._expired_at) {
+            const parsed = new Date(client.game_progress._expired_at);
+            if (!isNaN(parsed.getTime())) return parsed;
+        }
+
+        const expDate = getExpirationDate(client);
+        if (expDate && !isNaN(expDate.getTime())) {
+            return expDate;
+        }
+
+        if (client.purchase_date) {
+            const parsed = new Date(client.purchase_date);
+            if (!isNaN(parsed.getTime())) return parsed;
+        }
+        if (client.created_at) {
+            const parsed = new Date(client.created_at);
+            if (!isNaN(parsed.getTime())) return parsed;
+        }
+
+        return new Date();
+    };
+
+    const formatDeletionDateDisplay = (date: Date): string => {
+        try {
+            return `${date.toLocaleDateString()} às ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+        } catch {
+            return date.toLocaleDateString();
+        }
+    };
+
     const getDaysSinceExpiration = (expiryDate: Date) => {
         const now = new Date();
         now.setHours(0, 0, 0, 0);
@@ -1702,17 +1758,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         client: ClientDBRow,
         services: string[],
         expiryDate: Date,
-        daysSince: number
+        daysSince: number,
+        deletionDate?: Date,
+        daysSinceDeletion?: number
     ) => {
+        const resolvedDeletionDate = deletionDate || getClientDeletionDate(client);
+        const resolvedDaysDeletion = daysSinceDeletion !== undefined ? daysSinceDeletion : getDaysSinceExpiration(resolvedDeletionDate);
+
         const replacements: Record<string, string> = {
             nome: client.client_name || 'Dorameira',
             servicos: services.join(', '),
             data_vencimento: expiryDate.toLocaleDateString(),
             tempo_sem_renovar: formatDurationLapsed(daysSince),
+            data_exclusao: resolvedDeletionDate.toLocaleDateString(),
+            tempo_excluido: formatDurationLapsed(resolvedDaysDeletion),
             whatsapp: client.phone_number
         };
 
-        return promoMessageTemplate.replace(/\{(nome|servicos|data_vencimento|tempo_sem_renovar|whatsapp)\}/g, (_, key: string) => {
+        return promoMessageTemplate.replace(/\{(nome|servicos|data_vencimento|tempo_sem_renovar|data_exclusao|tempo_excluido|whatsapp)\}/g, (_, key: string) => {
             return replacements[key] || '';
         });
     };
@@ -1730,20 +1793,85 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         return ['Viki Pass'];
     };
 
-    const naoRenovaramList = useMemo(() => {
+    const PROMO_BLOCK_SIZE = 5;
+
+    const promoDeletedClientsList = useMemo(() => {
         const deleted = clients.filter(c => c.deleted);
         return deleted.map(client => {
+            const deletionDate = getClientDeletionDate(client);
+            const daysSinceDeletion = getDaysSinceExpiration(deletionDate);
             const expiryDate = getExpirationDate(client);
-            const daysSince = getDaysSinceExpiration(expiryDate);
+            const daysSinceExpiry = getDaysSinceExpiration(expiryDate);
             const services = getLastServices(client);
+            const promoSentAt = getPromotionSentAt(client);
+            const hasPromoSent = !!promoSentAt;
+
             return {
                 client,
+                deletionDate,
+                daysSinceDeletion,
                 expiryDate,
-                daysSince,
-                services
+                daysSinceExpiry,
+                services,
+                promoSentAt,
+                hasPromoSent
             };
-        }).sort((a, b) => a.expiryDate.getTime() - b.expiryDate.getTime()); // 'Não renovações mais antigas' (longest lapsed / earliest expiry date first)
-    }, [clients]);
+        }).sort((a, b) => a.deletionDate.getTime() - b.deletionDate.getTime()); // 'Clientes que já foram excluídos há mais tempo têm prioridade'
+    }, [clients, historyLogs]);
+
+    const promoBlocks = useMemo(() => {
+        const blocks: Array<{
+            blockNumber: number;
+            blockIndex: number;
+            items: typeof promoDeletedClientsList;
+            startIndex: number;
+            endIndex: number;
+            totalItems: number;
+            sentCount: number;
+            pendingCount: number;
+            isCompleted: boolean;
+            hasPending: boolean;
+        }> = [];
+        const total = promoDeletedClientsList.length;
+        for (let i = 0; i < total; i += PROMO_BLOCK_SIZE) {
+            const slice = promoDeletedClientsList.slice(i, i + PROMO_BLOCK_SIZE);
+            const sentCount = slice.filter(it => it.hasPromoSent).length;
+            const blockNum = Math.floor(i / PROMO_BLOCK_SIZE) + 1;
+            blocks.push({
+                blockNumber: blockNum,
+                blockIndex: Math.floor(i / PROMO_BLOCK_SIZE),
+                items: slice,
+                startIndex: i + 1,
+                endIndex: Math.min(i + PROMO_BLOCK_SIZE, total),
+                totalItems: slice.length,
+                sentCount,
+                pendingCount: slice.length - sentCount,
+                isCompleted: sentCount === slice.length && slice.length > 0,
+                hasPending: sentCount < slice.length
+            });
+        }
+        return blocks;
+    }, [promoDeletedClientsList]);
+
+    const promoStats = useMemo(() => {
+        const totalClients = promoDeletedClientsList.length;
+        const totalSent = promoDeletedClientsList.filter(c => c.hasPromoSent).length;
+        const totalPending = totalClients - totalSent;
+        const totalBlocks = promoBlocks.length;
+        const completedBlocks = promoBlocks.filter(b => b.isCompleted).length;
+        const firstPendingBlock = promoBlocks.find(b => b.hasPending)?.blockNumber || 1;
+
+        return {
+            totalClients,
+            totalSent,
+            totalPending,
+            totalBlocks,
+            completedBlocks,
+            firstPendingBlock
+        };
+    }, [promoDeletedClientsList, promoBlocks]);
+
+    const naoRenovaramList = promoDeletedClientsList;
 
     const loginSearchResults = useMemo(() => {
         if (!loginSearchQuery || loginSearchQuery.length < 2) return [];
@@ -2272,7 +2400,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const handleSoftDeleteClient = async (client: ClientDBRow) => {
         if (!confirm(`Mover ${client.client_name || client.phone_number} para a lixeira?`)) return;
         setLoading(true);
-        const { success, msg } = await saveClientToDB({ ...client, deleted: true });
+        const nextProgress = {
+            ...(client.game_progress || {}),
+            _deleted_at: client.game_progress?._deleted_at || new Date().toISOString()
+        };
+        const { success, msg } = await saveClientToDB({ ...client, deleted: true, game_progress: nextProgress });
         if (success) {
             loadData();
         } else {
@@ -2516,10 +2648,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         client: ClientDBRow,
         services: string[],
         expiryDate: Date,
-        daysSince: number
+        daysSince: number,
+        deletionDate?: Date,
+        daysSinceDeletion?: number
     ) => {
         const cleanPhone = client.phone_number.replace(/\D/g, '');
-        const message = buildPromotionMessage(client, services, expiryDate, daysSince);
+        const message = buildPromotionMessage(client, services, expiryDate, daysSince, deletionDate, daysSinceDeletion);
         window.open(`https://wa.me/55${cleanPhone}?text=${encodeURIComponent(message)}`, '_blank');
 
         if (!client.id || !client.phone_number) return;
@@ -2543,6 +2677,31 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             phone_number: client.phone_number,
             is_contacted: true,
             game_progress: nextProgress
+        });
+    };
+
+    const togglePromotionSentStatus = async (client: ClientDBRow, forceSent?: boolean) => {
+        if (!client.id || !client.phone_number) return;
+        const currentlySent = !!getPromotionSentAt(client);
+        const targetSent = forceSent !== undefined ? forceSent : !currentlySent;
+
+        const currentProgress = { ...(client.game_progress || {}) };
+        if (targetSent) {
+            currentProgress._promo_whatsapp_last_at = new Date().toISOString();
+        } else {
+            delete currentProgress._promo_whatsapp_last_at;
+            delete currentProgress._promo_whatsapp_message;
+        }
+
+        setClients(prev => prev.map(c => c.id === client.id ? {
+            ...c,
+            game_progress: currentProgress
+        } : c));
+
+        await saveClientToDB({
+            id: client.id,
+            phone_number: client.phone_number,
+            game_progress: currentProgress
         });
     };
 
@@ -2577,7 +2736,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         { id: 'trash', icon: Trash2, label: 'Lixeira' },
                         { id: 'history', icon: History, label: 'Histórico' },
                         { id: 'charge_whatsapp', icon: MessageCircle, label: 'Cobrança WhatsApp' },
-                        { id: 'nao_renovaram', icon: UserX, label: 'Não Renovaram' },
+                        { id: 'nao_renovaram', icon: Sparkles, label: 'Promoção Excluídos' },
                         { id: 'danger', icon: AlertTriangle, label: 'Segurança' }
                     ].map(tab => (
                         <button key={tab.id} onClick={() => setActiveTab(tab.id as any)} className={`flex-1 min-w-fit py-3 px-5 rounded-xl text-[10px] font-black uppercase transition-all flex flex-col sm:flex-row items-center justify-center gap-1.5 ${activeTab === tab.id ? 'bg-indigo-600 text-white shadow-md' : 'text-indigo-400 hover:bg-indigo-50 dark:hover:bg-slate-800'}`}>
@@ -3671,6 +3830,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                     <Phone size={12} /> {client.phone_number}
                                                     <span className="bg-red-600 text-white px-2 py-0.5 rounded-md text-[9px] uppercase tracking-widest ml-2">Removido</span>
                                                 </p>
+                                                {(() => {
+                                                    const delDate = getClientDeletionDate(client);
+                                                    const delDays = getDaysSinceExpiration(delDate);
+                                                    return (
+                                                        <p className="mt-1.5 text-[10px] font-black text-red-500 dark:text-red-400 flex items-center gap-1">
+                                                            <Clock size={11} /> Excluído em: {formatDeletionDateDisplay(delDate)} ({formatDurationLapsed(delDays)})
+                                                        </p>
+                                                    );
+                                                })()}
                                             </div>
                                             <div className="flex gap-2">
                                                 <button onClick={() => { setClientForm({ ...client, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months) }); setClientModalOpen(true); }} className="px-4 py-3 rounded-xl bg-purple-100 text-purple-700 font-black text-xs uppercase hover:bg-purple-200 transition-all flex items-center gap-2" title="Ver Detalhes">
@@ -4343,110 +4511,440 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                     <ChargeWhatsappAutomationPanel clients={clients} />
                 )}
 
-                {activeTab === 'nao_renovaram' && (
-                    <div className="space-y-6 animate-fade-in pb-32">
-                        <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-indigo-100 dark:border-slate-800 shadow-sm space-y-4">
-                            <div className="flex items-center gap-3">
-                                <div className="p-3 bg-red-50 text-red-500 rounded-2xl"><UserX size={24} /></div>
-                                <div>
-                                    <h3 className="text-xl font-black text-gray-900 dark:text-white leading-none">Clientes que não Renovaram</h3>
-                                    <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest mt-1">Clientes inativos ordenados por não renovações mais antigas</p>
+                {activeTab === 'nao_renovaram' && (() => {
+                    const totalBlocks = promoBlocks.length;
+                    const safeSelectedBlock = Math.max(1, Math.min(promoSelectedBlock, totalBlocks || 1));
+                    const currentBlock = promoBlocks.find(b => b.blockNumber === safeSelectedBlock) || promoBlocks[0];
+
+                    let displayItems = currentBlock ? currentBlock.items : [];
+                    const isSearching = Boolean(promoSearchQuery.trim());
+
+                    if (isSearching) {
+                        const q = promoSearchQuery.toLowerCase().trim();
+                        displayItems = promoDeletedClientsList.filter(item =>
+                            (item.client.client_name || '').toLowerCase().includes(q) ||
+                            (item.client.phone_number || '').includes(q)
+                        );
+                    }
+
+                    if (promoFilterStatus === 'pending') {
+                        displayItems = displayItems.filter(item => !item.hasPromoSent);
+                    } else if (promoFilterStatus === 'sent') {
+                        displayItems = displayItems.filter(item => item.hasPromoSent);
+                    }
+
+                    return (
+                        <div className="space-y-6 animate-fade-in pb-32">
+                            {/* CABEÇALHO DA ABA */}
+                            <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-indigo-100 dark:border-slate-800 shadow-sm space-y-6">
+                                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                                    <div className="flex items-center gap-3">
+                                        <div className="p-3 bg-gradient-to-br from-indigo-500 to-purple-600 text-white rounded-2xl shadow-md shadow-indigo-200 dark:shadow-none">
+                                            <Sparkles size={26} />
+                                        </div>
+                                        <div>
+                                            <h3 className="text-xl font-black text-gray-900 dark:text-white leading-none">
+                                                Promoções para Clientes Excluídos
+                                            </h3>
+                                            <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest mt-1">
+                                                Fila de prioridade por tempo de exclusão • Blocos diários de 5 clientes
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    {/* BOTÃO ATALHO BLOCO DO DIA */}
+                                    {promoStats.firstPendingBlock > 0 && promoStats.totalPending > 0 ? (
+                                        <button
+                                            onClick={() => {
+                                                setPromoSelectedBlock(promoStats.firstPendingBlock);
+                                                setPromoSearchQuery('');
+                                            }}
+                                            className="px-4 py-2.5 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white text-xs font-black uppercase tracking-wider shadow-md shadow-emerald-200 dark:shadow-none transition-all flex items-center gap-2 self-start sm:self-auto active:scale-95"
+                                        >
+                                            <Send size={15} /> Ir p/ Bloco do Dia (#{promoStats.firstPendingBlock})
+                                        </button>
+                                    ) : (
+                                        <span className="px-3.5 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 text-xs font-black uppercase tracking-wider flex items-center gap-1.5 border border-emerald-200 dark:border-emerald-800">
+                                            <CheckCircle2 size={16} /> Todos Contatados!
+                                        </span>
+                                    )}
+                                </div>
+
+                                {/* CARDS DE ESTATÍSTICAS */}
+                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2">
+                                    <div className="p-4 rounded-2xl bg-indigo-50/60 dark:bg-slate-800/60 border border-indigo-100 dark:border-slate-700">
+                                        <p className="text-[10px] font-black uppercase text-indigo-400">Total Excluídos</p>
+                                        <p className="text-2xl font-black text-indigo-900 dark:text-white mt-1">
+                                            {promoStats.totalClients}
+                                        </p>
+                                    </div>
+                                    <div className="p-4 rounded-2xl bg-purple-50/60 dark:bg-purple-950/20 border border-purple-100 dark:border-purple-900/30">
+                                        <p className="text-[10px] font-black uppercase text-purple-500">Blocos de 5</p>
+                                        <p className="text-2xl font-black text-purple-700 dark:text-purple-300 mt-1">
+                                            {promoStats.totalBlocks} <span className="text-xs font-bold opacity-70">blocos</span>
+                                        </p>
+                                    </div>
+                                    <div className="p-4 rounded-2xl bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900/30">
+                                        <p className="text-[10px] font-black uppercase text-emerald-600 dark:text-emerald-400">Mensagens Enviadas</p>
+                                        <p className="text-2xl font-black text-emerald-600 dark:text-emerald-400 mt-1">
+                                            {promoStats.totalSent} <span className="text-xs font-bold opacity-70">({promoStats.completedBlocks} blocos 100%)</span>
+                                        </p>
+                                    </div>
+                                    <div className="p-4 rounded-2xl bg-amber-50/60 dark:bg-amber-950/20 border border-amber-100 dark:border-amber-900/30">
+                                        <p className="text-[10px] font-black uppercase text-amber-600 dark:text-amber-400">Pendentes de Envio</p>
+                                        <p className="text-2xl font-black text-amber-600 dark:text-amber-400 mt-1">
+                                            {promoStats.totalPending}
+                                        </p>
+                                    </div>
                                 </div>
                             </div>
-                        </div>
 
-                        <div className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] border border-indigo-100 dark:border-slate-800 shadow-sm space-y-3">
-                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                                <label className="text-[10px] font-black uppercase tracking-widest text-indigo-400 ml-1">Mensagem promocional do WhatsApp</label>
-                                <button
-                                    onClick={() => setPromoMessageTemplate(DEFAULT_PROMO_MESSAGE_TEMPLATE)}
-                                    className="self-start px-4 py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-indigo-600 dark:text-indigo-300 text-[10px] font-black uppercase tracking-widest transition-all"
-                                >
-                                    Restaurar padrao
-                                </button>
+                            {/* CONFIGURAÇÃO DA MENSAGEM PROMOCIONAL */}
+                            <div className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] border border-indigo-100 dark:border-slate-800 shadow-sm space-y-3">
+                                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                                    <label className="text-[10px] font-black uppercase tracking-widest text-indigo-400 ml-1">
+                                        Template da Mensagem Promocional do WhatsApp
+                                    </label>
+                                    <button
+                                        onClick={() => setPromoMessageTemplate(DEFAULT_PROMO_MESSAGE_TEMPLATE)}
+                                        className="self-start px-4 py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-indigo-600 dark:text-indigo-300 text-[10px] font-black uppercase tracking-widest transition-all"
+                                    >
+                                        Restaurar padrão
+                                    </button>
+                                </div>
+                                <textarea
+                                    className="w-full min-h-[110px] bg-indigo-50 dark:bg-slate-800 p-4 rounded-2xl font-bold text-sm outline-none border-2 border-transparent focus:border-indigo-300 dark:focus:border-indigo-600 resize-y leading-relaxed text-gray-800 dark:text-gray-100"
+                                    value={promoMessageTemplate}
+                                    onChange={e => setPromoMessageTemplate(e.target.value)}
+                                    placeholder="Digite a mensagem promocional..."
+                                />
+                                <div className="text-[10px] font-bold text-gray-400 flex flex-wrap gap-1 items-center">
+                                    <span>Variáveis suportadas:</span>
+                                    {['{nome}', '{servicos}', '{data_vencimento}', '{data_exclusao}', '{tempo_sem_renovar}', '{tempo_excluido}', '{whatsapp}'].map(tag => (
+                                        <code key={tag} className="bg-indigo-50 dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 px-1.5 py-0.5 rounded text-[9px] font-black">
+                                            {tag}
+                                        </code>
+                                    ))}
+                                </div>
                             </div>
-                            <textarea
-                                className="w-full min-h-[130px] bg-indigo-50 dark:bg-slate-800 p-4 rounded-2xl font-bold text-sm outline-none border-2 border-transparent focus:border-indigo-300 dark:focus:border-indigo-600 resize-y leading-relaxed"
-                                value={promoMessageTemplate}
-                                onChange={e => setPromoMessageTemplate(e.target.value)}
-                                placeholder="Digite a mensagem promocional..."
-                            />
-                            <p className="text-[10px] font-bold text-gray-400">
-                                Variaveis: {'{nome}'}, {'{servicos}'}, {'{data_vencimento}'}, {'{tempo_sem_renovar}'}, {'{whatsapp}'}.
-                            </p>
-                        </div>
 
-                        {naoRenovaramList.length === 0 ? (
-                            <div className="text-center py-20 bg-gray-50 dark:bg-slate-900 rounded-[2.5rem] border-2 border-dashed border-gray-200 dark:border-slate-800">
-                                <UserX className="w-16 h-16 text-gray-200 dark:text-slate-800 mx-auto mb-4" />
-                                <p className="text-gray-400 font-bold uppercase tracking-widest text-sm">Nenhum cliente inativo</p>
+                            {/* BARRA DE NAVEGAÇÃO DOS BLOCOS E PESQUISA */}
+                            <div className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] border border-indigo-100 dark:border-slate-800 shadow-sm space-y-4">
+                                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                                    {/* Paginação Anterior / Próximo */}
+                                    <div className="flex items-center gap-3">
+                                        <button
+                                            disabled={safeSelectedBlock <= 1}
+                                            onClick={() => setPromoSelectedBlock(prev => Math.max(1, prev - 1))}
+                                            className="p-2.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-indigo-600 dark:text-indigo-300 disabled:opacity-40 disabled:pointer-events-none transition-all flex items-center gap-1 font-black text-xs uppercase"
+                                            title="Bloco Anterior"
+                                        >
+                                            <ChevronLeft size={18} /> Anterior
+                                        </button>
+
+                                        <div className="text-center px-2">
+                                            <div className="text-sm font-black text-gray-900 dark:text-white leading-tight">
+                                                Bloco {currentBlock ? currentBlock.blockNumber : 1} de {totalBlocks}
+                                            </div>
+                                            {currentBlock && (
+                                                <div className="text-[10px] font-bold text-indigo-400 mt-0.5">
+                                                    Clientes {currentBlock.startIndex} a {currentBlock.endIndex} (Prioridade por tempo de exclusão)
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        <button
+                                            disabled={safeSelectedBlock >= totalBlocks}
+                                            onClick={() => setPromoSelectedBlock(prev => Math.min(totalBlocks, prev + 1))}
+                                            className="p-2.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-indigo-600 dark:text-indigo-300 disabled:opacity-40 disabled:pointer-events-none transition-all flex items-center gap-1 font-black text-xs uppercase"
+                                            title="Próximo Bloco"
+                                        >
+                                            Próximo <ChevronRight size={18} />
+                                        </button>
+                                    </div>
+
+                                    {/* Filtros de status do bloco */}
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <button
+                                            onClick={() => setPromoFilterStatus('all')}
+                                            className={`px-3 py-1.5 rounded-xl text-xs font-black uppercase transition-all ${
+                                                promoFilterStatus === 'all'
+                                                    ? 'bg-indigo-600 text-white shadow-md'
+                                                    : 'bg-indigo-50 text-indigo-600 dark:bg-slate-800 dark:text-indigo-300 hover:bg-indigo-100'
+                                            }`}
+                                        >
+                                            Todos
+                                        </button>
+                                        <button
+                                            onClick={() => setPromoFilterStatus('pending')}
+                                            className={`px-3 py-1.5 rounded-xl text-xs font-black uppercase transition-all flex items-center gap-1 ${
+                                                promoFilterStatus === 'pending'
+                                                    ? 'bg-amber-500 text-white shadow-md'
+                                                    : 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400 hover:bg-amber-100'
+                                            }`}
+                                        >
+                                            <Clock size={12} /> Pendentes
+                                        </button>
+                                        <button
+                                            onClick={() => setPromoFilterStatus('sent')}
+                                            className={`px-3 py-1.5 rounded-xl text-xs font-black uppercase transition-all flex items-center gap-1 ${
+                                                promoFilterStatus === 'sent'
+                                                    ? 'bg-emerald-600 text-white shadow-md'
+                                                    : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400 hover:bg-emerald-100'
+                                            }`}
+                                        >
+                                            <CheckCircle2 size={12} /> Já Enviados
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Busca rápida */}
+                                <div className="flex items-center gap-3 bg-indigo-50 dark:bg-slate-800 px-4 py-3 rounded-2xl border border-indigo-100 dark:border-slate-700">
+                                    <Search className="text-indigo-400" size={18} />
+                                    <input
+                                        className="bg-transparent outline-none text-xs font-bold w-full text-indigo-900 dark:text-white"
+                                        placeholder="Pesquisar cliente excluído por nome ou WhatsApp..."
+                                        value={promoSearchQuery}
+                                        onChange={e => setPromoSearchQuery(e.target.value)}
+                                    />
+                                    {promoSearchQuery && (
+                                        <button onClick={() => setPromoSearchQuery('')} className="text-indigo-400 hover:text-indigo-600">
+                                            <X size={16} />
+                                        </button>
+                                    )}
+                                </div>
+
+                                {/* Carrossel de Pílulas de Blocos */}
+                                <div className="pt-2">
+                                    <p className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-2">
+                                        Navegar pelos Blocos de 5 Clientes ({totalBlocks} blocos):
+                                    </p>
+                                    <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-thin">
+                                        {promoBlocks.map(b => {
+                                            const isCurrent = b.blockNumber === safeSelectedBlock && !isSearching;
+                                            return (
+                                                <button
+                                                    key={b.blockNumber}
+                                                    onClick={() => {
+                                                        setPromoSelectedBlock(b.blockNumber);
+                                                        setPromoSearchQuery('');
+                                                    }}
+                                                    className={`shrink-0 px-3.5 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 border ${
+                                                        isCurrent
+                                                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-md scale-105'
+                                                            : b.isCompleted
+                                                            ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100'
+                                                            : 'bg-indigo-50/70 dark:bg-slate-800 text-indigo-700 dark:text-indigo-300 border-indigo-100 dark:border-slate-700 hover:bg-indigo-100'
+                                                    }`}
+                                                >
+                                                    <span>Bloco {b.blockNumber}</span>
+                                                    {b.isCompleted ? (
+                                                        <span className="bg-emerald-600 text-white text-[9px] px-1.5 py-0.2 rounded-full font-bold flex items-center gap-0.5">
+                                                            ✓ {b.sentCount}/{b.totalItems}
+                                                        </span>
+                                                    ) : (
+                                                        <span className={`text-[9px] px-1.5 py-0.2 rounded-full font-bold ${
+                                                            isCurrent ? 'bg-indigo-700 text-white' : 'bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300'
+                                                        }`}>
+                                                            {b.sentCount}/{b.totalItems}
+                                                        </span>
+                                                    )}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
                             </div>
-                        ) : (
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                {naoRenovaramList.map(({ client, expiryDate, daysSince, services }) => {
-                                    const promoSentAt = getPromotionSentAt(client);
-                                    
-                                    return (
-                                        <div key={client.id} className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-red-50 dark:border-slate-800 flex flex-col hover:border-indigo-200 dark:hover:border-slate-700 transition-all animate-slide-up">
-                                            <div className="flex justify-between items-start mb-4">
-                                                <div className="min-w-0">
-                                                    <h3 className="font-black text-gray-900 dark:text-white text-lg truncate leading-tight">{client.client_name || 'Sem Nome'}</h3>
-                                                    <p className="text-xs font-bold text-indigo-400 mt-1 flex items-center gap-1.5">
-                                                        <Phone size={12} /> {client.phone_number}
-                                                    </p>
-                                                    <div className="mt-2 flex flex-wrap gap-1.5">
+
+                            {/* LISTA DOS CLIENTES DO BLOCO SELECIONADO */}
+                            {displayItems.length === 0 ? (
+                                <div className="text-center py-16 bg-gray-50 dark:bg-slate-900 rounded-[2.5rem] border-2 border-dashed border-gray-200 dark:border-slate-800">
+                                    <Sparkles className="w-14 h-14 text-gray-300 dark:text-slate-700 mx-auto mb-3" />
+                                    <p className="text-gray-400 font-bold uppercase tracking-widest text-sm">
+                                        Nenhum cliente encontrado com os filtros selecionados
+                                    </p>
+                                </div>
+                            ) : (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    {displayItems.map((item, idxInDisplay) => {
+                                        const { client, deletionDate, daysSinceDeletion, expiryDate, daysSinceExpiry, services, promoSentAt, hasPromoSent } = item;
+                                        const overallPriority = promoDeletedClientsList.findIndex(x => x.client.id === client.id) + 1;
+
+                                        return (
+                                            <div
+                                                key={client.id}
+                                                className={`bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border transition-all flex flex-col justify-between animate-slide-up ${
+                                                    hasPromoSent
+                                                        ? 'border-emerald-200 dark:border-emerald-900/40 bg-emerald-50/10 dark:bg-emerald-950/10'
+                                                        : 'border-indigo-100 dark:border-slate-800 hover:border-indigo-300 dark:hover:border-slate-700'
+                                                }`}
+                                            >
+                                                <div>
+                                                    {/* TOPO: PRIORIDADE E AÇÕES RÁPIDAS */}
+                                                    <div className="flex justify-between items-start mb-3 gap-2">
+                                                        <div className="min-w-0">
+                                                            <div className="flex items-center gap-1.5 mb-1">
+                                                                <span className="bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider">
+                                                                    #{overallPriority} da Fila Geral
+                                                                </span>
+                                                                {currentBlock && !isSearching && (
+                                                                    <span className="bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider">
+                                                                        Item #{idxInDisplay + 1} do Bloco
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                            <h3 className="font-black text-gray-900 dark:text-white text-lg truncate leading-tight">
+                                                                {client.client_name || 'Sem Nome'}
+                                                            </h3>
+                                                            <p className="text-xs font-bold text-indigo-500 dark:text-indigo-400 mt-1 flex items-center gap-1.5">
+                                                                <Phone size={13} /> {client.phone_number}
+                                                            </p>
+                                                        </div>
+
+                                                        <div className="flex gap-1.5">
+                                                            <button
+                                                                onClick={() => {
+                                                                    setClientForm({
+                                                                        ...client,
+                                                                        subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months)
+                                                                    });
+                                                                    setClientModalOpen(true);
+                                                                }}
+                                                                className="p-2.5 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-600 transition-all"
+                                                                title="Ver/Editar Perfil"
+                                                            >
+                                                                <Eye size={16} />
+                                                            </button>
+                                                            <button
+                                                                onClick={() => handleRestoreClient(client)}
+                                                                className="p-2.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-600 transition-all"
+                                                                title="Restaurar da lixeira"
+                                                            >
+                                                                <Undo2 size={16} />
+                                                            </button>
+                                                        </div>
+                                                    </div>
+
+                                                    {/* SERVIÇOS ANTERIORES */}
+                                                    <div className="flex flex-wrap gap-1.5 mb-3">
                                                         {services.map((s, idx) => (
-                                                            <span key={idx} className="bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 px-2 py-0.5 rounded-md text-[9px] uppercase tracking-widest font-black">
+                                                            <span
+                                                                key={idx}
+                                                                className="bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 px-2.5 py-0.5 rounded-md text-[9px] uppercase tracking-widest font-black"
+                                                            >
                                                                 {s}
                                                             </span>
                                                         ))}
                                                     </div>
-                                                </div>
-                                                <div className="flex gap-2">
-                                                    <button onClick={() => { setClientForm({ ...client, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months) }); setClientModalOpen(true); }} className="p-2.5 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-600 transition-all" title="Ver/Editar Detalhes">
-                                                        <Eye size={16} />
-                                                    </button>
-                                                    <button onClick={() => handleRestoreClient(client)} className="p-2.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-600 transition-all" title="Restaurar da lixeira">
-                                                        <Undo2 size={16} />
-                                                    </button>
-                                                </div>
-                                            </div>
 
-                                            <div className="bg-red-50/50 dark:bg-red-950/20 border border-red-100 dark:border-red-900/30 rounded-2xl p-4 flex justify-between items-center gap-2 mb-4">
-                                                <div className="flex items-center gap-2 text-red-600 dark:text-red-400">
-                                                    <Clock size={16} />
-                                                    <span className="text-xs font-black uppercase tracking-wide">Sem renovar</span>
-                                                </div>
-                                                <span className="text-xs font-black text-red-700 dark:text-red-400 bg-red-100 dark:bg-red-900/30 px-3 py-1 rounded-lg">
-                                                    {formatDurationLapsed(daysSince)}
-                                                </span>
-                                            </div>
-
-                                            {promoSentAt && (
-                                                <div className="bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900/30 rounded-2xl p-3 flex items-center justify-between gap-2 mb-4">
-                                                    <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400">
-                                                        <CheckCircle2 size={15} />
-                                                        <span className="text-[10px] font-black uppercase tracking-wide">Promocao enviada</span>
+                                                    {/* DESTAQUE: DATA DE EXCLUSÃO DO CLIENTE */}
+                                                    <div className="p-3.5 bg-red-50/70 dark:bg-red-950/20 border border-red-100 dark:border-red-900/30 rounded-2xl mb-3 space-y-1">
+                                                        <div className="flex items-center justify-between text-red-600 dark:text-red-400 text-xs font-black uppercase tracking-wide">
+                                                            <span className="flex items-center gap-1.5">
+                                                                <Calendar size={14} /> Data de Exclusão:
+                                                            </span>
+                                                            <span className="bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 px-2 py-0.5 rounded-md text-[10px]">
+                                                                {formatDurationLapsed(daysSinceDeletion)}
+                                                            </span>
+                                                        </div>
+                                                        <p className="text-xs font-bold text-gray-800 dark:text-gray-200">
+                                                            {formatDeletionDateDisplay(deletionDate)}
+                                                        </p>
                                                     </div>
-                                                    <span className="text-[10px] font-black text-emerald-700 dark:text-emerald-300">
-                                                        {new Date(promoSentAt).toLocaleString()}
-                                                    </span>
-                                                </div>
-                                            )}
 
-                                            <button
-                                                onClick={() => { void sendPromotionWhatsAppMessage(client, services, expiryDate, daysSince); }}
-                                                className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-black py-3 px-4 rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-emerald-100 dark:shadow-none transition-all text-xs uppercase"
-                                            >
-                                                <MessageCircle size={16} /> Enviar Mensagem Promo
-                                            </button>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        )}
-                    </div>
-                )}
+                                                    {/* STATUS VISUAL SE JÁ ENVIAMOS MENSAGEM */}
+                                                    {hasPromoSent ? (
+                                                        <div className="p-3.5 bg-emerald-50 dark:bg-emerald-950/30 border-2 border-emerald-200 dark:border-emerald-800/40 rounded-2xl mb-4 space-y-1">
+                                                            <div className="flex items-center justify-between">
+                                                                <span className="text-xs font-black uppercase tracking-wide text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">
+                                                                    <CheckCircle2 size={15} /> Promoção Já Enviada
+                                                                </span>
+                                                                <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
+                                                                    {new Date(promoSentAt!).toLocaleDateString()}
+                                                                </span>
+                                                            </div>
+                                                            <p className="text-[10px] font-bold text-emerald-800 dark:text-emerald-200">
+                                                                Enviada em {new Date(promoSentAt!).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.
+                                                                Evite enviar novamente para o mesmo cliente.
+                                                            </p>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="p-3 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/30 rounded-2xl mb-4 flex items-center justify-between">
+                                                            <span className="text-xs font-black uppercase tracking-wide text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
+                                                                <Clock size={14} /> Promoção Pendente
+                                                            </span>
+                                                            <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400">
+                                                                Ainda não contatado
+                                                            </span>
+                                                        </div>
+                                                    )}
+                                                </div>
+
+                                                {/* BOTÕES DE AÇÃO */}
+                                                <div className="space-y-2 pt-2 border-t border-gray-100 dark:border-slate-800">
+                                                    {!hasPromoSent ? (
+                                                        <button
+                                                            onClick={() => {
+                                                                void sendPromotionWhatsAppMessage(
+                                                                    client,
+                                                                    services,
+                                                                    expiryDate,
+                                                                    daysSinceExpiry,
+                                                                    deletionDate,
+                                                                    daysSinceDeletion
+                                                                );
+                                                            }}
+                                                            className="w-full bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-black py-3 px-4 rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-emerald-200 dark:shadow-none transition-all text-xs uppercase active:scale-95"
+                                                        >
+                                                            <MessageCircle size={18} /> Enviar Mensagem Promocional (WhatsApp)
+                                                        </button>
+                                                    ) : (
+                                                        <div className="flex gap-2">
+                                                            <button
+                                                                onClick={() => {
+                                                                    if (confirm(`Atenção: A promoção já foi enviada para ${client.client_name || client.phone_number} em ${new Date(promoSentAt!).toLocaleString()}. Deseja reenviar mesmo assim?`)) {
+                                                                        void sendPromotionWhatsAppMessage(
+                                                                            client,
+                                                                            services,
+                                                                            expiryDate,
+                                                                            daysSinceExpiry,
+                                                                            deletionDate,
+                                                                            daysSinceDeletion
+                                                                        );
+                                                                    }
+                                                                }}
+                                                                className="flex-1 bg-gray-100 hover:bg-gray-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-gray-700 dark:text-gray-200 font-black py-2.5 px-3 rounded-2xl flex items-center justify-center gap-1.5 transition-all text-[11px] uppercase"
+                                                                title="Reenviar WhatsApp"
+                                                            >
+                                                                <MessageCircle size={15} /> Reenviar WhatsApp
+                                                            </button>
+                                                            <button
+                                                                onClick={() => togglePromotionSentStatus(client, false)}
+                                                                className="px-3 py-2.5 bg-red-50 hover:bg-red-100 dark:bg-red-950/30 text-red-600 rounded-2xl text-[10px] font-black uppercase transition-all"
+                                                                title="Desmarcar envio promocional"
+                                                            >
+                                                                Desmarcar
+                                                            </button>
+                                                        </div>
+                                                    )}
+
+                                                    {!hasPromoSent && (
+                                                        <button
+                                                            onClick={() => togglePromotionSentStatus(client, true)}
+                                                            className="w-full text-center text-[10px] font-bold text-gray-400 hover:text-indigo-600 py-1 transition-colors"
+                                                        >
+                                                            Marcar como já enviado manualmente
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </div>
+                    );
+                })()}
             </main>
 
             {showAdminVikiTvModal && adminVikiTvTarget && (
@@ -4540,6 +5038,39 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
                     <div className="bg-white dark:bg-slate-900 w-full max-w-sm rounded-[2.5rem] p-8 shadow-2xl relative max-h-[90vh] overflow-y-auto border-4 border-indigo-50 dark:border-indigo-900/30">
                         <div className="flex justify-between items-center mb-8"><h3 className="font-black text-xl text-gray-900 dark:text-white leading-none">{clientForm.id ? 'Editar Perfil' : 'Novo Cliente'}</h3><button onClick={() => setClientModalOpen(false)} className="p-2.5 bg-indigo-50 dark:bg-slate-800 rounded-full text-indigo-400"><X size={24} /></button></div>
+                        {clientForm.deleted && (() => {
+                            const delDate = getClientDeletionDate(clientForm as ClientDBRow);
+                            const delDays = getDaysSinceExpiration(delDate);
+                            const promoSentAt = getPromotionSentAt(clientForm as ClientDBRow);
+                            return (
+                                <div className="mb-6 p-4 bg-red-50 dark:bg-red-950/40 border-2 border-red-200 dark:border-red-900/50 rounded-2xl space-y-2">
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-2 text-red-600 dark:text-red-400">
+                                            <Trash2 size={18} />
+                                            <span className="text-xs font-black uppercase tracking-wider">Cliente Excluído (Lixeira)</span>
+                                        </div>
+                                        <span className="text-[10px] font-black bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-300 px-2 py-0.5 rounded-md">
+                                            {formatDurationLapsed(delDays)}
+                                        </span>
+                                    </div>
+                                    <p className="text-xs font-bold text-gray-700 dark:text-gray-300">
+                                        Data de Exclusão: <span className="font-black text-red-600 dark:text-red-400">{formatDeletionDateDisplay(delDate)}</span>
+                                    </p>
+                                    <div className="pt-2 border-t border-red-100 dark:border-red-900/30 flex items-center justify-between text-[11px]">
+                                        <span className="font-bold text-gray-500">Mensagem Promocional:</span>
+                                        {promoSentAt ? (
+                                            <span className="font-black text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                                                <CheckCircle2 size={13} /> Já enviada em {new Date(promoSentAt).toLocaleDateString()}
+                                            </span>
+                                        ) : (
+                                            <span className="font-black text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                                                <Clock size={13} /> Pendente (Não enviada)
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+                            );
+                        })()}
                         <div className="space-y-6">
                             <div className="space-y-2"><label className="text-xs font-black uppercase text-indigo-400 ml-1">WhatsApp (DDD + Número)</label><input className="w-full bg-indigo-50 dark:bg-slate-800 p-4 rounded-2xl font-bold text-lg outline-none border-2 border-transparent focus:border-indigo-300" value={clientForm.phone_number} onChange={e => setClientForm({ ...clientForm, phone_number: e.target.value })} placeholder="88999991234" /></div>
                             <div className="space-y-2"><label className="text-xs font-black uppercase text-indigo-400 ml-1">Nome Completo</label><input className="w-full bg-indigo-50 dark:bg-slate-800 p-4 rounded-2xl font-bold text-lg outline-none border-2 border-transparent focus:border-indigo-300" value={clientForm.client_name} onChange={e => setClientForm({ ...clientForm, client_name: e.target.value })} placeholder="Ex: Maria Silva" /></div>
