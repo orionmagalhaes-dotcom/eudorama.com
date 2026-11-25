@@ -14,6 +14,7 @@ const LOGS_FILE = path.resolve(process.cwd(), 'artifacts/whatsapp-charge-logs.js
 
 export type ReactivationCampaignStatus = {
   sentToday: number;
+  dailyLimit: number;
   pendingCount: number;
   lastRunAt?: string;
 };
@@ -74,6 +75,7 @@ export type SchedulerState = {
   enableDue: boolean;
   enableFollowup: boolean;
   enableReactivation: boolean;
+  reactivationDailyLimit: number;
   reactivationTemplate: string;
   targetHour: number; // ex: 15 (15:00)
   targetMinute: number; // ex: 0 (15:00)
@@ -93,6 +95,7 @@ let schedulerState: SchedulerState = {
   enableDue: true,
   enableFollowup: true,
   enableReactivation: true,
+  reactivationDailyLimit: 2,
   reactivationTemplate: DEFAULT_REACTIVATION_TEMPLATE,
   targetHour: 15,
   targetMinute: 0,
@@ -109,6 +112,9 @@ try {
       if (typeof rawCfg.enableDue === 'boolean') schedulerState.enableDue = rawCfg.enableDue;
       if (typeof rawCfg.enableFollowup === 'boolean') schedulerState.enableFollowup = rawCfg.enableFollowup;
       if (typeof rawCfg.enableReactivation === 'boolean') schedulerState.enableReactivation = rawCfg.enableReactivation;
+      if (typeof rawCfg.reactivationDailyLimit === 'number' && rawCfg.reactivationDailyLimit >= 1 && rawCfg.reactivationDailyLimit <= 100) {
+        schedulerState.reactivationDailyLimit = Math.floor(rawCfg.reactivationDailyLimit);
+      }
       if (typeof rawCfg.reactivationTemplate === 'string' && rawCfg.reactivationTemplate.trim()) {
         schedulerState.reactivationTemplate = rawCfg.reactivationTemplate;
       }
@@ -131,6 +137,7 @@ function saveConfigToFile() {
           enableDue: schedulerState.enableDue,
           enableFollowup: schedulerState.enableFollowup,
           enableReactivation: schedulerState.enableReactivation,
+          reactivationDailyLimit: schedulerState.reactivationDailyLimit,
           reactivationTemplate: schedulerState.reactivationTemplate,
           targetHour: schedulerState.targetHour,
           targetMinute: schedulerState.targetMinute
@@ -180,6 +187,7 @@ export type SchedulerConfigPatch = Partial<
     | 'enableDue'
     | 'enableFollowup'
     | 'enableReactivation'
+    | 'reactivationDailyLimit'
     | 'reactivationTemplate'
     | 'targetHour'
     | 'targetMinute'
@@ -193,6 +201,9 @@ export function updateSchedulerConfig(patch: SchedulerConfigPatch) {
   if (typeof patch.enableDue === 'boolean') cleanPatch.enableDue = patch.enableDue;
   if (typeof patch.enableFollowup === 'boolean') cleanPatch.enableFollowup = patch.enableFollowup;
   if (typeof patch.enableReactivation === 'boolean') cleanPatch.enableReactivation = patch.enableReactivation;
+  if (typeof patch.reactivationDailyLimit === 'number' && !isNaN(patch.reactivationDailyLimit)) {
+    cleanPatch.reactivationDailyLimit = Math.min(100, Math.max(1, Math.floor(patch.reactivationDailyLimit)));
+  }
   if (typeof patch.reactivationTemplate === 'string') {
     cleanPatch.reactivationTemplate = patch.reactivationTemplate.trim() || DEFAULT_REACTIVATION_TEMPLATE;
   }
@@ -200,6 +211,21 @@ export function updateSchedulerConfig(patch: SchedulerConfigPatch) {
   if (typeof patch.targetMinute === 'number' && patch.targetMinute >= 0 && patch.targetMinute <= 59) cleanPatch.targetMinute = patch.targetMinute;
   schedulerState = { ...schedulerState, ...cleanPatch };
   saveConfigToFile();
+}
+
+// Verifica se está dentro da janela permitida: Segunda a Sexta, das 15:00 às 19:59 (Brasília)
+function isWithinAllowedSendingWindow(): { allowed: boolean; reason?: string } {
+  const nowSp = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+  const day = nowSp.getDay(); // 0 = Domingo, 6 = Sábado
+  const hour = nowSp.getHours();
+
+  if (day === 0 || day === 6) {
+    return { allowed: false, reason: 'Fim de semana (envios automáticos pausados sábados e domingos)' };
+  }
+  if (hour < 15 || hour >= 20) {
+    return { allowed: false, reason: `Fora do horário permitido (15h às 20h Brasília, agora são ${hour}h)` };
+  }
+  return { allowed: true };
 }
 
 // Funções utilitárias de datas e assinaturas
@@ -407,6 +433,17 @@ export async function sendSingleCharge(
   clientId: string,
   serviceName: string
 ): Promise<{ success: boolean; message: string }> {
+  if (!manualTrigger) {
+    const win = isWithinAllowedSendingWindow();
+    if (!win.allowed) {
+      console.log(`[Scheduler] Ciclo automático não iniciado: ${win.reason}`);
+      return {
+        success: false,
+        summary: { total: 0, sent: 0, failed: 0, skipped: 0 }
+      };
+    }
+  }
+
   const wsStatus = getWhatsAppStatus();
   if (wsStatus.state !== 'connected') {
     return { success: false, message: 'WhatsApp não está conectado no servidor.' };
@@ -552,6 +589,17 @@ export async function getReactivationQueue(): Promise<ReactivationQueueItem[]> {
 }
 
 export async function sendSingleReactivation(clientId: string): Promise<{ success: boolean; message: string }> {
+  if (!manualTrigger) {
+    const win = isWithinAllowedSendingWindow();
+    if (!win.allowed) {
+      console.log(`[Scheduler] Ciclo automático não iniciado: ${win.reason}`);
+      return {
+        success: false,
+        summary: { total: 0, sent: 0, failed: 0, skipped: 0 }
+      };
+    }
+  }
+
   const wsStatus = getWhatsAppStatus();
   if (wsStatus.state !== 'connected') {
     return { success: false, message: 'WhatsApp não está conectado no servidor.' };
@@ -617,9 +665,27 @@ export async function runReactivationCampaign(manualTrigger: boolean = false): P
     return { sent: 0, failed: 0, skipped: 0 };
   }
 
-  if (!manualTrigger && !schedulerState.enabled) {
-    console.log('[Reativação] Automação geral desativada. Pulando.');
-    return { sent: 0, failed: 0, skipped: 0 };
+  if (!manualTrigger) {
+    if (!schedulerState.enabled) {
+      console.log('[Reativação] Automação geral desativada. Pulando.');
+      return { sent: 0, failed: 0, skipped: 0 };
+    }
+    const win = isWithinAllowedSendingWindow();
+    if (!win.allowed) {
+      console.log(`[Reativação] ${win.reason}. Pulando.`);
+      return { sent: 0, failed: 0, skipped: 0 };
+    }
+  }
+
+  if (!manualTrigger) {
+    const win = isWithinAllowedSendingWindow();
+    if (!win.allowed) {
+      console.log(`[Scheduler] Ciclo automático não iniciado: ${win.reason}`);
+      return {
+        success: false,
+        summary: { total: 0, sent: 0, failed: 0, skipped: 0 }
+      };
+    }
   }
 
   const wsStatus = getWhatsAppStatus();
@@ -637,21 +703,29 @@ export async function runReactivationCampaign(manualTrigger: boolean = false): P
     reactivationState.lastRunDate = today;
   }
 
-  if (reactivationState.sentToday >= 2) {
-    console.log('[Reativação] Já enviou 2 mensagens hoje. Pulando.');
+  const dailyLimit = Math.max(1, schedulerState.reactivationDailyLimit || 2);
+  if (reactivationState.sentToday >= dailyLimit) {
+    console.log(`[Reativação] Já atingiu o limite diário de ${dailyLimit} mensagens hoje. Pulando.`);
     return { sent: 0, failed: 0, skipped: 1 };
   }
 
-  const remaining = 2 - reactivationState.sentToday;
+  const remaining = dailyLimit - reactivationState.sentToday;
   const fullQueue = await getReactivationQueue();
   const pendingExClients = fullQueue.filter((item) => !item.alreadySent);
 
   const targets = pendingExClients.slice(0, remaining);
-  console.log(`[Reativação] ${pendingExClients.length} ex-clientes elegíveis (lixeira sem apps, mais antigas primeiro). Enviando para ${targets.length}.`);
+  console.log(`[Reativação] ${pendingExClients.length} ex-clientes elegíveis (lixeira sem apps, mais antigas primeiro). Limite: ${dailyLimit}/dia. Enviando para ${targets.length}.`);
 
   let sent = 0, failed = 0;
 
   for (const target of targets) {
+    if (!manualTrigger) {
+      const win = isWithinAllowedSendingWindow();
+      if (!win.allowed) {
+        console.log(`[Reativação] Parando ciclo automático: ${win.reason}.`);
+        break;
+      }
+    }
     const delayMs = Math.floor(Math.random() * 8000) + 10000;
     console.log(`[Reativação] Aguardando ${Math.round(delayMs / 1000)}s antes de enviar para ${target.clientName}...`);
     await new Promise((r) => setTimeout(r, delayMs));
@@ -710,6 +784,7 @@ export async function runReactivationCampaign(manualTrigger: boolean = false): P
 export function getReactivationStatus(): ReactivationCampaignStatus {
   return {
     sentToday: reactivationState.sentToday,
+    dailyLimit: Math.max(1, schedulerState.reactivationDailyLimit || 2),
     pendingCount: 0, // calculado dinamicamente quando necessário
     lastRunAt: reactivationState.lastRunAt || undefined
   };
@@ -725,6 +800,17 @@ export async function runDailyChargeCycle(manualTrigger: boolean = false): Promi
       success: false,
       summary: schedulerState.lastCycleSummary || { total: 0, sent: 0, failed: 0, skipped: 0 }
     };
+  }
+
+  if (!manualTrigger) {
+    const win = isWithinAllowedSendingWindow();
+    if (!win.allowed) {
+      console.log(`[Scheduler] Ciclo automático não iniciado: ${win.reason}`);
+      return {
+        success: false,
+        summary: { total: 0, sent: 0, failed: 0, skipped: 0 }
+      };
+    }
   }
 
   const wsStatus = getWhatsAppStatus();
@@ -756,6 +842,13 @@ export async function runDailyChargeCycle(manualTrigger: boolean = false): Promi
     console.log(`[Scheduler] Fila total: ${queue.length} | Pendentes habilitados hoje: ${pendingItems.length}`);
 
     for (const item of pendingItems) {
+      if (!manualTrigger) {
+        const win = isWithinAllowedSendingWindow();
+        if (!win.allowed) {
+          console.log(`[Scheduler] Parando ciclo automático: ${win.reason}.`);
+          break;
+        }
+      }
       // Delay anti-ban humanizado: entre 10 e 18 segundos entre mensagens
       const delayMs = Math.floor(Math.random() * 8000) + 10000;
       console.log(`[Scheduler] Aguardando ${Math.round(delayMs / 1000)}s antes de enviar para ${item.clientName} (${item.phoneNumber})...`);
@@ -821,31 +914,34 @@ export async function runDailyChargeCycle(manualTrigger: boolean = false): Promi
   }
 }
 
-// Inicia o agendador em segundo plano que checa o horário diário
+// Inicia o agendador em segundo plano que checa a janela permitida (Seg-Sex, 15:00 às 20:00 Brasília)
 export function startDailyChargeScheduler() {
-  console.log(`[Scheduler] Agendador de cobranças ativado. Horário diário configurado: ${String(schedulerState.targetHour).padStart(2, '0')}:${String(schedulerState.targetMinute).padStart(2, '0')} (Brasília).`);
+  console.log('[Scheduler] Agendador ativado. Janela de envio: Segunda a Sexta, 15:00 às 20:00 (Brasília).');
 
-  // Checa a cada 1 minuto se chegou o horário
+  // Checa a cada 1 minuto se está dentro da janela permitida
   setInterval(() => {
     if (!schedulerState.enabled || schedulerState.isRunning) return;
 
+    const win = isWithinAllowedSendingWindow();
+    if (!win.allowed) return;
+
     // Hora de São Paulo (UTC-3)
     const nowSp = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
-    const currentHour = nowSp.getHours();
-    const currentMinute = nowSp.getMinutes();
 
-    if (currentHour === schedulerState.targetHour && currentMinute === schedulerState.targetMinute) {
-      // Verifica se já rodou hoje
-      if (schedulerState.lastCycleAt) {
-        const lastRun = new Date(schedulerState.lastCycleAt);
-        const lastRunSp = new Date(lastRun.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
-        if (lastRunSp.getDate() === nowSp.getDate() && lastRunSp.getMonth() === nowSp.getMonth()) {
-          return; // Já rodou hoje
-        }
+    // Verifica se já rodou hoje
+    if (schedulerState.lastCycleAt) {
+      const lastRun = new Date(schedulerState.lastCycleAt);
+      const lastRunSp = new Date(lastRun.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+      if (
+        lastRunSp.getDate() === nowSp.getDate() &&
+        lastRunSp.getMonth() === nowSp.getMonth() &&
+        lastRunSp.getFullYear() === nowSp.getFullYear()
+      ) {
+        return; // Já rodou hoje
       }
-
-      console.log('[Scheduler] Horário programado atingido! Iniciando ciclo diário...');
-      void runDailyChargeCycle(false);
     }
+
+    console.log('[Scheduler] Dentro da janela permitida (Seg-Sex, 15h-20h)! Iniciando ciclo diário...');
+    void runDailyChargeCycle(false);
   }, 60000);
 }

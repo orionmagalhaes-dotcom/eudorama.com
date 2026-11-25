@@ -49,6 +49,7 @@ type WhatsAppServerStatus = {
     enableDue?: boolean;
     enableFollowup?: boolean;
     enableReactivation?: boolean;
+    reactivationDailyLimit?: number;
     reactivationTemplate?: string;
     targetHour: number;
     targetMinute: number;
@@ -222,7 +223,7 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
   const [testPreview, setTestPreview] = useState(false);
 
   // Estado da campanha de reativação / promocionais
-  const [reactivationStatus, setReactivationStatus] = useState<{ sentToday: number; lastRunAt?: string } | null>(null);
+  const [reactivationStatus, setReactivationStatus] = useState<{ sentToday: number; dailyLimit?: number; lastRunAt?: string } | null>(null);
   const [reactivationLoading, setReactivationLoading] = useState(false);
   const [reactivationResult, setReactivationResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [reactivationQueue, setReactivationQueue] = useState<ReactivationQueueItem[]>([]);
@@ -231,6 +232,7 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
   const [reactivationSearch, setReactivationSearch] = useState('');
   const [reactivationTemplateDraft, setReactivationTemplateDraft] = useState(DEFAULT_REACTIVATION_TEMPLATE);
   const [reactivationTemplateDirty, setReactivationTemplateDirty] = useState(false);
+  const [reactivationDailyLimitDraft, setReactivationDailyLimitDraft] = useState<number>(2);
   const [reactivationExpandedId, setReactivationExpandedId] = useState<string | null>(null);
   const [sendingReactivationId, setSendingReactivationId] = useState<string | null>(null);
 
@@ -258,6 +260,9 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
         setIsCycleRunning(!!data.scheduler?.isRunning);
         if (data.scheduler?.reactivationTemplate && !reactivationTemplateDirty) {
           setReactivationTemplateDraft(data.scheduler.reactivationTemplate);
+        }
+        if (typeof data.scheduler?.reactivationDailyLimit === 'number') {
+          setReactivationDailyLimitDraft(data.scheduler.reactivationDailyLimit);
         }
       } else {
         setServerOnline(false);
@@ -538,6 +543,7 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
       enableDue: boolean;
       enableFollowup: boolean;
       enableReactivation: boolean;
+      reactivationDailyLimit: number;
     }>
   ) => {
     setConfigSaving(true);
@@ -561,7 +567,8 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
   };
 
   const handleTriggerReactivation = async () => {
-    if (!window.confirm('Disparar campanha de reativação agora para até 2 ex-clientes que ainda não receberam?')) return;
+    const lim = serverStatus.scheduler?.reactivationDailyLimit ?? reactivationDailyLimitDraft ?? 2;
+    if (!window.confirm(`Disparar campanha de reativação agora para até ${lim} ex-cliente(s) que ainda não receberam?`)) return;
     setReactivationLoading(true);
     setReactivationResult(null);
     try {
@@ -899,8 +906,10 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
             <div className="p-5 bg-white dark:bg-slate-900 rounded-3xl border border-indigo-100 dark:border-slate-800 shadow-sm flex items-center justify-between">
               <div>
                 <p className="text-[10px] font-black uppercase tracking-wider text-indigo-500">Enviadas Hoje</p>
-                <p className="text-2xl font-black text-indigo-700 dark:text-indigo-400">{reactivationStatus?.sentToday ?? 0} / 2</p>
-                <p className="text-[11px] text-gray-400 font-bold mt-0.5">Limite diário automático (15h)</p>
+                <p className="text-2xl font-black text-indigo-700 dark:text-indigo-400">
+                  {reactivationStatus?.sentToday ?? 0} / {serverStatus.scheduler?.reactivationDailyLimit ?? reactivationDailyLimitDraft}
+                </p>
+                <p className="text-[11px] text-gray-400 font-bold mt-0.5">15h às 20h · Seg a Sex (sem fim de semana)</p>
               </div>
               <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl">
                 <Clock size={22} />
@@ -916,6 +925,54 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
               <div className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl">
                 <CheckCircle2 size={22} />
               </div>
+            </div>
+          </div>
+
+          {/* CONTROLE DE QUANTIDADE DIÁRIA DE PROMOÇÕES */}
+          <div className="bg-white dark:bg-slate-900 rounded-3xl p-5 shadow-sm border border-purple-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h4 className="text-sm font-black text-gray-900 dark:text-white">
+                Quantas pessoas devem receber promoção por dia?
+              </h4>
+              <p className="text-xs text-gray-500">
+                Envios automáticos ocorrem entre <strong>15h e 20h (Segunda a Sexta)</strong>, exceto finais de semana.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              {[1, 2, 5, 10, 15, 20].map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  disabled={configSaving || serverOnline === false}
+                  onClick={() => {
+                    setReactivationDailyLimitDraft(preset);
+                    void handleUpdateSchedulerConfig({ reactivationDailyLimit: preset });
+                  }}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all ${
+                    (serverStatus.scheduler?.reactivationDailyLimit ?? reactivationDailyLimitDraft) === preset
+                      ? 'bg-purple-600 text-white shadow-sm'
+                      : 'bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-gray-300 hover:bg-purple-100'
+                  }`}
+                >
+                  {preset}/dia
+                </button>
+              ))}
+              <input
+                type="number"
+                min={1}
+                max={100}
+                value={reactivationDailyLimitDraft}
+                onChange={(e) => setReactivationDailyLimitDraft(Math.max(1, Math.min(100, Number(e.target.value) || 1)))}
+                className="w-20 px-3 py-1.5 bg-gray-50 dark:bg-slate-800 rounded-xl text-xs font-black border border-gray-200 dark:border-slate-700 text-center"
+              />
+              <button
+                type="button"
+                disabled={configSaving || serverOnline === false}
+                onClick={() => handleUpdateSchedulerConfig({ reactivationDailyLimit: reactivationDailyLimitDraft })}
+                className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black uppercase disabled:opacity-50"
+              >
+                Salvar
+              </button>
             </div>
           </div>
 
@@ -1024,14 +1081,14 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
                 disabled={reactivationLoading || serverStatus.state !== 'connected' || reactivationSummary.pending === 0}
                 className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-black text-xs uppercase shadow-md disabled:opacity-50 flex items-center gap-1.5"
               >
-                <Gift size={14} /> {reactivationLoading ? 'Enviando...' : 'Disparar 2 Próximas'}
+                <Gift size={14} /> {reactivationLoading ? 'Enviando...' : `Disparar ${serverStatus.scheduler?.reactivationDailyLimit ?? reactivationDailyLimitDraft} Próximas`}
               </button>
             </div>
           </div>
 
           {/* LISTA DAS PESSOAS QUE RECEBERÃO / RECEBERAM */}
           <div className="bg-purple-50/70 dark:bg-purple-950/20 border border-purple-200 dark:border-purple-800/40 rounded-2xl px-4 py-3 text-xs font-semibold text-purple-900 dark:text-purple-200">
-            📌 <strong>Ordem de envio:</strong> Apenas ex-clientes <strong>completamente na lixeira (sem nenhum app)</strong>, ordenados das pessoas que estão <strong>há mais tempo na lixeira primeiro até as mais recentes</strong>. Os itens <strong>#1</strong> e <strong>#2</strong> pendentes são os próximos da fila automática das 15h.
+            📌 <strong>Ordem de envio:</strong> Apenas ex-clientes <strong>completamente na lixeira (sem nenhum app)</strong>, ordenados das pessoas que estão <strong>há mais tempo na lixeira primeiro até as mais recentes</strong>. Os primeiros <strong>{serverStatus.scheduler?.reactivationDailyLimit ?? reactivationDailyLimitDraft}</strong> pendentes são os próximos da fila automática (15h às 20h, Seg a Sex).
           </div>
 
           {filteredReactivationQueue.length === 0 ? (
@@ -1539,7 +1596,7 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
               <h3 className="text-xl font-black">
                 {serverStatus.scheduler?.enabled === false
                   ? 'Disparos Automáticos Desativados'
-                  : 'Disparo Diário Programado — 15:00 (Brasília)'}
+                  : 'Disparo Diário Programado — 15:00 às 20:00 (Seg a Sex)'}
               </h3>
               <p className="text-xs text-emerald-100 font-semibold max-w-xl">
                 {serverStatus.scheduler?.enabled === false
@@ -1669,12 +1726,14 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
                   Campanha de Reativação de Ex-clientes
                 </p>
               </div>
-              <h3 className="text-base font-black">2 mensagens por dia — Após 15:00 (Brasília)</h3>
+              <h3 className="text-base font-black">
+                {serverStatus.scheduler?.reactivationDailyLimit ?? reactivationDailyLimitDraft} mensagens por dia — 15:00 às 20:00 (Seg a Sex)
+              </h3>
               <p className="text-xs text-purple-100 font-semibold max-w-xl">
                 O Orion entra em contato com ex-clientes que nunca receberam a campanha, apresenta a EuDorama e oferece uma promoção especial. Cada pessoa recebe apenas 1 vez.
                 {reactivationStatus && (
                   <span className="block mt-1 text-purple-200 font-bold">
-                    Hoje: {reactivationStatus.sentToday}/2 enviadas
+                    Hoje: {reactivationStatus.sentToday}/{serverStatus.scheduler?.reactivationDailyLimit ?? reactivationDailyLimitDraft} enviadas
                     {reactivationStatus.lastRunAt && ` · Último disparo: ${new Date(reactivationStatus.lastRunAt).toLocaleString('pt-BR')}`}
                   </span>
                 )}
