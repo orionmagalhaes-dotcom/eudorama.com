@@ -285,6 +285,58 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // Rota de TESTE: envia mensagem de teste para um número específico com prefixo [TESTE]
+  if (method === 'POST' && path === '/api/whatsapp/send-test') {
+    try {
+      const data = await readJsonBody(req);
+      const phone = String(data.phone || '').replace(/\D/g, '').trim();
+      const stage = String(data.stage || 'due');
+      const clientName = String(data.clientName || 'Dorameira').trim();
+      const service = String(data.service || 'Viki').trim();
+      const price = String(data.price || 'R$ 24,90').trim();
+      const expiryDate = String(data.expiryDate || new Date().toLocaleDateString('pt-BR')).trim();
+
+      if (!phone || phone.length < 10) {
+        sendJson(res, 400, { success: false, message: 'Número de telefone inválido (mínimo 10 dígitos)' });
+        return;
+      }
+
+      const wsStatus = getWhatsAppStatus();
+      if (wsStatus.state !== 'connected') {
+        sendJson(res, 400, { success: false, message: 'WhatsApp não está conectado no servidor. Conecte primeiro.' });
+        return;
+      }
+
+      let messageBody = '';
+      if (stage === 'reminder') {
+        messageBody = `Olá, ${clientName}! Tudo bem com você? ✨ Passando apenas para te avisar com carinho que a sua assinatura do *${service}* vence no dia ${expiryDate}. O valor da assinatura é de *${price}*. É apenas um lembrete para você poder se organizar com calma! Se tiver qualquer dúvida ou precisar de algo, estamos sempre à disposição por aqui. Tenha um ótimo dia e aproveite seus doramas! 🌸🍿`;
+      } else if (stage === 'due') {
+        messageBody = `Olá, ${clientName}! Tudo bem? Esperamos que sim! 🌸 Passando para lembrar que hoje é o dia do vencimento da sua assinatura do *${service}* no valor de *${price}*. Quer renovar hoje para manter seu acesso ativo? Se já realizou o pagamento, por favor desconsidere este recadinho. Qualquer dúvida, estou por aqui! 🍿✨`;
+      } else if (stage === 'followup') {
+        messageBody = `Olá, ${clientName}! Tudo bem? Notamos que o acesso à sua assinatura do *${service}* encerrou. Sabemos bem como a rotina do dia a dia é corrida! Caso queira continuar acompanhando seus doramas favoritos, me avise por aqui. Se precisar de qualquer ajuda, estou super à disposição! 💜`;
+      } else if (stage === 'reactivation') {
+        messageBody = `Olá, ${clientName}! Tudo bem? Sentimos muito a sua falta aqui na EuDorama! 🥰 Preparamos uma condição super especial para você voltar a maratonar seus doramas preferidos por apenas *${price}*! O que acha? Se quiser aproveitar ou se tiver qualquer dúvida, é só me responder aqui. Tenha um lindo dia! ✨🍿`;
+      } else {
+        messageBody = `Olá, ${clientName}! Esta é uma mensagem de teste da EuDorama. ✨`;
+      }
+
+      const fullMessage = `🧪 *[MENSAGEM DE TESTE - IGNORAR]*\n\n${messageBody}\n\n_— Teste enviado pelo painel EuDorama às ${new Date().toLocaleTimeString('pt-BR')} (Brasília)_`;
+
+      const { formatPhoneToJid } = await import('./server/whatsappService.ts');
+      const jid = formatPhoneToJid(phone);
+      const result = await sendWhatsAppTextMessage(jid, fullMessage);
+
+      if (result.success) {
+        sendJson(res, 200, { success: true, message: `Mensagem de teste enviada para +${phone}!`, jid });
+      } else {
+        sendJson(res, 400, { success: false, message: result.error || 'Falha ao enviar mensagem de teste' });
+      }
+    } catch (e: any) {
+      sendJson(res, 500, { success: false, message: e?.message || 'Erro interno ao enviar teste' });
+    }
+    return;
+  }
+
   sendJson(res, 404, { success: false, message: 'Not Found' });
 });
 

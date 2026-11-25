@@ -20,7 +20,15 @@ import {
   ChevronDown,
   ChevronUp,
   Check,
-  Smartphone
+  Smartphone,
+  FlaskConical,
+  Info,
+  Eye,
+  EyeOff,
+  Heart,
+  Gift,
+  Bell,
+  AlertTriangle
 } from 'lucide-react';
 
 export type ChargePanelProps = {
@@ -79,8 +87,87 @@ type LogEntry = {
   error?: string;
 };
 
+// Regras de cada etapa de cobrança
+const STAGE_RULES = [
+  {
+    id: 'reminder',
+    label: 'Lembrete Antecipado',
+    range: 'D-5 até D-1',
+    color: 'blue',
+    icon: Bell,
+    tone: 'Informativo e gentil',
+    allowed: ['Avisar a data de vencimento', 'Informar o valor', 'Oferecer ajuda para dúvidas'],
+    blocked: ['❌ Pedir que pague adiantado', '❌ Criar urgência ou pressão', '❌ Mencionar promoções ou ofertas'],
+    example: 'Olá! Passando com carinho para lembrar que sua assinatura vence em X dias. É só um lembrete para se organizar com calma!'
+  },
+  {
+    id: 'due',
+    label: 'Vencimento Hoje',
+    range: 'D0',
+    color: 'red',
+    icon: Clock,
+    tone: 'Convite gentil à renovação',
+    allowed: ['Convidar a renovar para manter o acesso', 'Informar valor', 'Dizer que pode ignorar se já pagou'],
+    blocked: ['❌ Tom de cobrança agressivo', '❌ Ameaçar cancelamento imediato', '❌ Promoções ou descontos'],
+    example: 'Olá! Hoje é o dia do vencimento da sua assinatura. Quer renovar para continuar? Se já pagou, pode ignorar este recadinho!'
+  },
+  {
+    id: 'followup',
+    label: 'Follow-up Pós-vencimento',
+    range: 'D+1 até D+7',
+    color: 'amber',
+    icon: Heart,
+    tone: 'Empático e sem pressão',
+    allowed: ['Mencionar que o acesso encerrou', 'Perguntar se quer informações para renovar', 'Oferecer ajuda'],
+    blocked: ['❌ Dizer "X dias em atraso"', '❌ Cobrar de forma direta', '❌ Promoções ou ofertas especiais'],
+    example: 'Olá! Notamos que sua assinatura encerrou. Sabemos que a rotina é corrida! Se quiser renovar, é só me avisar.'
+  },
+  {
+    id: 'reactivation',
+    label: 'Reativação',
+    range: 'D+15 até D+45',
+    color: 'purple',
+    icon: Gift,
+    tone: 'Saudades + oferta especial',
+    allowed: ['Tom de "sentimos sua falta"', 'Oferecer condição/promoção especial', 'Convidar de volta'],
+    blocked: ['❌ Tom de cobrador', '❌ Mencionar dívida ou atraso'],
+    example: 'Olá! Sentimos muito a sua falta! 🥰 Preparamos uma condição especial para você voltar a maratonar seus doramas preferidos!'
+  }
+];
+
+const colorMap: Record<string, Record<string, string>> = {
+  blue: {
+    bg: 'bg-blue-50 dark:bg-blue-950/20',
+    border: 'border-blue-200 dark:border-blue-800/40',
+    badge: 'bg-blue-100 text-blue-800 border-blue-200',
+    text: 'text-blue-700 dark:text-blue-400',
+    icon: 'bg-blue-100 text-blue-600'
+  },
+  red: {
+    bg: 'bg-red-50 dark:bg-red-950/20',
+    border: 'border-red-200 dark:border-red-800/40',
+    badge: 'bg-red-100 text-red-800 border-red-200',
+    text: 'text-red-700 dark:text-red-400',
+    icon: 'bg-red-100 text-red-600'
+  },
+  amber: {
+    bg: 'bg-amber-50 dark:bg-amber-950/20',
+    border: 'border-amber-200 dark:border-amber-800/40',
+    badge: 'bg-amber-100 text-amber-800 border-amber-200',
+    text: 'text-amber-700 dark:text-amber-400',
+    icon: 'bg-amber-100 text-amber-600'
+  },
+  purple: {
+    bg: 'bg-purple-50 dark:bg-purple-950/20',
+    border: 'border-purple-200 dark:border-purple-800/40',
+    badge: 'bg-purple-100 text-purple-800 border-purple-200',
+    text: 'text-purple-700 dark:text-purple-400',
+    icon: 'bg-purple-100 text-purple-600'
+  }
+};
+
 export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clients, onClientUpdated }) => {
-  const [activeTab, setActiveTab] = useState<'queue' | 'connection' | 'logs' | 'config'>('queue');
+  const [activeTab, setActiveTab] = useState<'queue' | 'connection' | 'rules' | 'test' | 'logs' | 'config'>('queue');
   const [stageFilter, setStageFilter] = useState<'all' | 'due' | 'reminder' | 'followup' | 'reactivation'>('all');
   const [onlyPending, setOnlyPending] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -100,6 +187,16 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
   const [expandedPreviewId, setExpandedPreviewId] = useState<string | null>(null);
   const [isCycleRunning, setIsCycleRunning] = useState(false);
 
+  // Teste de envio
+  const [testPhone, setTestPhone] = useState('');
+  const [testStage, setTestStage] = useState<'reminder' | 'due' | 'followup' | 'reactivation'>('due');
+  const [testClientName, setTestClientName] = useState('Dorameira');
+  const [testService, setTestService] = useState('Viki');
+  const [testPrice, setTestPrice] = useState('R$ 24,90');
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [testLoading, setTestLoading] = useState(false);
+  const [testPreview, setTestPreview] = useState(false);
+
   // Configuração de URL do motor
   const [motorBaseUrl, setMotorBaseUrl] = useState<string>(() => {
     return localStorage.getItem('whatsapp_motor_base_url') || '';
@@ -114,7 +211,6 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
     [motorBaseUrl]
   );
 
-  // Carrega status da conexão
   const fetchStatus = useCallback(async () => {
     try {
       const res = await fetch(getApiUrl('/api/whatsapp/status'));
@@ -122,11 +218,7 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
         const data = await res.json();
         setServerStatus(data);
         setServerOnline(true);
-        if (data.scheduler?.isRunning) {
-          setIsCycleRunning(true);
-        } else {
-          setIsCycleRunning(false);
-        }
+        setIsCycleRunning(!!data.scheduler?.isRunning);
       } else {
         setServerOnline(false);
       }
@@ -135,52 +227,41 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
     }
   }, [getApiUrl]);
 
-  // Carrega QR Code
   const fetchQrCode = useCallback(async () => {
     try {
       const res = await fetch(getApiUrl('/api/whatsapp/qr'));
       if (res.ok) {
         const data = await res.json();
-        if (data.qrCodeDataUrl) {
-          setQrCodeDataUrl(data.qrCodeDataUrl);
-        }
+        if (data.qrCodeDataUrl) setQrCodeDataUrl(data.qrCodeDataUrl);
       }
     } catch {}
   }, [getApiUrl]);
 
-  // Carrega fila de cobranças do servidor
   const fetchQueue = useCallback(async () => {
     setLoading(true);
     try {
       const res = await fetch(getApiUrl('/api/whatsapp/queue'));
       if (res.ok) {
         const data = await res.json();
-        if (Array.isArray(data.queue)) {
-          setQueue(data.queue);
-        }
+        if (Array.isArray(data.queue)) setQueue(data.queue);
       }
-    } catch (err) {
-      console.warn('[Painel WhatsApp] Servidor offline ou rota indisponível, gerando fila localmente.', err);
+    } catch {
       generateLocalQueue();
     } finally {
       setLoading(false);
     }
-  }, [getApiUrl, clients]);
+  }, [getApiUrl, clients]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Carrega logs de envio
   const fetchLogs = useCallback(async () => {
     try {
       const res = await fetch(getApiUrl('/api/whatsapp/logs'));
       if (res.ok) {
         const data = await res.json();
-        if (Array.isArray(data.logs)) {
-          setLogs(data.logs);
-        }
+        if (Array.isArray(data.logs)) setLogs(data.logs);
       }
     } catch {}
   }, [getApiUrl]);
 
-  // Gera fila local caso o servidor esteja sendo configurado
   const generateLocalQueue = () => {
     const list: QueueItem[] = [];
     const now = new Date();
@@ -241,7 +322,8 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
         if (!stage) return;
 
         const price = getServicePrice(service, duration);
-        const priceFormatted = price > 0 ? price.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : 'Valor Regular';
+        const priceFormatted =
+          price > 0 ? price.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : 'Valor Regular';
         const sKey = service.toLowerCase().replace(/[^a-z0-9]/g, '');
         const lastEntry = entries[sKey];
         const lastChargedAt = lastEntry?.chargedAt || progress._charge_whatsapp_last_at || null;
@@ -300,7 +382,6 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
     );
   };
 
-  // Polling regular a cada 8 segundos para status e QR Code
   useEffect(() => {
     void fetchStatus();
     void fetchQueue();
@@ -316,7 +397,6 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
     return () => clearInterval(interval);
   }, [fetchStatus, fetchQueue, fetchLogs, serverStatus.state, fetchQrCode]);
 
-  // Iniciar conexão com WhatsApp
   const handleConnect = async () => {
     try {
       await fetch(getApiUrl('/api/whatsapp/connect'), { method: 'POST' });
@@ -327,7 +407,6 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
     }
   };
 
-  // Desconectar WhatsApp
   const handleDisconnect = async () => {
     if (!window.confirm('Tem certeza que deseja desconectar o WhatsApp do servidor?')) return;
     try {
@@ -339,7 +418,6 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
     }
   };
 
-  // Disparar ciclo completo pelo servidor
   const handleTriggerCycle = async () => {
     if (!window.confirm('Iniciar o ciclo de disparos automáticos no servidor agora para todos os pendentes?')) return;
     try {
@@ -360,7 +438,6 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
     }
   };
 
-  // Disparo individual pelo servidor
   const handleSendSingleViaServer = async (item: QueueItem) => {
     setSendingId(item.id);
     try {
@@ -386,7 +463,6 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
     }
   };
 
-  // Fallback: envio manual via WhatsApp Web
   const handleOpenWhatsAppWeb = async (item: QueueItem) => {
     const cleanPhone = item.phoneNumber.replace(/\D/g, '');
     window.open(`https://wa.me/55${cleanPhone}?text=${encodeURIComponent(item.message)}`, '_blank');
@@ -422,44 +498,92 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  // Resumo da fila
+  // Gera preview da mensagem de teste
+  const getTestMessagePreview = () => {
+    const expiry = new Date().toLocaleDateString('pt-BR');
+    if (testStage === 'reminder') {
+      return `Olá, ${testClientName || 'Dorameira'}! Tudo bem com você? ✨ Passando apenas para te avisar com carinho que a sua assinatura do *${testService}* vence no dia ${expiry}. O valor da assinatura é de *${testPrice}*. É apenas um lembrete para você poder se organizar com calma! Se tiver qualquer dúvida ou precisar de algo, estamos sempre à disposição por aqui. Tenha um ótimo dia e aproveite seus doramas! 🌸🍿`;
+    } else if (testStage === 'due') {
+      return `Olá, ${testClientName || 'Dorameira'}! Tudo bem? Esperamos que sim! 🌸 Passando para lembrar que hoje é o dia do vencimento da sua assinatura do *${testService}* no valor de *${testPrice}*. Quer renovar hoje para manter seu acesso ativo? Se já realizou o pagamento, por favor desconsidere este recadinho. Qualquer dúvida, estou por aqui para te ajudar! 🍿✨`;
+    } else if (testStage === 'followup') {
+      return `Olá, ${testClientName || 'Dorameira'}! Tudo bem? Notamos que o acesso à sua assinatura do *${testService}* encerrou. Sabemos bem como a rotina do dia a dia é corrida! Caso queira continuar acompanhando seus doramas favoritos, me avise por aqui. Se precisar de qualquer ajuda, estou super à disposição! 💜`;
+    } else {
+      return `Olá, ${testClientName || 'Dorameira'}! Tudo bem? Sentimos muito a sua falta aqui na EuDorama! 🥰 Preparamos uma condição super especial para você voltar a maratonar seus doramas preferidos por apenas *${testPrice}*! O que acha? É só me responder aqui. Tenha um lindo dia! ✨🍿`;
+    }
+  };
+
+  const handleSendTest = async () => {
+    if (!testPhone.trim()) {
+      setTestResult({ ok: false, message: 'Informe o número de telefone para o teste.' });
+      return;
+    }
+    setTestLoading(true);
+    setTestResult(null);
+    try {
+      const res = await fetch(getApiUrl('/api/whatsapp/send-test'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phone: testPhone.replace(/\D/g, ''),
+          stage: testStage,
+          clientName: testClientName || 'Dorameira',
+          service: testService || 'Viki',
+          price: testPrice || 'R$ 24,90',
+          expiryDate: new Date().toLocaleDateString('pt-BR')
+        })
+      });
+      const data = await res.json();
+      setTestResult({ ok: res.ok && data.success, message: data.message || (data.success ? 'Enviado!' : 'Falha no envio') });
+    } catch (e: any) {
+      setTestResult({ ok: false, message: 'Erro de conexão: ' + (e?.message || 'Servidor offline?') });
+    } finally {
+      setTestLoading(false);
+    }
+  };
+
   const summary = useMemo(() => {
     return queue.reduce(
       (acc, item) => {
         acc.total += 1;
         if (item.alreadySentToday) acc.sent += 1;
         else acc.pending += 1;
-
         if (item.stage === 'due') acc.due += 1;
         if (item.stage === 'reminder') acc.reminder += 1;
         if (item.stage === 'followup') acc.followup += 1;
         if (item.stage === 'reactivation') acc.reactivation += 1;
-
         return acc;
       },
       { total: 0, pending: 0, sent: 0, due: 0, reminder: 0, followup: 0, reactivation: 0 }
     );
   }, [queue]);
 
-  // Fila filtrada
   const filteredQueue = useMemo(() => {
     return queue.filter((item) => {
       if (stageFilter !== 'all' && item.stage !== stageFilter) return false;
       if (onlyPending && item.alreadySentToday) return false;
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
-        const matchesName = item.clientName.toLowerCase().includes(q);
-        const matchesPhone = item.phoneNumber.includes(q);
-        const matchesService = item.service.toLowerCase().includes(q);
-        if (!matchesName && !matchesPhone && !matchesService) return false;
+        if (
+          !item.clientName.toLowerCase().includes(q) &&
+          !item.phoneNumber.includes(q) &&
+          !item.service.toLowerCase().includes(q)
+        )
+          return false;
       }
       return true;
     });
   }, [queue, stageFilter, onlyPending, searchQuery]);
 
+  const stageColor = (stage: string) => {
+    if (stage === 'due') return colorMap.red;
+    if (stage === 'followup') return colorMap.amber;
+    if (stage === 'reactivation') return colorMap.purple;
+    return colorMap.blue;
+  };
+
   return (
     <div className="space-y-6">
-      {/* BARRA SUPERIOR DE STATUS E NAVEGAÇÃO */}
+      {/* BARRA SUPERIOR */}
       <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-indigo-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 rounded-2xl">
@@ -470,54 +594,42 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
               Cobrança Automática no Servidor
               {serverOnline === false && (
                 <span className="text-xs px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-bold">
-                  Motor Local/Offline
+                  Motor Offline
+                </span>
+              )}
+              {serverOnline === true && serverStatus.state === 'connected' && (
+                <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-bold flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" /> WhatsApp Ativo
                 </span>
               )}
             </h2>
             <p className="text-xs font-semibold text-gray-500">
-              Disparos 24/7 rodando na sua AWS EC2 sem precisar do seu computador ligado.
+              Disparos 24/7 rodando na AWS EC2 sem precisar do seu computador ligado.
             </p>
           </div>
         </div>
 
-        {/* NAVEGAÇÃO ENTRE ABAS */}
-        <div className="flex items-center gap-2 p-1.5 bg-gray-100 dark:bg-slate-800 rounded-2xl text-xs font-black uppercase">
-          <button
-            onClick={() => setActiveTab('queue')}
-            className={`px-4 py-2 rounded-xl transition-all ${
-              activeTab === 'queue'
-                ? 'bg-white dark:bg-slate-900 text-indigo-600 shadow-sm'
-                : 'text-gray-500 hover:text-gray-800 dark:hover:text-white'
-            }`}
-          >
-            📋 Fila de Hoje ({summary.pending})
-          </button>
-          <button
-            onClick={() => setActiveTab('connection')}
-            className={`px-4 py-2 rounded-xl transition-all flex items-center gap-1.5 ${
-              activeTab === 'connection'
-                ? 'bg-white dark:bg-slate-900 text-emerald-600 shadow-sm'
-                : 'text-gray-500 hover:text-gray-800 dark:hover:text-white'
-            }`}
-          >
-            <Smartphone size={14} />
-            {serverStatus.state === 'connected' ? 'WhatsApp Conectado' : 'Conectar WhatsApp'}
-            <span
-              className={`w-2 h-2 rounded-full ${
-                serverStatus.state === 'connected' ? 'bg-emerald-500' : 'bg-amber-400 animate-pulse'
+        {/* ABAS */}
+        <div className="flex items-center gap-1 p-1.5 bg-gray-100 dark:bg-slate-800 rounded-2xl text-xs font-black uppercase flex-wrap">
+          {[
+            { id: 'queue', label: `📋 Fila (${summary.pending})` },
+            { id: 'connection', label: serverStatus.state === 'connected' ? '✅ WhatsApp' : '📱 Conectar' },
+            { id: 'rules', label: '📏 Regras' },
+            { id: 'test', label: '🧪 Testar' },
+            { id: 'logs', label: '📜 Logs' }
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id as any)}
+              className={`px-3 py-2 rounded-xl transition-all ${
+                activeTab === tab.id
+                  ? 'bg-white dark:bg-slate-900 text-indigo-600 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-800 dark:hover:text-white'
               }`}
-            />
-          </button>
-          <button
-            onClick={() => setActiveTab('logs')}
-            className={`px-4 py-2 rounded-xl transition-all ${
-              activeTab === 'logs'
-                ? 'bg-white dark:bg-slate-900 text-indigo-600 shadow-sm'
-                : 'text-gray-500 hover:text-gray-800 dark:hover:text-white'
-            }`}
-          >
-            📜 Logs de Disparo
-          </button>
+            >
+              {tab.label}
+            </button>
+          ))}
           <button
             onClick={() => setActiveTab('config')}
             className={`p-2 rounded-xl transition-all ${
@@ -525,24 +637,22 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
                 ? 'bg-white dark:bg-slate-900 text-indigo-600 shadow-sm'
                 : 'text-gray-500 hover:text-gray-800 dark:hover:text-white'
             }`}
-            title="Configurações do Servidor"
+            title="Configurações"
           >
             <Settings size={16} />
           </button>
         </div>
       </div>
 
-      {/* STATUS DA CONEXÃO WHATSAPP / QR CODE */}
+      {/* ══════════════════════════════════════════
+          ABA: CONECTAR WHATSAPP
+      ══════════════════════════════════════════ */}
       {activeTab === 'connection' && (
         <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-8 shadow-sm border border-emerald-100 dark:border-slate-800 space-y-6">
           <div className="flex items-center justify-between border-b border-gray-100 dark:border-slate-800 pb-4">
             <div>
-              <h3 className="text-lg font-black text-gray-900 dark:text-white flex items-center gap-2">
-                Conexão com WhatsApp no Servidor
-              </h3>
-              <p className="text-xs text-gray-500">
-                O WhatsApp roda conectado 24 horas por dia no servidor Node/EC2 usando Baileys.
-              </p>
+              <h3 className="text-lg font-black text-gray-900 dark:text-white">Conexão com WhatsApp no Servidor</h3>
+              <p className="text-xs text-gray-500">O WhatsApp roda conectado 24h por dia no servidor EC2 usando Baileys.</p>
             </div>
             {serverStatus.state === 'connected' ? (
               <button
@@ -580,12 +690,10 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
                   </p>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
-                <span className="px-3 py-1.5 rounded-full bg-emerald-100 text-emerald-800 font-black text-xs uppercase flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
-                  Pronto para Disparos Automáticos
-                </span>
-              </div>
+              <span className="px-3 py-1.5 rounded-full bg-emerald-100 text-emerald-800 font-black text-xs uppercase flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+                Pronto para Disparos Automáticos
+              </span>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-center">
@@ -599,7 +707,7 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
                     />
                     <p className="text-xs font-bold text-gray-500 flex items-center justify-center gap-1.5">
                       <RefreshCw size={12} className="animate-spin text-emerald-600" />
-                      Aguardando leitura pelo celular...
+                      Aguardando leitura pelo celular... (escanear rápido!)
                     </p>
                   </div>
                 ) : (
@@ -608,12 +716,8 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
                       <QrCode size={36} />
                     </div>
                     <div>
-                      <p className="text-sm font-bold text-gray-700 dark:text-gray-300">
-                        Nenhum QR Code ativo no momento
-                      </p>
-                      <p className="text-xs text-gray-400 mt-1">
-                        Clique no botão abaixo para inicializar o WhatsApp no servidor e gerar o código.
-                      </p>
+                      <p className="text-sm font-bold text-gray-700 dark:text-gray-300">Nenhum QR Code ativo</p>
+                      <p className="text-xs text-gray-400 mt-1">Clique no botão acima para gerar o QR Code.</p>
                     </div>
                     <button
                       onClick={handleConnect}
@@ -626,23 +730,19 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
               </div>
 
               <div className="space-y-4">
-                <h4 className="font-black text-gray-900 dark:text-white text-base">
-                  Como conectar seu WhatsApp:
-                </h4>
+                <h4 className="font-black text-gray-900 dark:text-white text-base">Como conectar seu WhatsApp:</h4>
                 <ol className="space-y-3 text-xs text-gray-600 dark:text-gray-300 font-semibold list-decimal list-inside">
                   <li className="p-3 bg-gray-50 dark:bg-slate-800 rounded-xl">
                     Abra o <strong>WhatsApp</strong> no celular com o número de atendimento da EuDorama.
                   </li>
                   <li className="p-3 bg-gray-50 dark:bg-slate-800 rounded-xl">
-                    Toque em <strong>Configurações / Menu (⋮)</strong> e selecione{' '}
-                    <strong>Aparelhos Conectados</strong>.
+                    Toque em <strong>Configurações / Menu (⋮)</strong> → <strong>Aparelhos Conectados</strong>.
                   </li>
                   <li className="p-3 bg-gray-50 dark:bg-slate-800 rounded-xl">
-                    Toque em <strong>Conectar um aparelho</strong> e aponte a câmera para o QR Code ao lado.
+                    Toque em <strong>Conectar um aparelho</strong> e aponte a câmera para o QR Code.
                   </li>
-                  <li className="p-3 bg-gray-50 dark:bg-slate-800 rounded-xl">
-                    Assim que conectar, a sessão é salva no servidor. Você{' '}
-                    <strong>não precisará escanear novamente</strong> mesmo se fechar o navegador!
+                  <li className="p-3 bg-emerald-50 dark:bg-emerald-950/20 rounded-xl border border-emerald-100">
+                    ✅ A sessão é <strong>salva no servidor</strong>. Você <strong>não precisará escanear novamente</strong> mesmo fechando o navegador!
                   </li>
                 </ol>
               </div>
@@ -651,57 +751,280 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
         </div>
       )}
 
-      {/* ABA PRINCIPAL: FILA DO DIA */}
-      {activeTab === 'queue' && (
-        <div className="space-y-6">
-          {/* CARDS DE RESUMO E DISPARADOR */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div className="p-5 bg-white dark:bg-slate-900 rounded-3xl border border-indigo-100 dark:border-slate-800 shadow-sm flex items-center justify-between">
-              <div>
-                <p className="text-[10px] font-black uppercase tracking-wider text-indigo-400">Total na Fila</p>
-                <p className="text-2xl font-black text-gray-900 dark:text-white">{summary.total}</p>
-                <p className="text-[11px] text-gray-400 font-bold mt-0.5">{summary.pending} pendentes de envio</p>
-              </div>
-              <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl">
-                <Calendar size={22} />
-              </div>
-            </div>
-
-            <div className="p-5 bg-white dark:bg-slate-900 rounded-3xl border border-red-100 dark:border-slate-800 shadow-sm flex items-center justify-between">
-              <div>
-                <p className="text-[10px] font-black uppercase tracking-wider text-red-500">Vence Hoje (D0)</p>
-                <p className="text-2xl font-black text-red-600">{summary.due}</p>
-                <p className="text-[11px] text-gray-400 font-bold mt-0.5">Cobrança gentil do dia</p>
-              </div>
-              <div className="p-3 bg-red-50 text-red-600 rounded-2xl">
-                <Clock size={22} />
-              </div>
-            </div>
-
-            <div className="p-5 bg-white dark:bg-slate-900 rounded-3xl border border-blue-100 dark:border-slate-800 shadow-sm flex items-center justify-between">
-              <div>
-                <p className="text-[10px] font-black uppercase tracking-wider text-blue-500">Vence em Breve (D-5 a D-1)</p>
-                <p className="text-2xl font-black text-blue-600">{summary.reminder}</p>
-                <p className="text-[11px] text-gray-400 font-bold mt-0.5">Lembrete sem cobrança antecipada</p>
-              </div>
-              <div className="p-3 bg-blue-50 text-blue-600 rounded-2xl">
-                <ShieldCheck size={22} />
-              </div>
-            </div>
-
-            <div className="p-5 bg-white dark:bg-slate-900 rounded-3xl border border-purple-100 dark:border-slate-800 shadow-sm flex items-center justify-between">
-              <div>
-                <p className="text-[10px] font-black uppercase tracking-wider text-purple-500">Vencidos & Reativação</p>
-                <p className="text-2xl font-black text-purple-600">{summary.followup + summary.reactivation}</p>
-                <p className="text-[11px] text-gray-400 font-bold mt-0.5">Follow-up empático e ofertas</p>
-              </div>
-              <div className="p-3 bg-purple-50 text-purple-600 rounded-2xl">
-                <Zap size={22} />
-              </div>
+      {/* ══════════════════════════════════════════
+          ABA: REGRAS DE MENSAGEM
+      ══════════════════════════════════════════ */}
+      {activeTab === 'rules' && (
+        <div className="space-y-4">
+          <div className="bg-indigo-50 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-800/40 rounded-3xl p-5 flex gap-3">
+            <Info size={20} className="text-indigo-600 shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-black text-indigo-800 dark:text-indigo-300">Por que regras diferentes por etapa?</p>
+              <p className="text-xs text-indigo-700 dark:text-indigo-400 mt-1">
+                Mensagens de cobrança devem ter o tom certo para cada momento. Pressionar alguém que ainda está em dia é invasivo e espanta clientes. Oferecer promoção para quem acabou de vencer pode parecer desespero. Cada etapa tem sua lógica.
+              </p>
             </div>
           </div>
 
-          {/* CARD DE AÇÃO DO ROBÔ DIÁRIO */}
+          {STAGE_RULES.map((rule) => {
+            const col = colorMap[rule.color];
+            const Icon = rule.icon;
+            return (
+              <div key={rule.id} className={`${col.bg} border ${col.border} rounded-3xl p-6 space-y-4`}>
+                <div className="flex items-center gap-3">
+                  <div className={`p-2.5 rounded-2xl ${col.icon}`}>
+                    <Icon size={20} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h4 className={`font-black text-base ${col.text}`}>{rule.label}</h4>
+                      <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase border ${col.badge}`}>
+                        {rule.range}
+                      </span>
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase bg-white/70 dark:bg-slate-800 text-gray-600 dark:text-gray-300">
+                        Tom: {rule.tone}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-xs font-black uppercase text-gray-500 mb-2">✅ O que pode dizer:</p>
+                    <ul className="space-y-1">
+                      {rule.allowed.map((a) => (
+                        <li key={a} className="text-xs font-semibold text-gray-700 dark:text-gray-300 flex items-start gap-1.5">
+                          <Check size={12} className="text-emerald-600 shrink-0 mt-0.5" /> {a}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div>
+                    <p className="text-xs font-black uppercase text-gray-500 mb-2">🚫 O que é proibido:</p>
+                    <ul className="space-y-1">
+                      {rule.blocked.map((b) => (
+                        <li key={b} className="text-xs font-semibold text-red-700 dark:text-red-400">
+                          {b}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+
+                <div className="p-3 bg-white/60 dark:bg-slate-800/50 rounded-2xl border border-white/80 dark:border-slate-700">
+                  <p className="text-[10px] font-black uppercase text-gray-400 mb-1">Exemplo de mensagem:</p>
+                  <p className="text-xs text-gray-700 dark:text-gray-300 italic">"{rule.example}"</p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════
+          ABA: TESTAR AUTOMAÇÃO
+      ══════════════════════════════════════════ */}
+      {activeTab === 'test' && (
+        <div className="space-y-5">
+          {/* Banner de aviso */}
+          <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800/40 rounded-3xl p-5 flex gap-3">
+            <AlertTriangle size={20} className="text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-black text-amber-800 dark:text-amber-300">Modo de Teste — Mensagens de Verificação</p>
+              <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
+                Use para verificar se a automação está funcionando. A mensagem enviada terá o prefixo <strong>[🧪 MENSAGEM DE TESTE - IGNORAR]</strong> claramente visível para você saber que é só um teste. O WhatsApp precisa estar conectado no servidor.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* FORMULÁRIO */}
+            <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 border border-gray-100 dark:border-slate-800 shadow-sm space-y-5">
+              <div className="flex items-center gap-2">
+                <FlaskConical size={20} className="text-indigo-600" />
+                <h3 className="font-black text-gray-900 dark:text-white">Configurar Teste</h3>
+              </div>
+
+              <div className="space-y-4">
+                <div className="space-y-1">
+                  <label className="text-xs font-black uppercase text-gray-600 dark:text-gray-300">
+                    Número para receber o teste *
+                  </label>
+                  <input
+                    type="text"
+                    value={testPhone}
+                    onChange={(e) => setTestPhone(e.target.value)}
+                    placeholder="Ex: 11999998888 (só números, sem +55)"
+                    className="w-full p-3 bg-gray-50 dark:bg-slate-800 rounded-2xl text-sm font-bold border border-gray-200 dark:border-slate-700 outline-none focus:border-indigo-400"
+                  />
+                  <p className="text-[11px] text-gray-400">
+                    Digite seu próprio número para receber o teste. Sem espaços, traços ou parênteses.
+                  </p>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-black uppercase text-gray-600 dark:text-gray-300">Etapa a testar</label>
+                  <select
+                    value={testStage}
+                    onChange={(e) => setTestStage(e.target.value as any)}
+                    className="w-full p-3 bg-gray-50 dark:bg-slate-800 rounded-2xl text-sm font-bold border border-gray-200 dark:border-slate-700 outline-none focus:border-indigo-400"
+                  >
+                    <option value="reminder">🔔 Lembrete Antecipado (D-5 a D-1)</option>
+                    <option value="due">🕐 Vence Hoje (D0)</option>
+                    <option value="followup">💜 Follow-up Pós-vencimento (D+1 a D+7)</option>
+                    <option value="reactivation">🎁 Reativação com Oferta (D+15 a D+45)</option>
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-xs font-black uppercase text-gray-600 dark:text-gray-300">Nome do cliente</label>
+                    <input
+                      type="text"
+                      value={testClientName}
+                      onChange={(e) => setTestClientName(e.target.value)}
+                      placeholder="Ex: Dorameira"
+                      className="w-full p-3 bg-gray-50 dark:bg-slate-800 rounded-2xl text-sm font-bold border border-gray-200 dark:border-slate-700 outline-none focus:border-indigo-400"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-black uppercase text-gray-600 dark:text-gray-300">Serviço</label>
+                    <select
+                      value={testService}
+                      onChange={(e) => {
+                        setTestService(e.target.value);
+                        const prices: Record<string, string> = { Viki: 'R$ 24,90', iQIYI: 'R$ 19,90' };
+                        setTestPrice(prices[e.target.value] || 'R$ 16,90');
+                      }}
+                      className="w-full p-3 bg-gray-50 dark:bg-slate-800 rounded-2xl text-sm font-bold border border-gray-200 dark:border-slate-700 outline-none focus:border-indigo-400"
+                    >
+                      <option>Viki</option>
+                      <option>iQIYI</option>
+                      <option>Kocowa</option>
+                      <option>WeTV</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-black uppercase text-gray-600 dark:text-gray-300">Valor para simular</label>
+                  <input
+                    type="text"
+                    value={testPrice}
+                    onChange={(e) => setTestPrice(e.target.value)}
+                    placeholder="Ex: R$ 24,90"
+                    className="w-full p-3 bg-gray-50 dark:bg-slate-800 rounded-2xl text-sm font-bold border border-gray-200 dark:border-slate-700 outline-none focus:border-indigo-400"
+                  />
+                </div>
+              </div>
+
+              {/* STATUS DA CONEXÃO */}
+              <div className={`p-3 rounded-2xl border text-xs font-bold flex items-center gap-2 ${
+                serverStatus.state === 'connected'
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-800 dark:bg-emerald-950/20 dark:border-emerald-800/40 dark:text-emerald-300'
+                  : 'bg-red-50 border-red-200 text-red-800 dark:bg-red-950/20 dark:border-red-800/40 dark:text-red-300'
+              }`}>
+                {serverStatus.state === 'connected' ? (
+                  <><CheckCircle2 size={14} /> WhatsApp conectado — pronto para enviar</>
+                ) : (
+                  <><AlertCircle size={14} /> WhatsApp não conectado — vá para a aba "Conectar" primeiro</>
+                )}
+              </div>
+
+              {/* RESULTADO */}
+              {testResult && (
+                <div className={`p-4 rounded-2xl border text-xs font-bold flex items-start gap-2 ${
+                  testResult.ok
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-900 dark:bg-emerald-950/20 dark:border-emerald-800/40 dark:text-emerald-200'
+                    : 'bg-red-50 border-red-200 text-red-900 dark:bg-red-950/20 dark:border-red-800/40 dark:text-red-200'
+                }`}>
+                  {testResult.ok ? <CheckCircle2 size={14} className="shrink-0 mt-0.5" /> : <AlertCircle size={14} className="shrink-0 mt-0.5" />}
+                  {testResult.message}
+                </div>
+              )}
+
+              <button
+                onClick={handleSendTest}
+                disabled={testLoading || serverStatus.state !== 'connected'}
+                className="w-full py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white font-black text-sm uppercase transition-all shadow-md disabled:opacity-40 flex items-center justify-center gap-2"
+              >
+                {testLoading ? (
+                  <><RefreshCw size={16} className="animate-spin" /> Enviando teste...</>
+                ) : (
+                  <><FlaskConical size={16} /> Enviar Mensagem de Teste</>
+                )}
+              </button>
+            </div>
+
+            {/* PREVIEW DA MENSAGEM */}
+            <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 border border-gray-100 dark:border-slate-800 shadow-sm space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Eye size={18} className="text-indigo-600" />
+                  <h3 className="font-black text-gray-900 dark:text-white">Preview da Mensagem</h3>
+                </div>
+                <span className="text-[10px] font-black uppercase px-2 py-1 bg-amber-100 text-amber-700 rounded-full">
+                  🧪 COM PREFIXO [TESTE]
+                </span>
+              </div>
+
+              {/* Simulação de balão do WhatsApp */}
+              <div className="bg-[#e5ddd5] dark:bg-slate-700 rounded-3xl p-4 min-h-[200px]">
+                <div className="bg-white dark:bg-slate-800 rounded-2xl rounded-tl-none p-3 max-w-[90%] shadow-sm">
+                  <p className="text-[10px] font-black text-amber-600 mb-1">🧪 [MENSAGEM DE TESTE - IGNORAR]</p>
+                  <p className="text-xs text-gray-800 dark:text-gray-200 leading-relaxed whitespace-pre-wrap">
+                    {getTestMessagePreview()}
+                  </p>
+                  <p className="text-[10px] text-gray-400 mt-2 italic">
+                    — Teste enviado pelo painel EuDorama
+                  </p>
+                  <p className="text-[10px] text-gray-400 text-right mt-1">
+                    {new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })} ✓✓
+                  </p>
+                </div>
+              </div>
+
+              <div className={`p-3 rounded-2xl border text-xs font-semibold space-y-1 ${colorMap[testStage === 'reminder' ? 'blue' : testStage === 'due' ? 'red' : testStage === 'followup' ? 'amber' : 'purple'].bg} ${colorMap[testStage === 'reminder' ? 'blue' : testStage === 'due' ? 'red' : testStage === 'followup' ? 'amber' : 'purple'].border}`}>
+                <p className="font-black">
+                  {STAGE_RULES.find((r) => r.id === testStage)?.label} · {STAGE_RULES.find((r) => r.id === testStage)?.range}
+                </p>
+                <p className="opacity-80">Tom: {STAGE_RULES.find((r) => r.id === testStage)?.tone}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════
+          ABA: FILA DO DIA
+      ══════════════════════════════════════════ */}
+      {activeTab === 'queue' && (
+        <div className="space-y-6">
+          {/* CARDS DE RESUMO */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            {[
+              { label: 'Total na Fila', value: summary.total, sub: `${summary.pending} pendentes`, color: 'indigo', icon: Calendar },
+              { label: 'Vence Hoje (D0)', value: summary.due, sub: 'Convite gentil à renovação', color: 'red', icon: Clock },
+              { label: 'Lembretes (D-5 a D-1)', value: summary.reminder, sub: 'Sem pressão de pagamento', color: 'blue', icon: ShieldCheck },
+              { label: 'Vencidos + Reativação', value: summary.followup + summary.reactivation, sub: 'Follow-up e ofertas', color: 'purple', icon: Zap }
+            ].map((card) => {
+              const Icon = card.icon;
+              return (
+                <div key={card.label} className="p-5 bg-white dark:bg-slate-900 rounded-3xl border border-gray-100 dark:border-slate-800 shadow-sm flex items-center justify-between">
+                  <div>
+                    <p className={`text-[10px] font-black uppercase tracking-wider text-${card.color}-400`}>{card.label}</p>
+                    <p className={`text-2xl font-black text-${card.color}-600`}>{card.value}</p>
+                    <p className="text-[11px] text-gray-400 font-bold mt-0.5">{card.sub}</p>
+                  </div>
+                  <div className={`p-3 bg-${card.color}-50 text-${card.color}-600 rounded-2xl`}>
+                    <Icon size={22} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* CARD DO ROBÔ DIÁRIO */}
           <div className="p-6 bg-gradient-to-r from-emerald-600 to-teal-700 rounded-[2.5rem] text-white shadow-lg flex flex-wrap items-center justify-between gap-4">
             <div className="space-y-1">
               <div className="flex items-center gap-2">
@@ -710,15 +1033,13 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
                   Agendador Automático do Servidor
                 </p>
               </div>
-              <h3 className="text-xl font-black">
-                Disparo Diário Programado para 09:30 (Brasília)
-              </h3>
+              <h3 className="text-xl font-black">Disparo Diário Programado — 09:30 (Brasília)</h3>
               <p className="text-xs text-emerald-100 font-semibold max-w-xl">
                 O servidor envia sozinho com intervalos humanizados (10s a 18s) para blindar seu número de bloqueios.
                 {serverStatus.scheduler?.lastCycleAt && (
                   <span className="block mt-1 text-emerald-200 font-bold">
-                    Último ciclo executado: {new Date(serverStatus.scheduler.lastCycleAt).toLocaleString('pt-BR')} (
-                    {serverStatus.scheduler.lastCycleSummary?.sent || 0} enviados)
+                    Último ciclo: {new Date(serverStatus.scheduler.lastCycleAt).toLocaleString('pt-BR')} ({serverStatus.scheduler.lastCycleSummary?.sent || 0} enviados,{' '}
+                    {serverStatus.scheduler.lastCycleSummary?.failed || 0} falhas)
                   </span>
                 )}
               </p>
@@ -729,10 +1050,8 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
                 onClick={fetchQueue}
                 disabled={loading}
                 className="px-4 py-3 rounded-2xl bg-white/20 hover:bg-white/30 text-white font-black text-xs uppercase transition-all backdrop-blur-sm flex items-center gap-2"
-                title="Atualizar lista da fila"
               >
-                <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-                Atualizar
+                <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Atualizar
               </button>
 
               <button
@@ -746,61 +1065,29 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
             </div>
           </div>
 
-          {/* BARRA DE FILTROS E PESQUISA */}
+          {/* FILTROS */}
           <div className="bg-white dark:bg-slate-900 rounded-3xl p-4 shadow-sm border border-gray-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4">
             <div className="flex flex-wrap items-center gap-2">
-              <button
-                onClick={() => setStageFilter('all')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-black uppercase transition-all ${
-                  stageFilter === 'all'
-                    ? 'bg-indigo-600 text-white shadow-sm'
-                    : 'bg-gray-100 dark:bg-slate-800 text-gray-500 hover:text-gray-900'
-                }`}
-              >
-                Todos ({summary.total})
-              </button>
-              <button
-                onClick={() => setStageFilter('due')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-black uppercase transition-all ${
-                  stageFilter === 'due'
-                    ? 'bg-red-600 text-white shadow-sm'
-                    : 'bg-gray-100 dark:bg-slate-800 text-gray-500 hover:text-gray-900'
-                }`}
-              >
-                Vence Hoje ({summary.due})
-              </button>
-              <button
-                onClick={() => setStageFilter('reminder')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-black uppercase transition-all ${
-                  stageFilter === 'reminder'
-                    ? 'bg-blue-600 text-white shadow-sm'
-                    : 'bg-gray-100 dark:bg-slate-800 text-gray-500 hover:text-gray-900'
-                }`}
-              >
-                Lembretes ({summary.reminder})
-              </button>
-              <button
-                onClick={() => setStageFilter('followup')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-black uppercase transition-all ${
-                  stageFilter === 'followup'
-                    ? 'bg-amber-600 text-white shadow-sm'
-                    : 'bg-gray-100 dark:bg-slate-800 text-gray-500 hover:text-gray-900'
-                }`}
-              >
-                Follow-up ({summary.followup})
-              </button>
-              <button
-                onClick={() => setStageFilter('reactivation')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-black uppercase transition-all ${
-                  stageFilter === 'reactivation'
-                    ? 'bg-purple-600 text-white shadow-sm'
-                    : 'bg-gray-100 dark:bg-slate-800 text-gray-500 hover:text-gray-900'
-                }`}
-              >
-                Reativação ({summary.reactivation})
-              </button>
+              {[
+                { id: 'all', label: `Todos (${summary.total})`, active: 'indigo' },
+                { id: 'due', label: `Vence Hoje (${summary.due})`, active: 'red' },
+                { id: 'reminder', label: `Lembretes (${summary.reminder})`, active: 'blue' },
+                { id: 'followup', label: `Follow-up (${summary.followup})`, active: 'amber' },
+                { id: 'reactivation', label: `Reativação (${summary.reactivation})`, active: 'purple' }
+              ].map((f) => (
+                <button
+                  key={f.id}
+                  onClick={() => setStageFilter(f.id as any)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-black uppercase transition-all ${
+                    stageFilter === f.id
+                      ? `bg-${f.active}-600 text-white shadow-sm`
+                      : 'bg-gray-100 dark:bg-slate-800 text-gray-500 hover:text-gray-900'
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
             </div>
-
             <div className="flex items-center gap-3">
               <label className="flex items-center gap-2 text-xs font-bold text-gray-600 dark:text-gray-300 cursor-pointer">
                 <input
@@ -811,96 +1098,84 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
                 />
                 Apenas Pendentes
               </label>
-
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Buscar cliente, número ou serviço..."
-                className="px-4 py-2 bg-gray-50 dark:bg-slate-800 rounded-xl text-xs font-bold border border-gray-200 dark:border-slate-700 outline-none w-64"
+                className="px-4 py-2 bg-gray-50 dark:bg-slate-800 rounded-xl text-xs font-bold border border-gray-200 dark:border-slate-700 outline-none w-56"
               />
             </div>
           </div>
 
-          {/* LISTA DE CARDS DA FILA */}
+          {/* LISTA DE CARDS */}
           {filteredQueue.length === 0 ? (
             <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-12 text-center border border-dashed border-gray-200 dark:border-slate-800 space-y-2">
               <CheckCircle2 size={36} className="text-emerald-500 mx-auto" />
-              <p className="text-sm font-black text-gray-800 dark:text-white">
-                Nenhum cliente pendente nesta categoria hoje!
-              </p>
-              <p className="text-xs text-gray-400">
-                Todos os clientes aplicáveis já foram notificados ou não há vencimentos no período selecionado.
-              </p>
+              <p className="text-sm font-black text-gray-800 dark:text-white">Nenhum cliente pendente nesta categoria!</p>
+              <p className="text-xs text-gray-400">Todos os clientes já foram notificados ou não há vencimentos no período.</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {filteredQueue.map((item) => {
                 const isExpanded = expandedPreviewId === item.id;
                 const isSending = sendingId === item.id;
-
-                let stageBadgeColor = 'bg-blue-50 text-blue-700 border-blue-200';
-                if (item.stage === 'due') stageBadgeColor = 'bg-red-50 text-red-700 border-red-200';
-                if (item.stage === 'followup') stageBadgeColor = 'bg-amber-50 text-amber-700 border-amber-200';
-                if (item.stage === 'reactivation') stageBadgeColor = 'bg-purple-50 text-purple-700 border-purple-200';
+                const col = stageColor(item.stage);
 
                 return (
                   <div
                     key={item.id}
-                    className={`p-5 rounded-3xl border transition-all ${
+                    className={`rounded-3xl border transition-all ${
                       item.alreadySentToday
                         ? 'bg-emerald-50/20 dark:bg-emerald-950/10 border-emerald-200 dark:border-emerald-800/40'
                         : 'bg-white dark:bg-slate-900 border-gray-100 dark:border-slate-800 shadow-sm'
                     }`}
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <p className="font-black text-gray-900 dark:text-white text-sm">{item.clientName}</p>
-                          <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase border ${stageBadgeColor}`}>
-                            {item.stageLabel}
-                          </span>
+                    {/* Header do card */}
+                    <div className="p-5 pb-0">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="font-black text-gray-900 dark:text-white text-sm">{item.clientName}</p>
+                            <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase border ${col.badge}`}>
+                              {item.stageLabel}
+                            </span>
+                          </div>
+                          <p className="text-xs font-semibold text-gray-500 mt-0.5">
+                            {item.phoneNumber} · <strong className="text-indigo-600 dark:text-indigo-400">{item.service}</strong>{' '}
+                            · {item.priceFormatted}
+                          </p>
+                          <p className="text-[11px] text-gray-400 font-bold">Vencimento: {item.expiryDateStr}</p>
                         </div>
-                        <p className="text-xs font-semibold text-gray-500 mt-0.5">
-                          {item.phoneNumber} · <strong className="text-indigo-600 dark:text-indigo-400">{item.service}</strong> ({item.priceFormatted})
-                        </p>
-                        <p className="text-[11px] text-gray-400 font-bold">
-                          Vencimento: {item.expiryDateStr}
-                        </p>
-                      </div>
-
-                      <div>
-                        {item.alreadySentToday ? (
-                          <span className="px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 font-black text-[10px] uppercase flex items-center gap-1 shadow-sm">
-                            <CheckCircle2 size={12} /> Enviado Hoje
-                          </span>
-                        ) : (
-                          <span className="px-3 py-1 rounded-full bg-amber-100 text-amber-800 font-black text-[10px] uppercase flex items-center gap-1">
-                            <Clock size={12} /> Pendente
-                          </span>
-                        )}
+                        <div className="shrink-0">
+                          {item.alreadySentToday ? (
+                            <span className="px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 font-black text-[10px] uppercase flex items-center gap-1 shadow-sm">
+                              <CheckCircle2 size={12} /> Enviado Hoje
+                            </span>
+                          ) : (
+                            <span className="px-3 py-1 rounded-full bg-amber-100 text-amber-800 font-black text-[10px] uppercase flex items-center gap-1">
+                              <Clock size={12} /> Pendente
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
 
-                    {/* PREVIEW DA MENSAGEM */}
-                    <div className="mt-3 pt-3 border-t border-gray-100 dark:border-slate-800">
+                    {/* Prévia sempre visível (truncada) */}
+                    <div className="px-5 mt-3">
+                      <div className={`text-[11px] font-semibold text-gray-600 dark:text-gray-300 leading-relaxed p-3 rounded-2xl ${col.bg} border ${col.border}`}>
+                        {isExpanded ? item.message : `${item.message.slice(0, 120)}...`}
+                      </div>
                       <button
                         onClick={() => setExpandedPreviewId(isExpanded ? null : item.id)}
-                        className="text-xs font-bold text-gray-500 hover:text-indigo-600 flex items-center justify-between w-full"
+                        className="text-[11px] font-bold text-indigo-500 hover:text-indigo-700 mt-1.5 flex items-center gap-1"
                       >
-                        <span>Ver mensagem gerada</span>
-                        {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                        {isExpanded ? <><EyeOff size={12} /> Recolher mensagem</> : <><Eye size={12} /> Ver mensagem completa</>}
                       </button>
-
-                      {isExpanded && (
-                        <div className="mt-2 p-3 bg-gray-50 dark:bg-slate-800/70 rounded-2xl text-xs text-gray-700 dark:text-gray-200 font-medium whitespace-pre-wrap border border-gray-100 dark:border-slate-700">
-                          {item.message}
-                        </div>
-                      )}
                     </div>
 
-                    {/* BOTÕES DE DISPARO */}
-                    <div className="mt-4 flex items-center justify-between gap-2">
+                    {/* Botões */}
+                    <div className="p-5 pt-4 flex items-center justify-between gap-2">
                       <button
                         onClick={() => handleCopyMessage(item.message, item.id)}
                         className="p-2.5 rounded-xl bg-gray-100 dark:bg-slate-800 text-gray-600 hover:text-indigo-600 font-bold text-xs flex items-center gap-1.5 transition-all"
@@ -916,15 +1191,14 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
                           className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 dark:bg-slate-800 text-gray-700 dark:text-gray-200 font-bold text-xs flex items-center gap-1.5 transition-all"
                           title="Abrir no WhatsApp Web"
                         >
-                          <ExternalLink size={14} />
-                          WhatsApp Web
+                          <ExternalLink size={14} /> WhatsApp Web
                         </button>
 
                         <button
                           onClick={() => handleSendSingleViaServer(item)}
                           disabled={isSending || serverStatus.state !== 'connected'}
                           className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs uppercase flex items-center gap-1.5 transition-all shadow-md disabled:opacity-40"
-                          title="Enviar imediatamente usando o servidor"
+                          title="Enviar via servidor EC2"
                         >
                           {isSending ? <RefreshCw size={14} className="animate-spin" /> : <Send size={14} />}
                           {isSending ? 'Enviando...' : 'Enviar pelo Servidor'}
@@ -939,7 +1213,9 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
         </div>
       )}
 
-      {/* ABA DE LOGS */}
+      {/* ══════════════════════════════════════════
+          ABA: LOGS
+      ══════════════════════════════════════════ */}
       {activeTab === 'logs' && (
         <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-gray-100 dark:border-slate-800 space-y-4">
           <div className="flex items-center justify-between border-b border-gray-100 dark:border-slate-800 pb-3">
@@ -951,13 +1227,13 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
               onClick={fetchLogs}
               className="p-2 rounded-xl bg-gray-100 dark:bg-slate-800 text-gray-600 hover:text-indigo-600 text-xs font-bold flex items-center gap-1"
             >
-              <RefreshCw size={14} /> Atualizar Logs
+              <RefreshCw size={14} /> Atualizar
             </button>
           </div>
 
           {logs.length === 0 ? (
             <div className="py-12 text-center text-gray-400 text-xs font-bold">
-              Nenhum log registrado ainda. Os disparos do servidor aparecerão aqui automaticamente.
+              Nenhum log ainda. Os disparos do servidor aparecerão aqui automaticamente.
             </div>
           ) : (
             <div className="space-y-2 max-h-[36rem] overflow-y-auto pr-1">
@@ -970,20 +1246,19 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
                       : 'bg-red-50/40 border-red-100 text-red-900 dark:bg-red-950/20 dark:border-red-800/40 dark:text-red-200'
                   }`}
                 >
-                  <div className="space-y-0.5">
-                    <p className="font-bold flex items-center gap-2">
+                  <div className="space-y-0.5 min-w-0">
+                    <p className="font-bold flex items-center gap-2 flex-wrap">
                       <span>{log.clientName}</span>
                       <span className="text-[10px] opacity-70">({log.phoneNumber})</span>
                       <span className="px-2 py-0.5 rounded-full bg-white/70 dark:bg-slate-800 text-[10px] font-black uppercase">
                         {log.stage}
                       </span>
+                      <span className="text-[10px] opacity-60">{log.service}</span>
                     </p>
                     {log.error ? (
                       <p className="text-red-600 dark:text-red-400 font-semibold text-[11px]">Erro: {log.error}</p>
                     ) : (
-                      <p className="text-gray-500 dark:text-gray-400 text-[11px] truncate max-w-xl">
-                        {log.messageText}
-                      </p>
+                      <p className="text-gray-500 dark:text-gray-400 text-[11px] truncate max-w-xl">{log.messageText}</p>
                     )}
                   </div>
 
@@ -996,7 +1271,7 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
                       {log.status === 'success' ? 'Sucesso' : 'Falha'}
                     </span>
                     <p className="text-[10px] text-gray-400 font-bold mt-1">
-                      {new Date(log.timestamp).toLocaleTimeString('pt-BR')}
+                      {new Date(log.timestamp).toLocaleString('pt-BR')}
                     </p>
                   </div>
                 </div>
@@ -1006,7 +1281,9 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
         </div>
       )}
 
-      {/* ABA DE CONFIGURAÇÃO */}
+      {/* ══════════════════════════════════════════
+          ABA: CONFIGURAÇÕES
+      ══════════════════════════════════════════ */}
       {activeTab === 'config' && (
         <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-gray-100 dark:border-slate-800 space-y-6">
           <div className="border-b border-gray-100 dark:border-slate-800 pb-3">
@@ -1016,9 +1293,7 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
 
           <div className="space-y-4 max-w-xl">
             <div className="space-y-1">
-              <label className="text-xs font-black uppercase text-gray-600 dark:text-gray-300">
-                URL Base do Motor / Servidor (Opcional)
-              </label>
+              <label className="text-xs font-black uppercase text-gray-600 dark:text-gray-300">URL Base do Motor / Servidor</label>
               <input
                 type="text"
                 value={motorBaseUrl}
@@ -1026,28 +1301,28 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
                   setMotorBaseUrl(e.target.value);
                   localStorage.setItem('whatsapp_motor_base_url', e.target.value);
                 }}
-                placeholder="Ex: http://localhost:3000 ou https://seu-tunnel.trycloudflare.com"
+                placeholder="Ex: https://viki-motor.eudorama.com"
                 className="w-full p-3 bg-gray-50 dark:bg-slate-800 rounded-2xl text-xs font-bold border border-gray-200 dark:border-slate-700 outline-none"
               />
               <p className="text-[11px] text-gray-400">
-                Se o painel estiver rodando na mesma porta/origem que o motor, deixe vazio. Se estiver usando tunnel Cloudflare para a AWS, cole a URL do tunnel aqui.
+                Cole aqui a URL do túnel Cloudflare: <code className="bg-gray-100 dark:bg-slate-700 px-1 py-0.5 rounded">https://viki-motor.eudorama.com</code>
               </p>
             </div>
 
             <div className="p-4 bg-indigo-50 dark:bg-slate-800/50 rounded-2xl border border-indigo-100 dark:border-slate-700 space-y-2">
-              <h4 className="text-xs font-black uppercase text-indigo-700 dark:text-indigo-400">
-                Como rodar o Motor 24/7 na sua AWS EC2:
-              </h4>
-              <p className="text-xs text-gray-600 dark:text-gray-300">
-                1. Conecte na sua EC2 via SSH: <code>ssh -i sua-chave.pem ubuntu@seu-ip</code>
-              </p>
-              <p className="text-xs text-gray-600 dark:text-gray-300">
-                2. Entre na pasta do projeto e inicie com PM2:
-              </p>
+              <h4 className="text-xs font-black uppercase text-indigo-700 dark:text-indigo-400">Comandos úteis no EC2:</h4>
               <pre className="p-3 bg-slate-900 text-emerald-400 rounded-xl text-xs overflow-x-auto font-mono">
-                cd /home/ubuntu/eudorama.com{"\n"}
-                pm2 restart "viki-motor" || pm2 start "npx tsx automation-server.ts" --name "viki-motor"{"\n"}
-                pm2 save
+{`# Ver status dos processos
+pm2 list
+
+# Ver logs em tempo real
+pm2 logs viki-motor
+
+# Reiniciar o motor
+pm2 restart viki-motor
+
+# Verificar se o motor responde
+curl https://viki-motor.eudorama.com/api/whatsapp/status`}
               </pre>
             </div>
           </div>
