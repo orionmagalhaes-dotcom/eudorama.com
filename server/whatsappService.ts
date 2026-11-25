@@ -35,8 +35,8 @@ let lastConnectedAt: string | undefined = undefined;
 let lastDisconnectReason: string | undefined = undefined;
 let reconnectTimer: NodeJS.Timeout | null = null;
 
-// Logger silencioso para não poluir o terminal
-const logger = pino({ level: 'silent' });
+// Logger em nível warn para registrar eventuais erros de sessão Signal / retry nos logs do PM2
+const logger = pino({ level: 'warn' });
 
 // Armazena mensagens enviadas recentemente para responder a pedidos de retry (evita "Aguardando mensagem")
 const sentMessageStore = new Map<string, proto.IMessage>();
@@ -119,7 +119,9 @@ export async function connectWhatsApp(): Promise<WhatsAppStatus> {
       msgRetryCounterCache,
       getMessage: async (key) => {
         if (!key?.id) return undefined;
-        return sentMessageStore.get(key.id);
+        const found = sentMessageStore.get(key.id);
+        console.log(`[WhatsApp Server] getMessage(retry) id=${key.id} encontrado=${Boolean(found)}`);
+        return found;
       }
     });
 
@@ -294,9 +296,9 @@ export async function sendWhatsAppTextMessage(
   }
 
   try {
-    // Garante sessão Signal válida antes de criptografar (evita "Aguardando mensagem")
+    // Força atualização da sessão Signal com o destinatário antes de criptografar (evita "Aguardando mensagem")
     try {
-      await sock.assertSessions([finalJid], false);
+      await sock.assertSessions([finalJid], true);
     } catch {}
 
     // Pausa humanizada anti-ban
