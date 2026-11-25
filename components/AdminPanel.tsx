@@ -45,7 +45,8 @@ interface AdminPanelProps {
 }
 
 const SERVICES: string[] = ['Viki Pass', 'Kocowa+', 'IQIYI', 'WeTV', 'DramaBox', 'Youku'];
-const DEFAULT_PROMO_MESSAGE_TEMPLATE = 'Ola {nome}! Sentimos sua falta na EuDorama. Notamos que sua assinatura do {servicos} venceu em {data_vencimento} ({tempo_sem_renovar}). Preparamos uma promocao especial para voce voltar a assistir seus doramas. Vamos conversar?';
+const DEFAULT_PROMO_MESSAGE_TEMPLATE = 'Olá, {nome}! Tudo bem? Sentimos muito a sua falta aqui na EuDorama! 💜 Notamos que sua assinatura do {servicos} encerrou em {data_vencimento} ({tempo_sem_renovar}). Preparamos uma condição super especial para você voltar a maratonar seus doramas favoritos. Quer saber mais? Me dá um oi por aqui! 🍿✨';
+const LEGACY_PROMO_MESSAGE_TEMPLATE = 'Ola {nome}! Sentimos sua falta na EuDorama. Notamos que sua assinatura do {servicos} venceu em {data_vencimento} ({tempo_sem_renovar}). Preparamos uma promocao especial para voce voltar a assistir seus doramas. Vamos conversar?';
 const PLAN_OPTIONS: { label: string; value: string }[] = [
     { label: '1 Mês', value: '1' },
     { label: '3 Meses', value: '3' },
@@ -600,7 +601,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const [loginSearchQuery, setLoginSearchQuery] = useState('');
     const [copiedId, setCopiedId] = useState<string | null>(null);
     const [promoMessageTemplate, setPromoMessageTemplate] = useState(() => {
-        return localStorage.getItem('admin_promo_message_template') || DEFAULT_PROMO_MESSAGE_TEMPLATE;
+        const stored = localStorage.getItem('admin_promo_message_template');
+        if (!stored || stored === LEGACY_PROMO_MESSAGE_TEMPLATE) {
+            return DEFAULT_PROMO_MESSAGE_TEMPLATE;
+        }
+        return stored;
     });
     const [promoSelectedBlock, setPromoSelectedBlock] = useState<number>(1);
     const [promoFilterStatus, setPromoFilterStatus] = useState<'all' | 'pending' | 'sent'>('all');
@@ -2608,9 +2613,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     ) => {
         const cleanPhone = phone.replace(/\D/g, '');
         const daysLeft = getDaysRemaining(expiryDate);
-        let message = daysLeft < 0
-            ? `Ola ${name}! Notamos que sua assinatura do ${service} venceu. Quer renovar para continuar assistindo seus doramas favoritos?`
-            : `Ola ${name}! Sua assinatura do ${service} vence em ${daysLeft} dias (${expiryDate.toLocaleDateString()}). Se quiser renovar antes para nao perder o acesso, estamos a disposicao.`;
+        const rawName = String(name || '').trim();
+        const displayName =
+            rawName && rawName.toLowerCase() !== 'null' && rawName.toLowerCase() !== 'sem nome'
+                ? rawName
+                : 'Dorameira';
+        const formattedDate = expiryDate.toLocaleDateString('pt-BR');
+
+        let message = '';
+        if (daysLeft < 0) {
+            const diasVencido = Math.abs(daysLeft);
+            const textoDias = diasVencido === 1 ? 'ontem' : `há ${diasVencido} dias`;
+            message = `Olá, ${displayName}! Tudo bem? Passando com carinho para lembrar que sua assinatura do *${service}* encerrou (${textoDias}, dia ${formattedDate}). Sabemos como a rotina é corrida! Se você quiser renovar para continuar assistindo seus doramas favoritos sem interrupções, estamos à disposição por aqui. Se já realizou o pagamento, por favor desconsidere este aviso! 🌸✨`;
+        } else if (daysLeft === 0) {
+            message = `Olá, ${displayName}! Tudo bem? Passando para te lembrar que a sua assinatura do *${service}* vence hoje (${formattedDate}). Quer renovar hoje para manter seu acesso ativo e não perder seus episódios favoritos? Se já efetuou o pagamento, pode desconsiderar esta mensagem. Se precisar de ajuda, estou por aqui! 🍿✨`;
+        } else if (daysLeft === 1) {
+            message = `Olá, ${displayName}! Tudo bem com você? ✨ Passando com carinho para lembrar que a sua assinatura do *${service}* vence amanhã, dia ${formattedDate}. É apenas um lembrete para você poder se programar com calma! Se precisar de qualquer informação ou tiver alguma dúvida, estamos à disposição por aqui. Tenha um ótimo dia e bons doramas! 🌸✨`;
+        } else {
+            message = `Olá, ${displayName}! Tudo bem com você? ✨ Passando apenas para te avisar com carinho que a sua assinatura do *${service}* vence no dia ${formattedDate} (daqui a ${daysLeft} dias). É apenas um lembrete para você poder se organizar com calma! Se tiver qualquer dúvida ou precisar de algo, estamos sempre à disposição por aqui. Tenha um ótimo dia e aproveite seus doramas! 🌸🍿`;
+        }
+
         window.open(`https://wa.me/55${cleanPhone}?text=${encodeURIComponent(message)}`, '_blank');
 
         if (!client?.id || !client.phone_number) return;
@@ -4508,7 +4530,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 )}
 
                 {activeTab === 'charge_whatsapp' && (
-                    <ChargeWhatsappAutomationPanel clients={clients} />
+                    <ChargeWhatsappAutomationPanel
+                        clients={clients}
+                        onClientUpdated={(updated) => {
+                            setClients(prev => prev.map(c => c.id === updated.id ? updated : c));
+                        }}
+                    />
                 )}
 
                 {activeTab === 'nao_renovaram' && (() => {

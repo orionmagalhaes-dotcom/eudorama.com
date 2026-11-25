@@ -11,6 +11,21 @@ import {
   runVikiPasswordAutomationJob,
   type VikiPasswordAutomationJobStatus
 } from './server/vikiPasswordAutomationWorker.ts';
+import {
+  connectWhatsApp,
+  disconnectWhatsApp,
+  getWhatsAppStatus,
+  getQrCodeDataUrl
+} from './server/whatsappService.ts';
+import {
+  getChargeQueue,
+  runDailyChargeCycle,
+  sendSingleCharge,
+  getSchedulerState,
+  getSchedulerLogs,
+  updateSchedulerConfig,
+  startDailyChargeScheduler
+} from './server/whatsappChargeScheduler.ts';
 
 const PORT = Number(process.env.PORT || 3000);
 const MOTOR_TOKEN = String(
@@ -188,12 +203,100 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // --- ROTAS DO WHATSAPP E COBRANÇAS ---
+  if (method === 'GET' && path === '/api/whatsapp/status') {
+    const wsStatus = getWhatsAppStatus();
+    const scheduler = getSchedulerState();
+    sendJson(res, 200, { success: true, ...wsStatus, scheduler });
+    return;
+  }
+
+  if (method === 'GET' && path === '/api/whatsapp/qr') {
+    const qrCodeDataUrl = getQrCodeDataUrl();
+    const wsStatus = getWhatsAppStatus();
+    sendJson(res, 200, { success: true, qrCodeDataUrl, status: wsStatus.state, hasQr: Boolean(qrCodeDataUrl) });
+    return;
+  }
+
+  if (method === 'POST' && path === '/api/whatsapp/connect') {
+    const status = await connectWhatsApp();
+    sendJson(res, 200, { success: true, status });
+    return;
+  }
+
+  if (method === 'POST' && path === '/api/whatsapp/disconnect') {
+    const result = await disconnectWhatsApp();
+    sendJson(res, 200, result);
+    return;
+  }
+
+  if (method === 'GET' && path === '/api/whatsapp/queue') {
+    try {
+      const queue = await getChargeQueue();
+      sendJson(res, 200, { success: true, queue });
+    } catch (e: any) {
+      sendJson(res, 500, { success: false, message: e?.message || 'Erro ao carregar fila de cobranças' });
+    }
+    return;
+  }
+
+  if (method === 'POST' && path === '/api/whatsapp/trigger-cycle') {
+    void runDailyChargeCycle(true);
+    sendJson(res, 202, {
+      success: true,
+      message: 'Ciclo de cobranças iniciado em segundo plano no servidor.'
+    });
+    return;
+  }
+
+  if (method === 'POST' && path === '/api/whatsapp/send-single') {
+    try {
+      const data = await readJsonBody(req);
+      const clientId = String(data.clientId || '').trim();
+      const serviceName = String(data.serviceName || '').trim();
+
+      if (!clientId || !serviceName) {
+        sendJson(res, 400, { success: false, message: 'clientId e serviceName são obrigatórios' });
+        return;
+      }
+
+      const result = await sendSingleCharge(clientId, serviceName);
+      sendJson(res, result.success ? 200 : 400, result);
+    } catch (e: any) {
+      sendJson(res, 500, { success: false, message: e?.message || 'Erro ao processar envio individual' });
+    }
+    return;
+  }
+
+  if (method === 'GET' && path === '/api/whatsapp/logs') {
+    const logs = getSchedulerLogs();
+    sendJson(res, 200, { success: true, logs });
+    return;
+  }
+
+  if (method === 'POST' && path === '/api/whatsapp/scheduler-config') {
+    try {
+      const body = await readJsonBody(req);
+      updateSchedulerConfig(body);
+      sendJson(res, 200, { success: true, scheduler: getSchedulerState() });
+    } catch (e: any) {
+      sendJson(res, 500, { success: false, message: e?.message || 'Erro ao atualizar agendador' });
+    }
+    return;
+  }
+
   sendJson(res, 404, { success: false, message: 'Not Found' });
 });
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log('\nMotor de Automacao Eudorama rodando.');
   console.log(`Porta: ${PORT}`);
-  console.log('Endpoints: /api/viki-tv-automation e /api/viki-password-automation');
+  console.log('Endpoints: /api/viki-tv-automation, /api/viki-password-automation e /api/whatsapp/*');
   console.log(MOTOR_TOKEN ? 'Auth: Bearer token ativo.' : 'Auth: sem token local configurado.');
+
+  // Tenta restaurar sessão prévia do WhatsApp se existir credenciais salvas
+  void connectWhatsApp();
+
+  // Inicia o agendador de cobranças em segundo plano no servidor
+  startDailyChargeScheduler();
 });
