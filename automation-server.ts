@@ -29,7 +29,9 @@ import {
   updateSchedulerConfig,
   startDailyChargeScheduler,
   runReactivationCampaign,
-  getReactivationStatus
+  getReactivationStatus,
+  getReactivationQueue,
+  sendSingleReactivation
 } from './server/whatsappChargeScheduler.ts';
 
 const PORT = Number(process.env.PORT || 3000);
@@ -299,6 +301,32 @@ const server = createServer(async (req, res) => {
 
   if (method === 'GET' && path === '/api/whatsapp/reactivation-status') {
     sendJson(res, 200, { success: true, status: getReactivationStatus() });
+    return;
+  }
+
+  if (method === 'GET' && path === '/api/whatsapp/reactivation-queue') {
+    try {
+      const queue = await getReactivationQueue();
+      sendJson(res, 200, { success: true, queue });
+    } catch (e: any) {
+      sendJson(res, 500, { success: false, message: e?.message || 'Erro ao carregar fila de reativação' });
+    }
+    return;
+  }
+
+  if (method === 'POST' && path === '/api/whatsapp/send-reactivation-single') {
+    try {
+      const data = await readJsonBody(req);
+      const clientId = String(data.clientId || '').trim();
+      if (!clientId) {
+        sendJson(res, 400, { success: false, message: 'clientId é obrigatório' });
+        return;
+      }
+      const result = await sendSingleReactivation(clientId);
+      sendJson(res, result.success ? 200 : 400, result);
+    } catch (e: any) {
+      sendJson(res, 500, { success: false, message: e?.message || 'Erro ao enviar mensagem promocional' });
+    }
     return;
   }
 

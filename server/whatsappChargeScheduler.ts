@@ -49,12 +49,32 @@ export type SchedulerLogEntry = {
 
 const CONFIG_FILE = path.resolve(process.cwd(), 'artifacts/whatsapp-scheduler-config.json');
 
+export const DEFAULT_REACTIVATION_TEMPLATE = `Olá, {nome}! Tudo bem? 🌸
+
+Sou o Orion, da *EuDorama* — uma plataforma dedicada a quem ama doramas e conteúdo asiático! 😊
+
+Faz um tempinho que você não está por aqui e sentimos muito a sua falta! Preparamos uma *condição especial* pensando em você para facilitar o seu retorno. 🎁
+
+Você teria interesse em saber mais sobre a nossa promoção? É só me responder aqui e te explico tudo com carinho! Tenha um lindo dia! ✨🍿`;
+
+export type ReactivationQueueItem = {
+  clientId: string;
+  clientName: string;
+  phoneNumber: string;
+  deletedAt: string | null;
+  sortTimestamp: number;
+  message: string;
+  alreadySent: boolean;
+  sentAt: string | null;
+};
+
 export type SchedulerState = {
   enabled: boolean;
   enableReminder: boolean;
   enableDue: boolean;
   enableFollowup: boolean;
   enableReactivation: boolean;
+  reactivationTemplate: string;
   targetHour: number; // ex: 15 (15:00)
   targetMinute: number; // ex: 0 (15:00)
   isRunning: boolean;
@@ -73,6 +93,7 @@ let schedulerState: SchedulerState = {
   enableDue: true,
   enableFollowup: true,
   enableReactivation: true,
+  reactivationTemplate: DEFAULT_REACTIVATION_TEMPLATE,
   targetHour: 15,
   targetMinute: 0,
   isRunning: false
@@ -88,6 +109,9 @@ try {
       if (typeof rawCfg.enableDue === 'boolean') schedulerState.enableDue = rawCfg.enableDue;
       if (typeof rawCfg.enableFollowup === 'boolean') schedulerState.enableFollowup = rawCfg.enableFollowup;
       if (typeof rawCfg.enableReactivation === 'boolean') schedulerState.enableReactivation = rawCfg.enableReactivation;
+      if (typeof rawCfg.reactivationTemplate === 'string' && rawCfg.reactivationTemplate.trim()) {
+        schedulerState.reactivationTemplate = rawCfg.reactivationTemplate;
+      }
       if (typeof rawCfg.targetHour === 'number') schedulerState.targetHour = rawCfg.targetHour;
       if (typeof rawCfg.targetMinute === 'number') schedulerState.targetMinute = rawCfg.targetMinute;
     }
@@ -107,6 +131,7 @@ function saveConfigToFile() {
           enableDue: schedulerState.enableDue,
           enableFollowup: schedulerState.enableFollowup,
           enableReactivation: schedulerState.enableReactivation,
+          reactivationTemplate: schedulerState.reactivationTemplate,
           targetHour: schedulerState.targetHour,
           targetMinute: schedulerState.targetMinute
         },
@@ -150,7 +175,14 @@ export function getSchedulerLogs(): SchedulerLogEntry[] {
 export type SchedulerConfigPatch = Partial<
   Pick<
     SchedulerState,
-    'enabled' | 'enableReminder' | 'enableDue' | 'enableFollowup' | 'enableReactivation' | 'targetHour' | 'targetMinute'
+    | 'enabled'
+    | 'enableReminder'
+    | 'enableDue'
+    | 'enableFollowup'
+    | 'enableReactivation'
+    | 'reactivationTemplate'
+    | 'targetHour'
+    | 'targetMinute'
   >
 >;
 
@@ -161,6 +193,9 @@ export function updateSchedulerConfig(patch: SchedulerConfigPatch) {
   if (typeof patch.enableDue === 'boolean') cleanPatch.enableDue = patch.enableDue;
   if (typeof patch.enableFollowup === 'boolean') cleanPatch.enableFollowup = patch.enableFollowup;
   if (typeof patch.enableReactivation === 'boolean') cleanPatch.enableReactivation = patch.enableReactivation;
+  if (typeof patch.reactivationTemplate === 'string') {
+    cleanPatch.reactivationTemplate = patch.reactivationTemplate.trim() || DEFAULT_REACTIVATION_TEMPLATE;
+  }
   if (typeof patch.targetHour === 'number' && patch.targetHour >= 0 && patch.targetHour <= 23) cleanPatch.targetHour = patch.targetHour;
   if (typeof patch.targetMinute === 'number' && patch.targetMinute >= 0 && patch.targetMinute <= 59) cleanPatch.targetMinute = patch.targetMinute;
   schedulerState = { ...schedulerState, ...cleanPatch };
@@ -267,12 +302,13 @@ export function buildChargeMessage(
 }
 
 // Constrói a mensagem da campanha de reativação (único lugar onde promoção é permitida)
-function buildReactivationMessage(clientName: string): string {
+export function buildReactivationMessage(clientName?: string | null, templateOverride?: string): string {
   const rawName = String(clientName || '').trim();
   const displayName = rawName && rawName.toLowerCase() !== 'null' && rawName.toLowerCase() !== 'sem nome'
     ? rawName
     : 'Dorameira';
-  return `Olá, ${displayName}! Tudo bem? 🌸\n\nSou o Orion, da *EuDorama* — uma plataforma dedicada a quem ama doramas e conteúdo asiático! 😊\n\nFaz um tempinho que você não está por aqui e sentimos muito a sua falta! Preparamos uma *condição especial* pensando em você para facilitar o seu retorno. 🎁\n\nVocê teria interesse em saber mais sobre a nossa promoção? É só me responder aqui e te explico tudo com carinho! Tenha um lindo dia! ✨🍿`;
+  const tpl = (templateOverride || schedulerState.reactivationTemplate || DEFAULT_REACTIVATION_TEMPLATE).trim();
+  return tpl.replace(/\{nome\}/gi, displayName);
 }
 
 // Avalia a base do Supabase e retorna a fila completa do dia
@@ -472,6 +508,109 @@ async function markClientAsCharged(clientId: string, phoneNumber: string, servic
 
 let reactivationState = { sentToday: 0, lastRunDate: '', lastRunAt: '' };
 
+// Lista ex-clientes elegíveis: APENAS quem está completamente na lixeira (deleted=true e sem nenhum app),
+// ordenado das pessoas que deixaram de ser clientes mais recentemente para as demais.
+export async function getReactivationQueue(): Promise<ReactivationQueueItem[]> {
+  const { data: deletedClients, error } = await supabase
+    .from('clients')
+    .select('*')
+    .eq('deleted', true);
+
+  if (error || !deletedClients) {
+    console.error('[Reativação] Erro ao carregar ex-clientes do Supabase:', error);
+    return [];
+  }
+
+  const items: ReactivationQueueItem[] = [];
+
+  for (const c of deletedClients as ClientDBRow[]) {
+    if (!c.phone_number) continue;
+    const subs = normalizeSubscriptions(c.subscriptions).filter((s) => String(s || '').trim().length > 0);
+    // Regra: "completamente na lixeira, sem nenhum app"
+    if (subs.length > 0) continue;
+
+    const progress = c.game_progress || {};
+    const deletedAt: string | null = progress._deleted_at || c.last_active_at || c.created_at || null;
+    const parsedTime = deletedAt ? new Date(deletedAt).getTime() : 0;
+    const sortTimestamp = Number.isFinite(parsedTime) ? parsedTime : 0;
+    const sentAt: string | null = progress._reactivation_campaign_sent_at || null;
+
+    items.push({
+      clientId: c.id,
+      clientName: c.client_name || 'Dorameira',
+      phoneNumber: c.phone_number,
+      deletedAt,
+      sortTimestamp,
+      message: buildReactivationMessage(c.client_name),
+      alreadySent: Boolean(sentAt),
+      sentAt
+    });
+  }
+
+  // Mais recentes primeiro (quem saiu mais recentemente recebe primeiro); já enviados vão para o fim ou filtrados na UI
+  return items.sort((a, b) => b.sortTimestamp - a.sortTimestamp);
+}
+
+export async function sendSingleReactivation(clientId: string): Promise<{ success: boolean; message: string }> {
+  const wsStatus = getWhatsAppStatus();
+  if (wsStatus.state !== 'connected') {
+    return { success: false, message: 'WhatsApp não está conectado no servidor.' };
+  }
+
+  const queue = await getReactivationQueue();
+  const target = queue.find((q) => q.clientId === clientId);
+  if (!target) {
+    return { success: false, message: 'Ex-cliente não encontrado ou não está completamente na lixeira sem apps.' };
+  }
+  if (target.alreadySent) {
+    return { success: false, message: `${target.clientName} já recebeu a mensagem promocional anteriormente.` };
+  }
+
+  const result = await sendWhatsAppTextMessage(target.phoneNumber, target.message);
+
+  if (result.success) {
+    reactivationState.sentToday++;
+    reactivationState.lastRunAt = new Date().toISOString();
+
+    try {
+      const { data: row } = await supabase.from('clients').select('game_progress').eq('id', target.clientId).maybeSingle();
+      const progress = (row as any)?.game_progress || {};
+      await supabase
+        .from('clients')
+        .update({ game_progress: { ...progress, _reactivation_campaign_sent_at: new Date().toISOString() } })
+        .eq('id', target.clientId);
+    } catch (err) {
+      console.error('[Reativação] Erro ao marcar cliente:', err);
+    }
+
+    recentLogs.unshift({
+      id: `${Date.now()}-react-single-${Math.random().toString(36).substring(2, 6)}`,
+      timestamp: new Date().toISOString(),
+      phoneNumber: target.phoneNumber,
+      clientName: target.clientName,
+      service: 'Campanha',
+      stage: 'Reativação de Ex-cliente',
+      status: 'success',
+      messageText: target.message
+    });
+    saveLogsToFile();
+    return { success: true, message: `Mensagem promocional enviada com sucesso para ${target.clientName}!` };
+  } else {
+    recentLogs.unshift({
+      id: `${Date.now()}-react-single-fail-${Math.random().toString(36).substring(2, 6)}`,
+      timestamp: new Date().toISOString(),
+      phoneNumber: target.phoneNumber,
+      clientName: target.clientName,
+      service: 'Campanha',
+      stage: 'Reativação de Ex-cliente',
+      status: 'failed',
+      error: result.error
+    });
+    saveLogsToFile();
+    return { success: false, message: result.error || 'Erro ao enviar mensagem promocional.' };
+  }
+}
+
 export async function runReactivationCampaign(manualTrigger: boolean = false): Promise<{ sent: number; failed: number; skipped: number }> {
   if (!schedulerState.enableReactivation) {
     console.log('[Reativação] Campanha desativada nas configurações. Pulando.');
@@ -503,42 +642,21 @@ export async function runReactivationCampaign(manualTrigger: boolean = false): P
     return { sent: 0, failed: 0, skipped: 1 };
   }
 
-  // Busca TODOS os clientes (incluindo deletados) que tenham telefone
-  const { data: allClients } = await supabase.from('clients').select('*');
-  if (!allClients || allClients.length === 0) return { sent: 0, failed: 0, skipped: 0 };
-
   const remaining = 2 - reactivationState.sentToday;
+  const fullQueue = await getReactivationQueue();
+  const pendingExClients = fullQueue.filter((item) => !item.alreadySent);
 
-  // Filtra ex-clientes: deletados OU com assinatura expirada há mais de 2 dias, e que ainda não receberam a campanha
-  const exClients = (allClients as ClientDBRow[]).filter((c) => {
-    if (!c.phone_number) return false;
-    const progress = c.game_progress || {};
-    if (progress._reactivation_campaign_sent_at) return false; // já recebeu, nunca reenviar
-    if (c.deleted) return true;
-    // cliente ativo mas com assinatura expirada há mais de 2 dias
-    const subs = normalizeSubscriptions(c.subscriptions);
-    return subs.some((sub) => {
-      const parts = sub.split('|');
-      const startStr = String(parts[1] || '').trim();
-      const dur = parseInt(parts[3] || String(c.duration_months || 1)) || 1;
-      if (!startStr) return false;
-      const expiry = calculateExpiry(startStr, dur);
-      return getDaysRemaining(expiry) < -2;
-    });
-  });
-
-  const targets = exClients.slice(0, remaining);
-  console.log(`[Reativação] ${exClients.length} ex-clientes elegíveis. Enviando para ${targets.length}.`);
+  const targets = pendingExClients.slice(0, remaining);
+  console.log(`[Reativação] ${pendingExClients.length} ex-clientes elegíveis (lixeira sem apps, mais recentes primeiro). Enviando para ${targets.length}.`);
 
   let sent = 0, failed = 0;
 
-  for (const client of targets) {
+  for (const target of targets) {
     const delayMs = Math.floor(Math.random() * 8000) + 10000;
-    console.log(`[Reativação] Aguardando ${Math.round(delayMs / 1000)}s antes de enviar para ${client.client_name}...`);
+    console.log(`[Reativação] Aguardando ${Math.round(delayMs / 1000)}s antes de enviar para ${target.clientName}...`);
     await new Promise((r) => setTimeout(r, delayMs));
 
-    const message = buildReactivationMessage(client.client_name);
-    const result = await sendWhatsAppTextMessage(client.phone_number, message);
+    const result = await sendWhatsAppTextMessage(target.phoneNumber, target.message);
 
     if (result.success) {
       sent++;
@@ -546,11 +664,12 @@ export async function runReactivationCampaign(manualTrigger: boolean = false): P
 
       // Marca no Supabase para nunca reenviar
       try {
-        const progress = client.game_progress || {};
+        const { data: row } = await supabase.from('clients').select('game_progress').eq('id', target.clientId).maybeSingle();
+        const progress = (row as any)?.game_progress || {};
         await supabase
           .from('clients')
           .update({ game_progress: { ...progress, _reactivation_campaign_sent_at: new Date().toISOString() } })
-          .eq('id', client.id);
+          .eq('id', target.clientId);
       } catch (err) {
         console.error('[Reativação] Erro ao marcar cliente:', err);
       }
@@ -558,27 +677,27 @@ export async function runReactivationCampaign(manualTrigger: boolean = false): P
       recentLogs.unshift({
         id: `${Date.now()}-react-${Math.random().toString(36).substring(2, 6)}`,
         timestamp: new Date().toISOString(),
-        phoneNumber: client.phone_number,
-        clientName: client.client_name || 'Dorameira',
+        phoneNumber: target.phoneNumber,
+        clientName: target.clientName,
         service: 'Campanha',
         stage: 'Reativação de Ex-cliente',
         status: 'success',
-        messageText: message
+        messageText: target.message
       });
-      console.log(`[Reativação] ✅ Enviado para ${client.client_name} (${client.phone_number})`);
+      console.log(`[Reativação] ✅ Enviado para ${target.clientName} (${target.phoneNumber})`);
     } else {
       failed++;
       recentLogs.unshift({
         id: `${Date.now()}-react-fail-${Math.random().toString(36).substring(2, 6)}`,
         timestamp: new Date().toISOString(),
-        phoneNumber: client.phone_number,
-        clientName: client.client_name || 'Dorameira',
+        phoneNumber: target.phoneNumber,
+        clientName: target.clientName,
         service: 'Campanha',
         stage: 'Reativação de Ex-cliente',
         status: 'failed',
         error: result.error
       });
-      console.error(`[Reativação] ❌ Falha ao enviar para ${client.client_name}: ${result.error}`);
+      console.error(`[Reativação] ❌ Falha ao enviar para ${target.clientName}: ${result.error}`);
     }
     saveLogsToFile();
   }

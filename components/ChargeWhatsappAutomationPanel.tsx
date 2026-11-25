@@ -49,6 +49,7 @@ type WhatsAppServerStatus = {
     enableDue?: boolean;
     enableFollowup?: boolean;
     enableReactivation?: boolean;
+    reactivationTemplate?: string;
     targetHour: number;
     targetMinute: number;
     isRunning: boolean;
@@ -61,6 +62,25 @@ type WhatsAppServerStatus = {
     };
   };
 };
+
+type ReactivationQueueItem = {
+  clientId: string;
+  clientName: string;
+  phoneNumber: string;
+  deletedAt: string | null;
+  sortTimestamp: number;
+  message: string;
+  alreadySent: boolean;
+  sentAt: string | null;
+};
+
+const DEFAULT_REACTIVATION_TEMPLATE = `Olá, {nome}! Tudo bem? 🌸
+
+Sou o Orion, da *EuDorama* — uma plataforma dedicada a quem ama doramas e conteúdo asiático! 😊
+
+Faz um tempinho que você não está por aqui e sentimos muito a sua falta! Preparamos uma *condição especial* pensando em você para facilitar o seu retorno. 🎁
+
+Você teria interesse em saber mais sobre a nossa promoção? É só me responder aqui e te explico tudo com carinho! Tenha um lindo dia! ✨🍿`;
 
 type QueueItem = {
   id: string;
@@ -171,7 +191,7 @@ const colorMap: Record<string, Record<string, string>> = {
 };
 
 export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clients, onClientUpdated }) => {
-  const [activeTab, setActiveTab] = useState<'queue' | 'connection' | 'rules' | 'test' | 'logs' | 'config'>('queue');
+  const [activeTab, setActiveTab] = useState<'queue' | 'promotional' | 'connection' | 'rules' | 'test' | 'logs' | 'config'>('queue');
   const [stageFilter, setStageFilter] = useState<'all' | 'due' | 'reminder' | 'followup'>('all');
   const [onlyPending, setOnlyPending] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -201,10 +221,18 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
   const [testLoading, setTestLoading] = useState(false);
   const [testPreview, setTestPreview] = useState(false);
 
-  // Estado da campanha de reativação
+  // Estado da campanha de reativação / promocionais
   const [reactivationStatus, setReactivationStatus] = useState<{ sentToday: number; lastRunAt?: string } | null>(null);
   const [reactivationLoading, setReactivationLoading] = useState(false);
   const [reactivationResult, setReactivationResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [reactivationQueue, setReactivationQueue] = useState<ReactivationQueueItem[]>([]);
+  const [reactivationQueueLoading, setReactivationQueueLoading] = useState(false);
+  const [reactivationFilter, setReactivationFilter] = useState<'pending' | 'sent' | 'all'>('pending');
+  const [reactivationSearch, setReactivationSearch] = useState('');
+  const [reactivationTemplateDraft, setReactivationTemplateDraft] = useState(DEFAULT_REACTIVATION_TEMPLATE);
+  const [reactivationTemplateDirty, setReactivationTemplateDirty] = useState(false);
+  const [reactivationExpandedId, setReactivationExpandedId] = useState<string | null>(null);
+  const [sendingReactivationId, setSendingReactivationId] = useState<string | null>(null);
 
   // Configuração de URL do motor
   const [motorBaseUrl, setMotorBaseUrl] = useState<string>(() => {
@@ -228,13 +256,16 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
         setServerStatus(data);
         setServerOnline(true);
         setIsCycleRunning(!!data.scheduler?.isRunning);
+        if (data.scheduler?.reactivationTemplate && !reactivationTemplateDirty) {
+          setReactivationTemplateDraft(data.scheduler.reactivationTemplate);
+        }
       } else {
         setServerOnline(false);
       }
     } catch {
       setServerOnline(false);
     }
-  }, [getApiUrl]);
+  }, [getApiUrl, reactivationTemplateDirty]);
 
   const fetchReactivationStatus = useCallback(async () => {
     try {
@@ -245,6 +276,54 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
       }
     } catch {}
   }, [getApiUrl]);
+
+  const generateLocalReactivationQueue = useCallback(() => {
+    const items: ReactivationQueueItem[] = [];
+    clients.forEach((c) => {
+      if (!c.deleted || !c.phone_number) return;
+      const subs = Array.isArray(c.subscriptions)
+        ? c.subscriptions.filter((s) => String(s || '').trim().length > 0)
+        : [];
+      if (subs.length > 0) return;
+      const progress = c.game_progress || {};
+      const deletedAt: string | null = progress._deleted_at || c.last_active_at || c.created_at || null;
+      const ts = deletedAt ? new Date(deletedAt).getTime() : 0;
+      const sentAt: string | null = progress._reactivation_campaign_sent_at || null;
+      const rawName = String(c.client_name || '').trim();
+      const displayName = rawName && rawName.toLowerCase() !== 'null' && rawName.toLowerCase() !== 'sem nome' ? rawName : 'Dorameira';
+      const msg = (reactivationTemplateDraft || DEFAULT_REACTIVATION_TEMPLATE).trim().replace(/\{nome\}/gi, displayName);
+      items.push({
+        clientId: c.id,
+        clientName: displayName,
+        phoneNumber: c.phone_number,
+        deletedAt,
+        sortTimestamp: Number.isFinite(ts) ? ts : 0,
+        message: msg,
+        alreadySent: Boolean(sentAt),
+        sentAt
+      });
+    });
+    setReactivationQueue(items.sort((a, b) => b.sortTimestamp - a.sortTimestamp));
+  }, [clients, reactivationTemplateDraft]);
+
+  const fetchReactivationQueue = useCallback(async () => {
+    setReactivationQueueLoading(true);
+    try {
+      const res = await fetch(getApiUrl('/api/whatsapp/reactivation-queue'));
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.queue)) {
+          setReactivationQueue(data.queue);
+          return;
+        }
+      }
+      generateLocalReactivationQueue();
+    } catch {
+      generateLocalReactivationQueue();
+    } finally {
+      setReactivationQueueLoading(false);
+    }
+  }, [getApiUrl, generateLocalReactivationQueue]);
 
   const fetchQrCode = useCallback(async () => {
     try {
@@ -403,6 +482,7 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
     void fetchQueue();
     void fetchLogs();
     void fetchReactivationStatus();
+    void fetchReactivationQueue();
 
     const interval = setInterval(() => {
       void fetchStatus();
@@ -413,7 +493,7 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
     }, 6000);
 
     return () => clearInterval(interval);
-  }, [fetchStatus, fetchQueue, fetchLogs, serverStatus.state, fetchQrCode, fetchReactivationStatus]);
+  }, [fetchStatus, fetchQueue, fetchLogs, serverStatus.state, fetchQrCode, fetchReactivationStatus, fetchReactivationQueue]);
 
   const handleConnect = async () => {
     try {
@@ -490,6 +570,7 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
       if (res.ok && data.success) {
         setReactivationResult({ ok: true, message: `✅ Enviado para ${data.sent} ex-cliente(s). Falhas: ${data.failed}.` });
         await fetchReactivationStatus();
+        await fetchReactivationQueue();
         await fetchLogs();
       } else {
         setReactivationResult({ ok: false, message: data.message || 'Erro ao disparar campanha' });
@@ -498,6 +579,57 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
       setReactivationResult({ ok: false, message: 'Erro de conexão: ' + (e?.message || 'Servidor offline?') });
     } finally {
       setReactivationLoading(false);
+    }
+  };
+
+  const handleSaveReactivationTemplate = async (templateToSave?: string) => {
+    const finalTpl = (templateToSave ?? reactivationTemplateDraft).trim() || DEFAULT_REACTIVATION_TEMPLATE;
+    setConfigSaving(true);
+    try {
+      const res = await fetch(getApiUrl('/api/whatsapp/scheduler-config'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reactivationTemplate: finalTpl })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setReactivationTemplateDraft(finalTpl);
+        setReactivationTemplateDirty(false);
+        if (data.scheduler) setServerStatus((prev) => ({ ...prev, scheduler: data.scheduler }));
+        await fetchReactivationQueue();
+        alert('Mensagem promocional salva no servidor!');
+      } else {
+        alert('Erro ao salvar mensagem promocional.');
+      }
+    } catch (e: any) {
+      alert('Erro de conexão com o servidor: ' + e?.message);
+    } finally {
+      setConfigSaving(false);
+    }
+  };
+
+  const handleSendSingleReactivation = async (item: ReactivationQueueItem) => {
+    if (!window.confirm(`Enviar mensagem promocional agora para ${item.clientName} (${item.phoneNumber})?`)) return;
+    setSendingReactivationId(item.clientId);
+    try {
+      const res = await fetch(getApiUrl('/api/whatsapp/send-reactivation-single'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientId: item.clientId })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        alert(data.message || `Enviado para ${item.clientName}!`);
+        await fetchReactivationStatus();
+        await fetchReactivationQueue();
+        await fetchLogs();
+      } else {
+        alert('Erro ao enviar: ' + (data?.message || 'Falha no envio'));
+      }
+    } catch (e: any) {
+      alert('Erro de conexão: ' + e?.message);
+    } finally {
+      setSendingReactivationId(null);
     }
   };
 
@@ -657,6 +789,24 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
     });
   }, [queue, stageFilter, onlyPending, searchQuery]);
 
+  const reactivationSummary = useMemo(() => {
+    const pending = reactivationQueue.filter((i) => !i.alreadySent).length;
+    const sent = reactivationQueue.filter((i) => i.alreadySent).length;
+    return { total: reactivationQueue.length, pending, sent };
+  }, [reactivationQueue]);
+
+  const filteredReactivationQueue = useMemo(() => {
+    return reactivationQueue.filter((item) => {
+      if (reactivationFilter === 'pending' && item.alreadySent) return false;
+      if (reactivationFilter === 'sent' && !item.alreadySent) return false;
+      if (reactivationSearch.trim()) {
+        const q = reactivationSearch.toLowerCase().trim();
+        if (!item.clientName.toLowerCase().includes(q) && !item.phoneNumber.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [reactivationQueue, reactivationFilter, reactivationSearch]);
+
   const stageColor = (stage: string) => {
     if (stage === 'due') return colorMap.red;
     if (stage === 'followup') return colorMap.amber;
@@ -696,6 +846,7 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
         <div className="flex items-center gap-1 p-1.5 bg-gray-100 dark:bg-slate-800 rounded-2xl text-xs font-black uppercase flex-wrap">
           {[
             { id: 'queue', label: `📋 Fila (${summary.pending})` },
+            { id: 'promotional', label: `🎁 Promocionais (${reactivationSummary.pending})` },
             { id: 'connection', label: serverStatus.state === 'connected' ? '✅ WhatsApp' : '📱 Conectar' },
             { id: 'rules', label: '📏 Regras' },
             { id: 'test', label: '🧪 Testar' },
@@ -726,6 +877,250 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
           </button>
         </div>
       </div>
+
+      {/* ══════════════════════════════════════════
+          ABA: PROMOCIONAIS / REATIVAÇÃO DE EX-CLIENTES
+      ══════════════════════════════════════════ */}
+      {activeTab === 'promotional' && (
+        <div className="space-y-6">
+          {/* RESUMO */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="p-5 bg-white dark:bg-slate-900 rounded-3xl border border-purple-100 dark:border-slate-800 shadow-sm flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-wider text-purple-500">Aguardando Envio</p>
+                <p className="text-2xl font-black text-purple-700 dark:text-purple-400">{reactivationSummary.pending}</p>
+                <p className="text-[11px] text-gray-400 font-bold mt-0.5">Na lixeira sem nenhum app</p>
+              </div>
+              <div className="p-3 bg-purple-50 text-purple-600 rounded-2xl">
+                <Gift size={22} />
+              </div>
+            </div>
+
+            <div className="p-5 bg-white dark:bg-slate-900 rounded-3xl border border-indigo-100 dark:border-slate-800 shadow-sm flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-wider text-indigo-500">Enviadas Hoje</p>
+                <p className="text-2xl font-black text-indigo-700 dark:text-indigo-400">{reactivationStatus?.sentToday ?? 0} / 2</p>
+                <p className="text-[11px] text-gray-400 font-bold mt-0.5">Limite diário automático (15h)</p>
+              </div>
+              <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl">
+                <Clock size={22} />
+              </div>
+            </div>
+
+            <div className="p-5 bg-white dark:bg-slate-900 rounded-3xl border border-emerald-100 dark:border-slate-800 shadow-sm flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-wider text-emerald-500">Já Receberam</p>
+                <p className="text-2xl font-black text-emerald-700 dark:text-emerald-400">{reactivationSummary.sent}</p>
+                <p className="text-[11px] text-gray-400 font-bold mt-0.5">Marcadas para não repetir</p>
+              </div>
+              <div className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl">
+                <CheckCircle2 size={22} />
+              </div>
+            </div>
+          </div>
+
+          {/* EDITOR DA MENSAGEM PROMOCIONAL */}
+          <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-purple-100 dark:border-slate-800 grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div>
+                  <h3 className="text-base font-black text-gray-900 dark:text-white flex items-center gap-2">
+                    <Gift size={18} className="text-purple-600" />
+                    Mensagem Promocional Enviada
+                  </h3>
+                  <p className="text-xs text-gray-500">
+                    Use <code className="bg-gray-100 dark:bg-slate-800 px-1.5 py-0.5 rounded font-bold">{'{nome}'}</code> para inserir automaticamente o nome do ex-cliente.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReactivationTemplateDraft(DEFAULT_REACTIVATION_TEMPLATE);
+                    setReactivationTemplateDirty(true);
+                  }}
+                  className="text-xs font-bold text-gray-500 hover:text-purple-600 underline"
+                >
+                  Restaurar padrão
+                </button>
+              </div>
+
+              <textarea
+                rows={7}
+                value={reactivationTemplateDraft}
+                onChange={(e) => {
+                  setReactivationTemplateDraft(e.target.value);
+                  setReactivationTemplateDirty(true);
+                }}
+                className="w-full p-3.5 bg-gray-50 dark:bg-slate-800 rounded-2xl text-xs font-semibold border border-gray-200 dark:border-slate-700 outline-none focus:border-purple-400 leading-relaxed"
+              />
+
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <span className="text-[11px] font-bold text-gray-400">
+                  {reactivationTemplateDirty ? '⚠️ Alterações não salvas' : '✅ Sincronizado com o servidor'}
+                </span>
+                <button
+                  type="button"
+                  disabled={configSaving || serverOnline === false}
+                  onClick={() => handleSaveReactivationTemplate()}
+                  className="px-5 py-2.5 rounded-2xl bg-purple-600 hover:bg-purple-700 text-white font-black text-xs uppercase transition-all shadow-md disabled:opacity-50"
+                >
+                  {configSaving ? 'Salvando...' : 'Salvar Mensagem Promocional'}
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <p className="text-xs font-black uppercase text-gray-500">Prévia no WhatsApp (como o cliente recebe)</p>
+              <div className="bg-[#e5ddd5] dark:bg-slate-700 rounded-3xl p-4 min-h-[210px]">
+                <div className="bg-white dark:bg-slate-800 rounded-2xl rounded-tl-none p-3.5 max-w-[92%] shadow-sm">
+                  <p className="text-xs text-gray-800 dark:text-gray-200 leading-relaxed whitespace-pre-wrap">
+                    {(reactivationTemplateDraft || DEFAULT_REACTIVATION_TEMPLATE).replace(/\{nome\}/gi, 'Maria')}
+                  </p>
+                  <p className="text-[10px] text-gray-400 text-right mt-1.5">15:00 ✓✓</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* BARRA DE AÇÕES E FILTROS DA FILA PROMOCIONAL */}
+          <div className="bg-white dark:bg-slate-900 rounded-3xl p-4 shadow-sm border border-gray-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4">
+            <div className="flex flex-wrap items-center gap-2">
+              {[
+                { id: 'pending', label: `Pendentes (${reactivationSummary.pending})`, active: 'purple' },
+                { id: 'sent', label: `Já Enviadas (${reactivationSummary.sent})`, active: 'emerald' },
+                { id: 'all', label: `Todas (${reactivationSummary.total})`, active: 'indigo' }
+              ].map((f) => (
+                <button
+                  key={f.id}
+                  onClick={() => setReactivationFilter(f.id as any)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-black uppercase transition-all ${
+                    reactivationFilter === f.id
+                      ? `bg-${f.active}-600 text-white shadow-sm`
+                      : 'bg-gray-100 dark:bg-slate-800 text-gray-500 hover:text-gray-900'
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <input
+                type="text"
+                value={reactivationSearch}
+                onChange={(e) => setReactivationSearch(e.target.value)}
+                placeholder="Buscar ex-cliente ou número..."
+                className="px-4 py-2 bg-gray-50 dark:bg-slate-800 rounded-xl text-xs font-bold border border-gray-200 dark:border-slate-700 outline-none w-52"
+              />
+              <button
+                onClick={fetchReactivationQueue}
+                disabled={reactivationQueueLoading}
+                className="px-3.5 py-2 rounded-xl bg-gray-100 dark:bg-slate-800 text-gray-700 dark:text-gray-200 font-black text-xs uppercase flex items-center gap-1.5"
+              >
+                <RefreshCw size={14} className={reactivationQueueLoading ? 'animate-spin' : ''} /> Atualizar
+              </button>
+              <button
+                onClick={handleTriggerReactivation}
+                disabled={reactivationLoading || serverStatus.state !== 'connected' || reactivationSummary.pending === 0}
+                className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-black text-xs uppercase shadow-md disabled:opacity-50 flex items-center gap-1.5"
+              >
+                <Gift size={14} /> {reactivationLoading ? 'Enviando...' : 'Disparar 2 Próximas'}
+              </button>
+            </div>
+          </div>
+
+          {/* LISTA DAS PESSOAS QUE RECEBERÃO / RECEBERAM */}
+          <div className="bg-purple-50/70 dark:bg-purple-950/20 border border-purple-200 dark:border-purple-800/40 rounded-2xl px-4 py-3 text-xs font-semibold text-purple-900 dark:text-purple-200">
+            📌 <strong>Ordem de envio:</strong> Apenas ex-clientes <strong>completamente na lixeira (sem nenhum app)</strong>, ordenados das saídas <strong>mais recentes primeiro</strong>. Os itens <strong>#1</strong> e <strong>#2</strong> pendentes são os próximos da fila automática das 15h.
+          </div>
+
+          {filteredReactivationQueue.length === 0 ? (
+            <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-12 text-center border border-dashed border-gray-200 dark:border-slate-800 space-y-2">
+              <Gift size={36} className="text-purple-400 mx-auto" />
+              <p className="text-sm font-black text-gray-800 dark:text-white">Nenhum ex-cliente encontrado neste filtro</p>
+              <p className="text-xs text-gray-400">Somente clientes completamente na lixeira e sem nenhum app aparecem aqui.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {filteredReactivationQueue.map((item, idx) => {
+                const isExpanded = reactivationExpandedId === item.clientId;
+                const isSending = sendingReactivationId === item.clientId;
+                return (
+                  <div
+                    key={item.clientId}
+                    className={`rounded-3xl border p-5 space-y-3 transition-all ${
+                      item.alreadySent
+                        ? 'bg-emerald-50/30 dark:bg-emerald-950/10 border-emerald-200 dark:border-emerald-800/40'
+                        : 'bg-white dark:bg-slate-900 border-purple-100 dark:border-slate-800 shadow-sm'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {!item.alreadySent && (
+                            <span className="px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 text-[10px] font-black">
+                              #{idx + 1}
+                            </span>
+                          )}
+                          <p className="font-black text-gray-900 dark:text-white text-sm">{item.clientName}</p>
+                        </div>
+                        <p className="text-xs font-semibold text-gray-500 mt-0.5">{item.phoneNumber}</p>
+                        <p className="text-[11px] text-gray-400 font-bold">
+                          Na lixeira desde:{' '}
+                          {item.deletedAt ? new Date(item.deletedAt).toLocaleDateString('pt-BR') : 'Data não registrada'}
+                        </p>
+                      </div>
+
+                      {item.alreadySent ? (
+                        <span className="px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 font-black text-[10px] uppercase flex items-center gap-1 shrink-0">
+                          <CheckCircle2 size={12} /> Enviado {item.sentAt ? new Date(item.sentAt).toLocaleDateString('pt-BR') : ''}
+                        </span>
+                      ) : (
+                        <span className="px-3 py-1 rounded-full bg-purple-100 text-purple-800 font-black text-[10px] uppercase flex items-center gap-1 shrink-0">
+                          <Clock size={12} /> Na Fila
+                        </span>
+                      )}
+                    </div>
+
+                    <div>
+                      <div className="text-[11px] font-semibold text-gray-600 dark:text-gray-300 leading-relaxed p-3 rounded-2xl bg-purple-50/50 dark:bg-slate-800/60 border border-purple-100 dark:border-slate-700 whitespace-pre-wrap">
+                        {isExpanded ? item.message : `${item.message.slice(0, 130)}...`}
+                      </div>
+                      <button
+                        onClick={() => setReactivationExpandedId(isExpanded ? null : item.clientId)}
+                        className="text-[11px] font-bold text-purple-600 hover:text-purple-800 mt-1.5 flex items-center gap-1"
+                      >
+                        {isExpanded ? <><EyeOff size={12} /> Recolher mensagem</> : <><Eye size={12} /> Ver mensagem completa</>}
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2 pt-1">
+                      <button
+                        onClick={() => handleCopyMessage(item.message, `react-${item.clientId}`)}
+                        className="p-2 rounded-xl bg-gray-100 dark:bg-slate-800 text-gray-600 hover:text-purple-600 font-bold text-xs flex items-center gap-1.5"
+                      >
+                        {copiedId === `react-${item.clientId}` ? <Check size={14} className="text-emerald-600" /> : <Copy size={14} />}
+                        {copiedId === `react-${item.clientId}` ? 'Copiado!' : 'Copiar'}
+                      </button>
+
+                      {!item.alreadySent && (
+                        <button
+                          onClick={() => handleSendSingleReactivation(item)}
+                          disabled={isSending || serverStatus.state !== 'connected'}
+                          className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-black text-xs uppercase flex items-center gap-1.5 shadow-md disabled:opacity-40"
+                        >
+                          {isSending ? <RefreshCw size={14} className="animate-spin" /> : <Send size={14} />}
+                          {isSending ? 'Enviando...' : 'Enviar Agora'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ══════════════════════════════════════════
           ABA: CONECTAR WHATSAPP
