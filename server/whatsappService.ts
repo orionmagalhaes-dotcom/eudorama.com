@@ -191,16 +191,17 @@ export function formatPhoneToJid(phone: string): string | null {
 export async function sendWhatsAppTextMessage(
   phoneNumber: string,
   messageText: string
-): Promise<{ success: boolean; messageId?: string; error?: string }> {
+): Promise<{ success: boolean; messageId?: string; error?: string; jidUsed?: string }> {
   if (!sock || currentStatus !== 'connected') {
-    return {
-      success: false,
-      error: 'WhatsApp não está conectado no servidor. Por favor, conecte via QR Code no painel.'
-    };
+    return { success: false, error: 'WhatsApp não está conectado. Conecte via QR Code no painel.' };
   }
 
-  const jid = formatPhoneToJid(phoneNumber);
-  if (!jid) {
+  if (!sock.user?.id) {
+    return { success: false, error: 'Sessão do WhatsApp não está totalmente inicializada. Aguarde alguns segundos e tente novamente.' };
+  }
+
+  const digits = String(phoneNumber || '').replace(/\D/g, '');
+  if (!digits || digits.length < 10) {
     return { success: false, error: `Número de telefone inválido: "${phoneNumber}"` };
   }
 
@@ -208,20 +209,46 @@ export async function sendWhatsAppTextMessage(
     return { success: false, error: 'A mensagem está vazia.' };
   }
 
+  // Verifica se o número está no WhatsApp e obtém o JID correto
+  let finalJid: string;
   try {
-    // Pequena pausa humanizada para evitar taxa de envio robótica
-    await new Promise((resolve) => setTimeout(resolve, 800));
-
-    const result = await sock.sendMessage(jid, { text: messageText });
-    return {
-      success: true,
-      messageId: result?.key?.id || undefined
-    };
+    const normalized = digits.startsWith('55') ? digits : `55${digits}`;
+    const [result] = await sock.onWhatsApp(normalized);
+    if (result?.exists) {
+      finalJid = result.jid;
+      console.log(`[WhatsApp Server] Número verificado: ${phoneNumber} → JID: ${finalJid}`);
+    } else {
+      // Tenta sem o dígito 9 (números antigos brasileiros)
+      const withoutNine = normalized.length === 13
+        ? normalized.slice(0, 4) + normalized.slice(5)
+        : null;
+      if (withoutNine) {
+        const [r2] = await sock.onWhatsApp(withoutNine);
+        if (r2?.exists) {
+          finalJid = r2.jid;
+          console.log(`[WhatsApp Server] Número encontrado sem dígito 9: ${withoutNine} → JID: ${finalJid}`);
+        } else {
+          return { success: false, error: `Número ${phoneNumber} não está no WhatsApp (verificado com e sem dígito 9).` };
+        }
+      } else {
+        return { success: false, error: `Número ${phoneNumber} não encontrado no WhatsApp.` };
+      }
+    }
   } catch (err: any) {
-    console.error(`[WhatsApp Server] Erro ao enviar para ${phoneNumber}:`, err?.message || err);
-    return {
-      success: false,
-      error: err?.message || 'Falha ao enviar mensagem pelo WhatsApp'
-    };
+    // Se onWhatsApp falhar, usa o JID formatado normalmente como fallback
+    console.warn(`[WhatsApp Server] Falha ao verificar número ${phoneNumber}, usando JID padrão:`, err?.message);
+    finalJid = formatPhoneToJid(digits) || `${digits.startsWith('55') ? digits : '55' + digits}@s.whatsapp.net`;
+  }
+
+  try {
+    // Pausa humanizada anti-ban
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+
+    const result = await sock.sendMessage(finalJid, { text: messageText });
+    console.log(`[WhatsApp Server] ✅ Mensagem enviada para ${finalJid} | ID: ${result?.key?.id}`);
+    return { success: true, messageId: result?.key?.id || undefined, jidUsed: finalJid };
+  } catch (err: any) {
+    console.error(`[WhatsApp Server] ❌ Erro ao enviar para ${finalJid}:`, err?.message || err);
+    return { success: false, error: err?.message || 'Falha ao enviar mensagem pelo WhatsApp' };
   }
 }
