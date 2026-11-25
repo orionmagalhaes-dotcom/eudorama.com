@@ -303,7 +303,7 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
         sentAt
       });
     });
-    setReactivationQueue(items.sort((a, b) => b.sortTimestamp - a.sortTimestamp));
+    setReactivationQueue(items.sort((a, b) => a.sortTimestamp - b.sortTimestamp));
   }, [clients, reactivationTemplateDraft]);
 
   const fetchReactivationQueue = useCallback(async () => {
@@ -1031,7 +1031,7 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
 
           {/* LISTA DAS PESSOAS QUE RECEBERÃO / RECEBERAM */}
           <div className="bg-purple-50/70 dark:bg-purple-950/20 border border-purple-200 dark:border-purple-800/40 rounded-2xl px-4 py-3 text-xs font-semibold text-purple-900 dark:text-purple-200">
-            📌 <strong>Ordem de envio:</strong> Apenas ex-clientes <strong>completamente na lixeira (sem nenhum app)</strong>, ordenados das saídas <strong>mais recentes primeiro</strong>. Os itens <strong>#1</strong> e <strong>#2</strong> pendentes são os próximos da fila automática das 15h.
+            📌 <strong>Ordem de envio:</strong> Apenas ex-clientes <strong>completamente na lixeira (sem nenhum app)</strong>, ordenados das pessoas que estão <strong>há mais tempo na lixeira primeiro até as mais recentes</strong>. Os itens <strong>#1</strong> e <strong>#2</strong> pendentes são os próximos da fila automática das 15h.
           </div>
 
           {filteredReactivationQueue.length === 0 ? (

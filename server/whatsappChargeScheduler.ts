@@ -547,8 +547,8 @@ export async function getReactivationQueue(): Promise<ReactivationQueueItem[]> {
     });
   }
 
-  // Mais recentes primeiro (quem saiu mais recentemente recebe primeiro); já enviados vão para o fim ou filtrados na UI
-  return items.sort((a, b) => b.sortTimestamp - a.sortTimestamp);
+  // Mais antigas na lixeira primeiro (das que estão há mais tempo para as mais recentes)
+  return items.sort((a, b) => a.sortTimestamp - b.sortTimestamp);
 }
 
 export async function sendSingleReactivation(clientId: string): Promise<{ success: boolean; message: string }> {
@@ -647,7 +647,7 @@ export async function runReactivationCampaign(manualTrigger: boolean = false): P
   const pendingExClients = fullQueue.filter((item) => !item.alreadySent);
 
   const targets = pendingExClients.slice(0, remaining);
-  console.log(`[Reativação] ${pendingExClients.length} ex-clientes elegíveis (lixeira sem apps, mais recentes primeiro). Enviando para ${targets.length}.`);
+  console.log(`[Reativação] ${pendingExClients.length} ex-clientes elegíveis (lixeira sem apps, mais antigas primeiro). Enviando para ${targets.length}.`);
 
   let sent = 0, failed = 0;
 
