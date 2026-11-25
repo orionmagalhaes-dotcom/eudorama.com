@@ -2,6 +2,7 @@ import makeWASocket, {
   Browsers,
   DisconnectReason,
   useMultiFileAuthState,
+  makeCacheableSignalKeyStore,
   fetchLatestBaileysVersion,
   type WASocket,
   type ConnectionState,
@@ -105,7 +106,10 @@ export async function connectWhatsApp(): Promise<WhatsAppStatus> {
 
     sock = makeWASocket({
       version,
-      auth: state,
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, logger)
+      },
       logger,
       printQRInTerminal: false,
       connectTimeoutMs: 60000,
@@ -296,9 +300,9 @@ export async function sendWhatsAppTextMessage(
   }
 
   try {
-    // Força atualização da sessão Signal com o destinatário antes de criptografar (evita "Aguardando mensagem")
+    // Garante sessão Signal válida sem fechar sessões abertas desnecessariamente
     try {
-      await sock.assertSessions([finalJid], true);
+      await sock.assertSessions([finalJid], false);
     } catch {}
 
     // Pausa humanizada anti-ban
