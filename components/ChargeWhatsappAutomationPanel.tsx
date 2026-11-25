@@ -92,13 +92,13 @@ const STAGE_RULES = [
   {
     id: 'reminder',
     label: 'Lembrete Antecipado',
-    range: 'D-5 até D-1',
+    range: 'D-5 apenas',
     color: 'blue',
     icon: Bell,
     tone: 'Informativo e gentil',
     allowed: ['Avisar a data de vencimento', 'Informar o valor', 'Oferecer ajuda para dúvidas'],
     blocked: ['❌ Pedir que pague adiantado', '❌ Criar urgência ou pressão', '❌ Mencionar promoções ou ofertas'],
-    example: 'Olá! Passando com carinho para lembrar que sua assinatura vence em X dias. É só um lembrete para se organizar com calma!'
+    example: 'Olá! Passando com carinho para lembrar que sua assinatura vence em 5 dias. É só um lembrete para se organizar com calma!'
   },
   {
     id: 'due',
@@ -114,7 +114,7 @@ const STAGE_RULES = [
   {
     id: 'followup',
     label: 'Follow-up Pós-vencimento',
-    range: 'D+1 até D+7',
+    range: 'D+2 apenas',
     color: 'amber',
     icon: Heart,
     tone: 'Empático e sem pressão',
@@ -124,14 +124,14 @@ const STAGE_RULES = [
   },
   {
     id: 'reactivation',
-    label: 'Reativação',
-    range: 'D+15 até D+45',
+    label: 'Campanha de Reativação',
+    range: 'Ex-clientes (2/dia)',
     color: 'purple',
     icon: Gift,
-    tone: 'Saudades + oferta especial',
-    allowed: ['Tom de "sentimos sua falta"', 'Oferecer condição/promoção especial', 'Convidar de volta'],
-    blocked: ['❌ Tom de cobrador', '❌ Mencionar dívida ou atraso'],
-    example: 'Olá! Sentimos muito a sua falta! 🥰 Preparamos uma condição especial para você voltar a maratonar seus doramas preferidos!'
+    tone: 'Saudades + oferta especial do Orion',
+    allowed: ['Tom de "sentimos sua falta"', 'Apresentar a EuDorama', 'Mencionar o Orion pelo nome', 'Oferecer condição/promoção especial', 'Perguntar se tem interesse'],
+    blocked: ['❌ Tom de cobrador', '❌ Mencionar dívida ou atraso', '❌ Enviar duas vezes para a mesma pessoa'],
+    example: 'Olá! Sou o Orion, da EuDorama! Sentimos muito a sua falta 🥰 Preparamos uma condição especial pensando em você — teria interesse em saber mais?'
   }
 ];
 
@@ -168,7 +168,7 @@ const colorMap: Record<string, Record<string, string>> = {
 
 export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clients, onClientUpdated }) => {
   const [activeTab, setActiveTab] = useState<'queue' | 'connection' | 'rules' | 'test' | 'logs' | 'config'>('queue');
-  const [stageFilter, setStageFilter] = useState<'all' | 'due' | 'reminder' | 'followup' | 'reactivation'>('all');
+  const [stageFilter, setStageFilter] = useState<'all' | 'due' | 'reminder' | 'followup'>('all');
   const [onlyPending, setOnlyPending] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -196,6 +196,11 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [testLoading, setTestLoading] = useState(false);
   const [testPreview, setTestPreview] = useState(false);
+
+  // Estado da campanha de reativação
+  const [reactivationStatus, setReactivationStatus] = useState<{ sentToday: number; lastRunAt?: string } | null>(null);
+  const [reactivationLoading, setReactivationLoading] = useState(false);
+  const [reactivationResult, setReactivationResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   // Configuração de URL do motor
   const [motorBaseUrl, setMotorBaseUrl] = useState<string>(() => {
@@ -225,6 +230,16 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
     } catch {
       setServerOnline(false);
     }
+  }, [getApiUrl]);
+
+  const fetchReactivationStatus = useCallback(async () => {
+    try {
+      const res = await fetch(getApiUrl('/api/whatsapp/reactivation-status'));
+      if (res.ok) {
+        const data = await res.json();
+        if (data.status) setReactivationStatus(data.status);
+      }
+    } catch {}
   }, [getApiUrl]);
 
   const fetchQrCode = useCallback(async () => {
@@ -305,18 +320,15 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
         let stage: 'reminder' | 'due' | 'followup' | 'reactivation' | null = null;
         let stageLabel = '';
 
-        if (days >= 1 && days <= 5) {
+        if (days === 5) {
           stage = 'reminder';
-          stageLabel = days === 1 ? 'Vence Amanhã (D-1)' : `Vence em ${days}d (D-${days})`;
+          stageLabel = 'Vence em 5 dias (D-5)';
         } else if (days === 0) {
           stage = 'due';
           stageLabel = 'Vence Hoje (D0)';
-        } else if (days >= -7 && days <= -1) {
+        } else if (days === -2) {
           stage = 'followup';
-          stageLabel = `Vencido há ${Math.abs(days)}d (D+${Math.abs(days)})`;
-        } else if (days <= -15 && days >= -45) {
-          stage = 'reactivation';
-          stageLabel = `Reativação (${Math.abs(days)}d vencido)`;
+          stageLabel = 'Vencido há 2 dias (D+2)';
         }
 
         if (!stage) return;
@@ -386,16 +398,18 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
     void fetchStatus();
     void fetchQueue();
     void fetchLogs();
+    void fetchReactivationStatus();
 
     const interval = setInterval(() => {
       void fetchStatus();
+      void fetchReactivationStatus();
       if (serverStatus.state === 'connecting' || serverStatus.state === 'qr_ready') {
         void fetchQrCode();
       }
     }, 6000);
 
     return () => clearInterval(interval);
-  }, [fetchStatus, fetchQueue, fetchLogs, serverStatus.state, fetchQrCode]);
+  }, [fetchStatus, fetchQueue, fetchLogs, serverStatus.state, fetchQrCode, fetchReactivationStatus]);
 
   const handleConnect = async () => {
     try {
@@ -415,6 +429,27 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
       await fetchStatus();
     } catch (e: any) {
       alert('Erro ao desconectar: ' + e?.message);
+    }
+  };
+
+  const handleTriggerReactivation = async () => {
+    if (!window.confirm('Disparar campanha de reativação agora para até 2 ex-clientes que ainda não receberam?')) return;
+    setReactivationLoading(true);
+    setReactivationResult(null);
+    try {
+      const res = await fetch(getApiUrl('/api/whatsapp/trigger-reactivation'), { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setReactivationResult({ ok: true, message: `✅ Enviado para ${data.sent} ex-cliente(s). Falhas: ${data.failed}.` });
+        await fetchReactivationStatus();
+        await fetchLogs();
+      } else {
+        setReactivationResult({ ok: false, message: data.message || 'Erro ao disparar campanha' });
+      }
+    } catch (e: any) {
+      setReactivationResult({ ok: false, message: 'Erro de conexão: ' + (e?.message || 'Servidor offline?') });
+    } finally {
+      setReactivationLoading(false);
     }
   };
 
@@ -1005,8 +1040,8 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
             {[
               { label: 'Total na Fila', value: summary.total, sub: `${summary.pending} pendentes`, color: 'indigo', icon: Calendar },
               { label: 'Vence Hoje (D0)', value: summary.due, sub: 'Convite gentil à renovação', color: 'red', icon: Clock },
-              { label: 'Lembretes (D-5 a D-1)', value: summary.reminder, sub: 'Sem pressão de pagamento', color: 'blue', icon: ShieldCheck },
-              { label: 'Vencidos + Reativação', value: summary.followup + summary.reactivation, sub: 'Follow-up e ofertas', color: 'purple', icon: Zap }
+              { label: 'Lembrete D-5', value: summary.reminder, sub: 'Sem pressão — apenas informativo', color: 'blue', icon: ShieldCheck },
+              { label: 'Follow-up D+2', value: summary.followup, sub: 'Empático e sem pressão', color: 'amber', icon: Heart }
             ].map((card) => {
               const Icon = card.icon;
               return (
@@ -1033,7 +1068,7 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
                   Agendador Automático do Servidor
                 </p>
               </div>
-              <h3 className="text-xl font-black">Disparo Diário Programado — 09:30 (Brasília)</h3>
+              <h3 className="text-xl font-black">Disparo Diário Programado — 15:00 (Brasília)</h3>
               <p className="text-xs text-emerald-100 font-semibold max-w-xl">
                 O servidor envia sozinho com intervalos humanizados (10s a 18s) para blindar seu número de bloqueios.
                 {serverStatus.scheduler?.lastCycleAt && (
@@ -1061,6 +1096,42 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
               >
                 <Zap size={18} className="text-amber-500 fill-amber-500" />
                 {isCycleRunning ? 'Disparo em Andamento...' : `Disparar ${summary.pending} Pendentes Agora`}
+              </button>
+            </div>
+          </div>
+
+          {/* CARD DA CAMPANHA DE REATIVAÇÃO */}
+          <div className="p-5 bg-gradient-to-r from-purple-600 to-indigo-700 rounded-[2.5rem] text-white shadow-lg flex flex-wrap items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <Gift size={18} className="text-purple-200" />
+                <p className="text-xs font-black uppercase tracking-widest text-purple-200">
+                  Campanha de Reativação de Ex-clientes
+                </p>
+              </div>
+              <h3 className="text-base font-black">2 mensagens por dia — Após 15:00 (Brasília)</h3>
+              <p className="text-xs text-purple-100 font-semibold max-w-xl">
+                O Orion entra em contato com ex-clientes que nunca receberam a campanha, apresenta a EuDorama e oferece uma promoção especial. Cada pessoa recebe apenas 1 vez.
+                {reactivationStatus && (
+                  <span className="block mt-1 text-purple-200 font-bold">
+                    Hoje: {reactivationStatus.sentToday}/2 enviadas
+                    {reactivationStatus.lastRunAt && ` · Último disparo: ${new Date(reactivationStatus.lastRunAt).toLocaleString('pt-BR')}`}
+                  </span>
+                )}
+              </p>
+            </div>
+            <div className="flex flex-col items-end gap-2">
+              {reactivationResult && (
+                <p className={`text-xs font-bold px-3 py-1.5 rounded-xl ${reactivationResult.ok ? 'bg-white/20 text-white' : 'bg-red-200 text-red-900'}`}>
+                  {reactivationResult.message}
+                </p>
+              )}
+              <button
+                onClick={handleTriggerReactivation}
+                disabled={reactivationLoading || serverStatus.state !== 'connected'}
+                className="px-5 py-2.5 rounded-2xl bg-white text-purple-800 font-black text-xs uppercase hover:bg-purple-50 transition-all shadow-md disabled:opacity-50 flex items-center gap-2"
+              >
+                {reactivationLoading ? <><RefreshCw size={14} className="animate-spin" /> Enviando...</> : <><Gift size={14} /> Disparar Reativação Agora</>}
               </button>
             </div>
           </div>

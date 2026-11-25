@@ -12,13 +12,19 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const LOGS_FILE = path.resolve(process.cwd(), 'artifacts/whatsapp-charge-logs.json');
 
+export type ReactivationCampaignStatus = {
+  sentToday: number;
+  pendingCount: number;
+  lastRunAt?: string;
+};
+
 export type ChargeQueueItem = {
   id: string;
   clientId: string;
   clientName: string;
   phoneNumber: string;
   service: string;
-  stage: 'reminder' | 'due' | 'followup' | 'reactivation';
+  stage: 'reminder' | 'due' | 'followup';
   stageLabel: string;
   daysRemaining: number;
   expiryDateStr: string;
@@ -57,8 +63,8 @@ export type SchedulerState = {
 
 let schedulerState: SchedulerState = {
   enabled: true,
-  targetHour: 9,
-  targetMinute: 30,
+  targetHour: 15,
+  targetMinute: 0,
   isRunning: false
 };
 
@@ -171,7 +177,7 @@ export function buildChargeMessage(
   expiryDate: Date,
   daysRemaining: number,
   price: number,
-  stage: 'reminder' | 'due' | 'followup' | 'reactivation'
+  stage: 'reminder' | 'due' | 'followup'
 ): string {
   const rawName = String(clientName || '').trim();
   const displayName = rawName && rawName.toLowerCase() !== 'null' && rawName.toLowerCase() !== 'sem nome'
@@ -181,27 +187,26 @@ export function buildChargeMessage(
   const precoFmt = price > 0 ? formatCurrency(price) : 'o valor regular do seu plano';
 
   if (stage === 'reminder') {
-    // REGRA IMPORTANTE: Se ainda faltar dias para vencer, NÃO fala sobre adiantar pagamento e NÃO dá promoções
-    if (daysRemaining === 1) {
-      return `Olá, ${displayName}! Tudo bem com você? ✨ Passando com carinho para lembrar que a sua assinatura do *${service}* vence amanhã, dia ${dataFmt}. É apenas um lembrete para você poder se programar com calma! Se precisar de qualquer informação ou tiver alguma dúvida, estamos à disposição por aqui. Tenha um ótimo dia e bons doramas! 🌸✨`;
-    }
-    return `Olá, ${displayName}! Tudo bem com você? ✨ Passando apenas para te avisar com carinho que a sua assinatura do *${service}* vence no dia ${dataFmt} (daqui a ${daysRemaining} dias). O valor da assinatura é de *${precoFmt}*. É apenas um lembrete para você poder se organizar com calma! Se tiver qualquer dúvida ou precisar de algo, estamos sempre à disposição por aqui. Tenha um ótimo dia e aproveite seus doramas! 🌸🍿`;
+    // D-5 apenas: informativo e gentil, SEM pressão de pagamento, SEM promoções
+    return `Olá, ${displayName}! Tudo bem com você? ✨ Passando apenas para te avisar com carinho que a sua assinatura do *${service}* vence no dia ${dataFmt} (daqui a 5 dias). O valor da assinatura é de *${precoFmt}*. É apenas um lembrete para você poder se organizar com calma! Se tiver qualquer dúvida ou precisar de algo, estamos sempre à disposição por aqui. Tenha um ótimo dia e aproveite seus doramas! 🌸🍿`;
   }
 
   if (stage === 'due') {
-    // Dia do vencimento
+    // D0 — convite gentil à renovação
     return `Olá, ${displayName}! Tudo bem? Esperamos que sim! 🌸 Passando para lembrar que hoje (*${dataFmt}*) é o dia do vencimento da sua assinatura do *${service}* no valor de *${precoFmt}*. Quer renovar hoje para manter seu acesso ativo e não perder seus episódios favoritos? Se já realizou o pagamento, por favor desconsidere este recadinho. Qualquer dúvida, estou por aqui para te ajudar! 🍿✨`;
   }
 
-  if (stage === 'followup') {
-    // Vencido recentemente (D+1 a D+7)
-    const diasVencido = Math.abs(daysRemaining);
-    const textoDias = diasVencido === 1 ? 'ontem' : `há ${diasVencido} dias`;
-    return `Olá, ${displayName}! Tudo bem? Notamos que o acesso à sua assinatura do *${service}* encerrou (${textoDias}, dia ${dataFmt}). Sabemos bem como a rotina do dia a dia é corrida! Caso queira continuar acompanhando seus doramas favoritos sem interrupções, me avise por aqui que te envio os dados para renovação. Se tiver acontecido algum imprevisto ou se precisar de alguma ajuda, estou super à disposição! 💜`;
-  }
+  // stage === 'followup' — D+2 apenas: empático, sem pressão, sem mencionar "X dias de atraso"
+  return `Olá, ${displayName}! Tudo bem? Notamos que o acesso à sua assinatura do *${service}* encerrou (dia ${dataFmt}). Sabemos bem como a rotina do dia a dia é corrida! Caso queira continuar acompanhando seus doramas favoritos sem interrupções, me avise por aqui que te envio os dados para renovação. Se tiver acontecido algum imprevisto ou se precisar de alguma ajuda, estou super à disposição! 💜`;
+}
 
-  // stage === 'reactivation' (D+15+)
-  return `Olá, ${displayName}! Tudo bem? Sentimos muito a sua falta aqui na EuDorama! 🥰 Notamos que já faz um tempinho que sua assinatura do *${service}* encerrou. Preparamos uma condição super especial para você voltar a maratonar seus doramas preferidos por apenas *${precoFmt}*! O que acha? Se quiser aproveitar ou se tiver qualquer dúvida, é só me responder aqui. Tenha um lindo dia! ✨🍿`;
+// Constrói a mensagem da campanha de reativação (único lugar onde promoção é permitida)
+function buildReactivationMessage(clientName: string): string {
+  const rawName = String(clientName || '').trim();
+  const displayName = rawName && rawName.toLowerCase() !== 'null' && rawName.toLowerCase() !== 'sem nome'
+    ? rawName
+    : 'Dorameira';
+  return `Olá, ${displayName}! Tudo bem? 🌸\n\nSou o Orion, da *EuDorama* — uma plataforma dedicada a quem ama doramas e conteúdo asiático! 😊\n\nFaz um tempinho que você não está por aqui e sentimos muito a sua falta! Preparamos uma *condição especial* pensando em você para facilitar o seu retorno. 🎁\n\nVocê teria interesse em saber mais sobre a nossa promoção? É só me responder aqui e te explico tudo com carinho! Tenha um lindo dia! ✨🍿`;
 }
 
 // Avalia a base do Supabase e retorna a fila completa do dia
@@ -239,18 +244,15 @@ export async function getChargeQueue(): Promise<ChargeQueueItem[]> {
       let stage: 'reminder' | 'due' | 'followup' | 'reactivation' | null = null;
       let stageLabel = '';
 
-      if (daysRemaining >= 1 && daysRemaining <= 5) {
+      if (daysRemaining === 5) {
         stage = 'reminder';
-        stageLabel = daysRemaining === 1 ? 'Vence Amanhã (D-1)' : `Vence em ${daysRemaining} dias (D-${daysRemaining})`;
+        stageLabel = 'Vence em 5 dias (D-5)';
       } else if (daysRemaining === 0) {
         stage = 'due';
         stageLabel = 'Vence Hoje (D0)';
-      } else if (daysRemaining >= -7 && daysRemaining <= -1) {
+      } else if (daysRemaining === -2) {
         stage = 'followup';
-        stageLabel = `Vencido há ${Math.abs(daysRemaining)}d (D+${Math.abs(daysRemaining)})`;
-      } else if (daysRemaining <= -15 && daysRemaining >= -45) {
-        stage = 'reactivation';
-        stageLabel = `Reativação (${Math.abs(daysRemaining)}d vencido)`;
+        stageLabel = 'Vencido há 2 dias (D+2)';
       }
 
       if (!stage) continue;
@@ -290,8 +292,8 @@ export async function getChargeQueue(): Promise<ChargeQueueItem[]> {
     }
   }
 
-  // Ordena prioritariamente: 1º Vence hoje (D0), 2º Vencidos (D+), 3º Lembretes (D-), 4º Reativação
-  const stageWeights = { due: 1, followup: 2, reminder: 3, reactivation: 4 };
+  // Ordena prioritariamente: 1º Vence hoje (D0), 2º Vencidos (D+), 3º Lembretes (D-)
+  const stageWeights = { due: 1, followup: 2, reminder: 3 };
   return queue.sort((a, b) => {
     if (a.alreadySentToday !== b.alreadySentToday) return a.alreadySentToday ? 1 : -1;
     return (stageWeights[a.stage] || 99) - (stageWeights[b.stage] || 99);
@@ -398,6 +400,126 @@ async function markClientAsCharged(clientId: string, phoneNumber: string, servic
   }
 }
 
+// --- CAMPANHA DE REATIVAÇÃO DE EX-CLIENTES ---
+// Envia até 2 mensagens por dia para ex-clientes que nunca receberam a campanha.
+// ÚNICO lugar onde promoção é permitida.
+
+let reactivationState = { sentToday: 0, lastRunDate: '', lastRunAt: '' };
+
+export async function runReactivationCampaign(): Promise<{ sent: number; failed: number; skipped: number }> {
+  const wsStatus = getWhatsAppStatus();
+  if (wsStatus.state !== 'connected') {
+    console.log('[Reativação] WhatsApp não conectado. Pulando campanha.');
+    return { sent: 0, failed: 0, skipped: 0 };
+  }
+
+  // Fuso horário de São Paulo para controle diário
+  const nowSp = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+  const today = `${nowSp.getFullYear()}-${String(nowSp.getMonth()).padStart(2, '0')}-${String(nowSp.getDate()).padStart(2, '0')}`;
+
+  if (reactivationState.lastRunDate !== today) {
+    reactivationState.sentToday = 0;
+    reactivationState.lastRunDate = today;
+  }
+
+  if (reactivationState.sentToday >= 2) {
+    console.log('[Reativação] Já enviou 2 mensagens hoje. Pulando.');
+    return { sent: 0, failed: 0, skipped: 1 };
+  }
+
+  // Busca TODOS os clientes (incluindo deletados) que tenham telefone
+  const { data: allClients } = await supabase.from('clients').select('*');
+  if (!allClients || allClients.length === 0) return { sent: 0, failed: 0, skipped: 0 };
+
+  const remaining = 2 - reactivationState.sentToday;
+
+  // Filtra ex-clientes: deletados OU com assinatura expirada há mais de 2 dias, e que ainda não receberam a campanha
+  const exClients = (allClients as ClientDBRow[]).filter((c) => {
+    if (!c.phone_number) return false;
+    const progress = c.game_progress || {};
+    if (progress._reactivation_campaign_sent_at) return false; // já recebeu, nunca reenviar
+    if (c.deleted) return true;
+    // cliente ativo mas com assinatura expirada há mais de 2 dias
+    const subs = normalizeSubscriptions(c.subscriptions);
+    return subs.some((sub) => {
+      const parts = sub.split('|');
+      const startStr = String(parts[1] || '').trim();
+      const dur = parseInt(parts[3] || String(c.duration_months || 1)) || 1;
+      if (!startStr) return false;
+      const expiry = calculateExpiry(startStr, dur);
+      return getDaysRemaining(expiry) < -2;
+    });
+  });
+
+  const targets = exClients.slice(0, remaining);
+  console.log(`[Reativação] ${exClients.length} ex-clientes elegíveis. Enviando para ${targets.length}.`);
+
+  let sent = 0, failed = 0;
+
+  for (const client of targets) {
+    const delayMs = Math.floor(Math.random() * 8000) + 10000;
+    console.log(`[Reativação] Aguardando ${Math.round(delayMs / 1000)}s antes de enviar para ${client.client_name}...`);
+    await new Promise((r) => setTimeout(r, delayMs));
+
+    const message = buildReactivationMessage(client.client_name);
+    const result = await sendWhatsAppTextMessage(client.phone_number, message);
+
+    if (result.success) {
+      sent++;
+      reactivationState.sentToday++;
+
+      // Marca no Supabase para nunca reenviar
+      try {
+        const progress = client.game_progress || {};
+        await supabase
+          .from('clients')
+          .update({ game_progress: { ...progress, _reactivation_campaign_sent_at: new Date().toISOString() } })
+          .eq('id', client.id);
+      } catch (err) {
+        console.error('[Reativação] Erro ao marcar cliente:', err);
+      }
+
+      recentLogs.unshift({
+        id: `${Date.now()}-react-${Math.random().toString(36).substring(2, 6)}`,
+        timestamp: new Date().toISOString(),
+        phoneNumber: client.phone_number,
+        clientName: client.client_name || 'Dorameira',
+        service: 'Campanha',
+        stage: 'Reativação de Ex-cliente',
+        status: 'success',
+        messageText: message
+      });
+      console.log(`[Reativação] ✅ Enviado para ${client.client_name} (${client.phone_number})`);
+    } else {
+      failed++;
+      recentLogs.unshift({
+        id: `${Date.now()}-react-fail-${Math.random().toString(36).substring(2, 6)}`,
+        timestamp: new Date().toISOString(),
+        phoneNumber: client.phone_number,
+        clientName: client.client_name || 'Dorameira',
+        service: 'Campanha',
+        stage: 'Reativação de Ex-cliente',
+        status: 'failed',
+        error: result.error
+      });
+      console.error(`[Reativação] ❌ Falha ao enviar para ${client.client_name}: ${result.error}`);
+    }
+    saveLogsToFile();
+  }
+
+  reactivationState.lastRunAt = new Date().toISOString();
+  console.log(`[Reativação] Campanha finalizada. Enviados: ${sent}, Falhas: ${failed}`);
+  return { sent, failed, skipped: 0 };
+}
+
+export function getReactivationStatus(): ReactivationCampaignStatus {
+  return {
+    sentToday: reactivationState.sentToday,
+    pendingCount: 0, // calculado dinamicamente quando necessário
+    lastRunAt: reactivationState.lastRunAt || undefined
+  };
+}
+
 // Executa o ciclo completo de cobrança no servidor
 export async function runDailyChargeCycle(manualTrigger: boolean = false): Promise<{
   success: boolean;
@@ -480,6 +602,11 @@ export async function runDailyChargeCycle(manualTrigger: boolean = false): Promi
     schedulerState.lastCycleSummary = summary;
 
     console.log(`[Scheduler] Ciclo finalizado! Enviados: ${sent}, Falhas: ${failed}, Ignorados (já enviados): ${skipped}`);
+
+    // Executa a campanha de reativação de ex-clientes (2 por dia, após o ciclo principal)
+    console.log('[Scheduler] Iniciando campanha de reativação de ex-clientes...');
+    await runReactivationCampaign();
+
     return { success: true, summary };
   } catch (err) {
     console.error('[Scheduler] Erro crítico no ciclo de cobranças:', err);

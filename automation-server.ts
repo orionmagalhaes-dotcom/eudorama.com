@@ -26,7 +26,9 @@ import {
   getSchedulerState,
   getSchedulerLogs,
   updateSchedulerConfig,
-  startDailyChargeScheduler
+  startDailyChargeScheduler,
+  runReactivationCampaign,
+  getReactivationStatus
 } from './server/whatsappChargeScheduler.ts';
 
 const PORT = Number(process.env.PORT || 3000);
@@ -284,6 +286,21 @@ const server = createServer(async (req, res) => {
       sendJson(res, 200, { success: true, scheduler: getSchedulerState() });
     } catch (e: any) {
       sendJson(res, 500, { success: false, message: e?.message || 'Erro ao atualizar agendador' });
+    }
+    return;
+  }
+
+  if (method === 'GET' && path === '/api/whatsapp/reactivation-status') {
+    sendJson(res, 200, { success: true, status: getReactivationStatus() });
+    return;
+  }
+
+  if (method === 'POST' && path === '/api/whatsapp/trigger-reactivation') {
+    try {
+      const result = await runReactivationCampaign();
+      sendJson(res, 200, { success: true, ...result });
+    } catch (e: any) {
+      sendJson(res, 500, { success: false, message: e?.message || 'Erro ao disparar campanha de reativação' });
     }
     return;
   }
