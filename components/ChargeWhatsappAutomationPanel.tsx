@@ -45,6 +45,10 @@ type WhatsAppServerStatus = {
   lastDisconnectReason?: string;
   scheduler?: {
     enabled: boolean;
+    enableReminder?: boolean;
+    enableDue?: boolean;
+    enableFollowup?: boolean;
+    enableReactivation?: boolean;
     targetHour: number;
     targetMinute: number;
     isRunning: boolean;
@@ -432,6 +436,50 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
     }
   };
 
+  const handleResetSession = async () => {
+    if (!window.confirm('Isso vai limpar a sessão atual e gerar um novo QR Code para renovar as chaves de criptografia. Continuar?')) return;
+    try {
+      setQrCodeDataUrl(null);
+      await fetch(getApiUrl('/api/whatsapp/reset-session'), { method: 'POST' });
+      await fetchStatus();
+      await fetchQrCode();
+      alert('Sessão limpa! Escaneie o novo QR Code abaixo.');
+    } catch (e: any) {
+      alert('Erro ao reiniciar sessão: ' + e?.message);
+    }
+  };
+
+  const [configSaving, setConfigSaving] = useState(false);
+
+  const handleUpdateSchedulerConfig = async (
+    patch: Partial<{
+      enabled: boolean;
+      enableReminder: boolean;
+      enableDue: boolean;
+      enableFollowup: boolean;
+      enableReactivation: boolean;
+    }>
+  ) => {
+    setConfigSaving(true);
+    try {
+      const res = await fetch(getApiUrl('/api/whatsapp/scheduler-config'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch)
+      });
+      const data = await res.json();
+      if (res.ok && data.success && data.scheduler) {
+        setServerStatus((prev) => ({ ...prev, scheduler: data.scheduler }));
+      } else {
+        alert('Não foi possível atualizar a configuração no servidor.');
+      }
+    } catch (e: any) {
+      alert('Erro de conexão com o servidor: ' + e?.message);
+    } finally {
+      setConfigSaving(false);
+    }
+  };
+
   const handleTriggerReactivation = async () => {
     if (!window.confirm('Disparar campanha de reativação agora para até 2 ex-clientes que ainda não receberam?')) return;
     setReactivationLoading(true);
@@ -690,19 +738,36 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
               <p className="text-xs text-gray-500">O WhatsApp roda conectado 24h por dia no servidor EC2 usando Baileys.</p>
             </div>
             {serverStatus.state === 'connected' ? (
-              <button
-                onClick={handleDisconnect}
-                className="px-4 py-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold transition-all flex items-center gap-1.5"
-              >
-                <Power size={14} /> Desconectar Sessão
-              </button>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={handleResetSession}
+                  className="px-4 py-2 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-700 text-xs font-bold transition-all flex items-center gap-1.5"
+                  title="Use se as mensagens ficarem com 'Aguardando mensagem'"
+                >
+                  <RefreshCw size={14} /> Reiniciar Sessão (Novo QR)
+                </button>
+                <button
+                  onClick={handleDisconnect}
+                  className="px-4 py-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold transition-all flex items-center gap-1.5"
+                >
+                  <Power size={14} /> Desconectar Sessão
+                </button>
+              </div>
             ) : (
-              <button
-                onClick={handleConnect}
-                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black uppercase transition-all shadow-md flex items-center gap-1.5"
-              >
-                <RefreshCw size={14} /> Gerar / Atualizar QR Code
-              </button>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={handleResetSession}
+                  className="px-4 py-2 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-700 text-xs font-bold transition-all flex items-center gap-1.5"
+                >
+                  <RefreshCw size={14} /> Limpar Sessão Antiga
+                </button>
+                <button
+                  onClick={handleConnect}
+                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black uppercase transition-all shadow-md flex items-center gap-1.5"
+                >
+                  <RefreshCw size={14} /> Gerar / Atualizar QR Code
+                </button>
+              </div>
             )}
           </div>
 
@@ -1060,17 +1125,31 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
           </div>
 
           {/* CARD DO ROBÔ DIÁRIO */}
-          <div className="p-6 bg-gradient-to-r from-emerald-600 to-teal-700 rounded-[2.5rem] text-white shadow-lg flex flex-wrap items-center justify-between gap-4">
+          <div className={`p-6 rounded-[2.5rem] text-white shadow-lg flex flex-wrap items-center justify-between gap-4 transition-all ${
+            serverStatus.scheduler?.enabled === false
+              ? 'bg-gradient-to-r from-slate-600 to-slate-700'
+              : 'bg-gradient-to-r from-emerald-600 to-teal-700'
+          }`}>
             <div className="space-y-1">
               <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-emerald-300 animate-ping" />
+                {serverStatus.scheduler?.enabled === false ? (
+                  <span className="w-2.5 h-2.5 rounded-full bg-amber-300" />
+                ) : (
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-300 animate-ping" />
+                )}
                 <p className="text-xs font-black uppercase tracking-widest text-emerald-200">
-                  Agendador Automático do Servidor
+                  {serverStatus.scheduler?.enabled === false ? 'Automação Pausada' : 'Agendador Automático do Servidor'}
                 </p>
               </div>
-              <h3 className="text-xl font-black">Disparo Diário Programado — 15:00 (Brasília)</h3>
+              <h3 className="text-xl font-black">
+                {serverStatus.scheduler?.enabled === false
+                  ? 'Disparos Automáticos Desativados'
+                  : 'Disparo Diário Programado — 15:00 (Brasília)'}
+              </h3>
               <p className="text-xs text-emerald-100 font-semibold max-w-xl">
-                O servidor envia sozinho com intervalos humanizados (10s a 18s) para blindar seu número de bloqueios.
+                {serverStatus.scheduler?.enabled === false
+                  ? 'Nenhuma mensagem automática será enviada às 15:00 até que você reative a automação abaixo.'
+                  : 'O servidor envia sozinho com intervalos humanizados (10s a 18s) para blindar seu número de bloqueios.'}
                 {serverStatus.scheduler?.lastCycleAt && (
                   <span className="block mt-1 text-emerald-200 font-bold">
                     Último ciclo: {new Date(serverStatus.scheduler.lastCycleAt).toLocaleString('pt-BR')} ({serverStatus.scheduler.lastCycleSummary?.sent || 0} enviados,{' '}
@@ -1080,7 +1159,20 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
               </p>
             </div>
 
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
+              <button
+                onClick={() => handleUpdateSchedulerConfig({ enabled: serverStatus.scheduler?.enabled === false })}
+                disabled={configSaving || serverOnline === false}
+                className={`px-4 py-3 rounded-2xl font-black text-xs uppercase transition-all flex items-center gap-2 ${
+                  serverStatus.scheduler?.enabled === false
+                    ? 'bg-emerald-500 hover:bg-emerald-400 text-white shadow-md'
+                    : 'bg-red-500/80 hover:bg-red-500 text-white'
+                } disabled:opacity-50`}
+              >
+                <Power size={16} />
+                {serverStatus.scheduler?.enabled === false ? 'Ativar Automação' : 'Desativar Tudo'}
+              </button>
+
               <button
                 onClick={fetchQueue}
                 disabled={loading}
@@ -1097,6 +1189,79 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
                 <Zap size={18} className="text-amber-500 fill-amber-500" />
                 {isCycleRunning ? 'Disparo em Andamento...' : `Disparar ${summary.pending} Pendentes Agora`}
               </button>
+            </div>
+          </div>
+
+          {/* CONTROLE POR PARTES DA AUTOMAÇÃO */}
+          <div className="bg-white dark:bg-slate-900 rounded-3xl p-5 shadow-sm border border-gray-100 dark:border-slate-800 space-y-4">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div>
+                <h4 className="text-sm font-black text-gray-900 dark:text-white flex items-center gap-2">
+                  <Power size={16} className="text-indigo-600" />
+                  Controle da Automação (Por Completo ou Por Partes)
+                </h4>
+                <p className="text-xs text-gray-500">
+                  Ative ou desative cada etapa individualmente. As alterações são salvas imediatamente no servidor.
+                </p>
+              </div>
+              {configSaving && (
+                <span className="text-xs font-bold text-indigo-600 flex items-center gap-1">
+                  <RefreshCw size={12} className="animate-spin" /> Salvando...
+                </span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {[
+                {
+                  key: 'enableReminder' as const,
+                  label: '🔔 Lembrete (D-5)',
+                  desc: '5 dias antes do vencimento',
+                  active: serverStatus.scheduler?.enableReminder !== false
+                },
+                {
+                  key: 'enableDue' as const,
+                  label: '🕐 Vencimento (D0)',
+                  desc: 'No dia do vencimento',
+                  active: serverStatus.scheduler?.enableDue !== false
+                },
+                {
+                  key: 'enableFollowup' as const,
+                  label: '💜 Follow-up (D+2)',
+                  desc: '2 dias após o vencimento',
+                  active: serverStatus.scheduler?.enableFollowup !== false
+                },
+                {
+                  key: 'enableReactivation' as const,
+                  label: '🎁 Reativação (2/dia)',
+                  desc: 'Campanha para ex-clientes',
+                  active: serverStatus.scheduler?.enableReactivation !== false
+                }
+              ].map((part) => (
+                <button
+                  key={part.key}
+                  type="button"
+                  disabled={configSaving || serverOnline === false}
+                  onClick={() => handleUpdateSchedulerConfig({ [part.key]: !part.active })}
+                  className={`p-3.5 rounded-2xl border text-left transition-all flex items-center justify-between gap-2 disabled:opacity-50 ${
+                    part.active
+                      ? 'bg-emerald-50/70 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/40'
+                      : 'bg-gray-50 dark:bg-slate-800/60 border-gray-200 dark:border-slate-700 opacity-75'
+                  }`}
+                >
+                  <div>
+                    <p className="text-xs font-black text-gray-900 dark:text-white">{part.label}</p>
+                    <p className="text-[11px] text-gray-500 font-semibold">{part.desc}</p>
+                  </div>
+                  <span
+                    className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase shrink-0 ${
+                      part.active ? 'bg-emerald-600 text-white' : 'bg-gray-300 dark:bg-slate-700 text-gray-700 dark:text-gray-300'
+                    }`}
+                  >
+                    {part.active ? 'Ativo' : 'Desativado'}
+                  </span>
+                </button>
+              ))}
             </div>
           </div>
 
@@ -1142,9 +1307,8 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
               {[
                 { id: 'all', label: `Todos (${summary.total})`, active: 'indigo' },
                 { id: 'due', label: `Vence Hoje (${summary.due})`, active: 'red' },
-                { id: 'reminder', label: `Lembretes (${summary.reminder})`, active: 'blue' },
-                { id: 'followup', label: `Follow-up (${summary.followup})`, active: 'amber' },
-                { id: 'reactivation', label: `Reativação (${summary.reactivation})`, active: 'purple' }
+                { id: 'reminder', label: `Lembretes D-5 (${summary.reminder})`, active: 'blue' },
+                { id: 'followup', label: `Follow-up D+2 (${summary.followup})`, active: 'amber' }
               ].map((f) => (
                 <button
                   key={f.id}

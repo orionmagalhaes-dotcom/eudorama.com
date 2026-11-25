@@ -14,6 +14,7 @@ import {
 import {
   connectWhatsApp,
   disconnectWhatsApp,
+  resetWhatsAppSession,
   getWhatsAppStatus,
   getQrCodeDataUrl,
   sendWhatsAppTextMessage,
@@ -235,6 +236,12 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (method === 'POST' && path === '/api/whatsapp/reset-session') {
+    const result = await resetWhatsAppSession();
+    sendJson(res, 200, result);
+    return;
+  }
+
   if (method === 'GET' && path === '/api/whatsapp/queue') {
     try {
       const queue = await getChargeQueue();
@@ -297,7 +304,7 @@ const server = createServer(async (req, res) => {
 
   if (method === 'POST' && path === '/api/whatsapp/trigger-reactivation') {
     try {
-      const result = await runReactivationCampaign();
+      const result = await runReactivationCampaign(true);
       sendJson(res, 200, { success: true, ...result });
     } catch (e: any) {
       sendJson(res, 500, { success: false, message: e?.message || 'Erro ao disparar campanha de reativação' });

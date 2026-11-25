@@ -1,9 +1,12 @@
 import makeWASocket, {
+  Browsers,
   DisconnectReason,
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   type WASocket,
-  type ConnectionState
+  type ConnectionState,
+  type proto,
+  type CacheStore
 } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import pino from 'pino';
@@ -34,6 +37,36 @@ let reconnectTimer: NodeJS.Timeout | null = null;
 
 // Logger silencioso para não poluir o terminal
 const logger = pino({ level: 'silent' });
+
+// Armazena mensagens enviadas recentemente para responder a pedidos de retry (evita "Aguardando mensagem")
+const sentMessageStore = new Map<string, proto.IMessage>();
+function storeSentMessage(id: string | null | undefined, message: proto.IMessage | null | undefined) {
+  if (!id || !message) return;
+  sentMessageStore.set(id, message);
+  if (sentMessageStore.size > 500) {
+    const oldestKey = sentMessageStore.keys().next().value;
+    if (oldestKey) sentMessageStore.delete(oldestKey);
+  }
+}
+
+// Cache em memória para contagem de retries de criptografia Signal no Baileys
+const retryMap = new Map<string, unknown>();
+const msgRetryCounterCache: CacheStore = {
+  get: <T>(key: string): T | undefined => retryMap.get(key) as T | undefined,
+  set: <T>(key: string, value: T): void => {
+    retryMap.set(key, value);
+    if (retryMap.size > 1000) {
+      const oldestKey = retryMap.keys().next().value;
+      if (oldestKey) retryMap.delete(oldestKey);
+    }
+  },
+  del: (key: string): void => {
+    retryMap.delete(key);
+  },
+  flushAll: (): void => {
+    retryMap.clear();
+  }
+};
 
 export function getWhatsAppStatus(): WhatsAppStatus {
   return {
@@ -79,7 +112,15 @@ export async function connectWhatsApp(): Promise<WhatsAppStatus> {
       defaultQueryTimeoutMs: 60000,
       keepAliveIntervalMs: 10000,
       emitOwnEvents: false,
-      browser: ['EuDorama Servidor', 'Chrome', '124.0.0.0']
+      syncFullHistory: false,
+      markOnlineOnConnect: false,
+      generateHighQualityLinkPreview: false,
+      browser: Browsers.ubuntu('Chrome'),
+      msgRetryCounterCache,
+      getMessage: async (key) => {
+        if (!key?.id) return undefined;
+        return sentMessageStore.get(key.id);
+      }
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -172,6 +213,18 @@ export async function disconnectWhatsApp(): Promise<{ success: boolean; message:
   }
 }
 
+export async function resetWhatsAppSession(): Promise<{ success: boolean; message: string; status: WhatsAppStatus }> {
+  await disconnectWhatsApp();
+  sentMessageStore.clear();
+  retryMap.clear();
+  const status = await connectWhatsApp();
+  return {
+    success: true,
+    message: 'Sessão limpa com sucesso. Escaneie o novo QR Code para gerar novas chaves de criptografia.',
+    status
+  };
+}
+
 export function formatPhoneToJid(phone: string): string | null {
   const digits = String(phone || '').replace(/\D/g, '');
   if (!digits) return null;
@@ -241,10 +294,16 @@ export async function sendWhatsAppTextMessage(
   }
 
   try {
+    // Garante sessão Signal válida antes de criptografar (evita "Aguardando mensagem")
+    try {
+      await sock.assertSessions([finalJid], false);
+    } catch {}
+
     // Pausa humanizada anti-ban
     await new Promise((resolve) => setTimeout(resolve, 1200));
 
     const result = await sock.sendMessage(finalJid, { text: messageText });
+    storeSentMessage(result?.key?.id, result?.message);
     console.log(`[WhatsApp Server] ✅ Mensagem enviada para ${finalJid} | ID: ${result?.key?.id}`);
     return { success: true, messageId: result?.key?.id || undefined, jidUsed: finalJid };
   } catch (err: any) {

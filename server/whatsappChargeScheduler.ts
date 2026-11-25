@@ -47,10 +47,16 @@ export type SchedulerLogEntry = {
   error?: string;
 };
 
+const CONFIG_FILE = path.resolve(process.cwd(), 'artifacts/whatsapp-scheduler-config.json');
+
 export type SchedulerState = {
   enabled: boolean;
-  targetHour: number; // ex: 9 (09:00)
-  targetMinute: number; // ex: 30 (09:30)
+  enableReminder: boolean;
+  enableDue: boolean;
+  enableFollowup: boolean;
+  enableReactivation: boolean;
+  targetHour: number; // ex: 15 (15:00)
+  targetMinute: number; // ex: 0 (15:00)
   isRunning: boolean;
   lastCycleAt?: string;
   lastCycleSummary?: {
@@ -63,10 +69,54 @@ export type SchedulerState = {
 
 let schedulerState: SchedulerState = {
   enabled: true,
+  enableReminder: true,
+  enableDue: true,
+  enableFollowup: true,
+  enableReactivation: true,
   targetHour: 15,
   targetMinute: 0,
   isRunning: false
 };
+
+// Carrega configuração salva se existir
+try {
+  if (fs.existsSync(CONFIG_FILE)) {
+    const rawCfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+    if (rawCfg && typeof rawCfg === 'object') {
+      if (typeof rawCfg.enabled === 'boolean') schedulerState.enabled = rawCfg.enabled;
+      if (typeof rawCfg.enableReminder === 'boolean') schedulerState.enableReminder = rawCfg.enableReminder;
+      if (typeof rawCfg.enableDue === 'boolean') schedulerState.enableDue = rawCfg.enableDue;
+      if (typeof rawCfg.enableFollowup === 'boolean') schedulerState.enableFollowup = rawCfg.enableFollowup;
+      if (typeof rawCfg.enableReactivation === 'boolean') schedulerState.enableReactivation = rawCfg.enableReactivation;
+      if (typeof rawCfg.targetHour === 'number') schedulerState.targetHour = rawCfg.targetHour;
+      if (typeof rawCfg.targetMinute === 'number') schedulerState.targetMinute = rawCfg.targetMinute;
+    }
+  }
+} catch {}
+
+function saveConfigToFile() {
+  try {
+    const dir = path.dirname(CONFIG_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      CONFIG_FILE,
+      JSON.stringify(
+        {
+          enabled: schedulerState.enabled,
+          enableReminder: schedulerState.enableReminder,
+          enableDue: schedulerState.enableDue,
+          enableFollowup: schedulerState.enableFollowup,
+          enableReactivation: schedulerState.enableReactivation,
+          targetHour: schedulerState.targetHour,
+          targetMinute: schedulerState.targetMinute
+        },
+        null,
+        2
+      ),
+      'utf-8'
+    );
+  } catch {}
+}
 
 let recentLogs: SchedulerLogEntry[] = [];
 
@@ -97,8 +147,24 @@ export function getSchedulerLogs(): SchedulerLogEntry[] {
   return [...recentLogs];
 }
 
-export function updateSchedulerConfig(patch: Partial<Pick<SchedulerState, 'enabled' | 'targetHour' | 'targetMinute'>>) {
-  schedulerState = { ...schedulerState, ...patch };
+export type SchedulerConfigPatch = Partial<
+  Pick<
+    SchedulerState,
+    'enabled' | 'enableReminder' | 'enableDue' | 'enableFollowup' | 'enableReactivation' | 'targetHour' | 'targetMinute'
+  >
+>;
+
+export function updateSchedulerConfig(patch: SchedulerConfigPatch) {
+  const cleanPatch: SchedulerConfigPatch = {};
+  if (typeof patch.enabled === 'boolean') cleanPatch.enabled = patch.enabled;
+  if (typeof patch.enableReminder === 'boolean') cleanPatch.enableReminder = patch.enableReminder;
+  if (typeof patch.enableDue === 'boolean') cleanPatch.enableDue = patch.enableDue;
+  if (typeof patch.enableFollowup === 'boolean') cleanPatch.enableFollowup = patch.enableFollowup;
+  if (typeof patch.enableReactivation === 'boolean') cleanPatch.enableReactivation = patch.enableReactivation;
+  if (typeof patch.targetHour === 'number' && patch.targetHour >= 0 && patch.targetHour <= 23) cleanPatch.targetHour = patch.targetHour;
+  if (typeof patch.targetMinute === 'number' && patch.targetMinute >= 0 && patch.targetMinute <= 59) cleanPatch.targetMinute = patch.targetMinute;
+  schedulerState = { ...schedulerState, ...cleanPatch };
+  saveConfigToFile();
 }
 
 // Funções utilitárias de datas e assinaturas
@@ -241,7 +307,7 @@ export async function getChargeQueue(): Promise<ChargeQueueItem[]> {
       const expiry = calculateExpiry(startDateStr, duration);
       const daysRemaining = getDaysRemaining(expiry);
 
-      let stage: 'reminder' | 'due' | 'followup' | 'reactivation' | null = null;
+      let stage: 'reminder' | 'due' | 'followup' | null = null;
       let stageLabel = '';
 
       if (daysRemaining === 5) {
@@ -406,7 +472,17 @@ async function markClientAsCharged(clientId: string, phoneNumber: string, servic
 
 let reactivationState = { sentToday: 0, lastRunDate: '', lastRunAt: '' };
 
-export async function runReactivationCampaign(): Promise<{ sent: number; failed: number; skipped: number }> {
+export async function runReactivationCampaign(manualTrigger: boolean = false): Promise<{ sent: number; failed: number; skipped: number }> {
+  if (!schedulerState.enableReactivation) {
+    console.log('[Reativação] Campanha desativada nas configurações. Pulando.');
+    return { sent: 0, failed: 0, skipped: 0 };
+  }
+
+  if (!manualTrigger && !schedulerState.enabled) {
+    console.log('[Reativação] Automação geral desativada. Pulando.');
+    return { sent: 0, failed: 0, skipped: 0 };
+  }
+
   const wsStatus = getWhatsAppStatus();
   if (wsStatus.state !== 'connected') {
     console.log('[Reativação] WhatsApp não conectado. Pulando campanha.');
@@ -550,9 +626,15 @@ export async function runDailyChargeCycle(manualTrigger: boolean = false): Promi
 
   try {
     const queue = await getChargeQueue();
-    const pendingItems = queue.filter((item) => !item.alreadySentToday);
+    const pendingItems = queue.filter((item) => {
+      if (item.alreadySentToday) return false;
+      if (item.stage === 'reminder' && !schedulerState.enableReminder) return false;
+      if (item.stage === 'due' && !schedulerState.enableDue) return false;
+      if (item.stage === 'followup' && !schedulerState.enableFollowup) return false;
+      return true;
+    });
 
-    console.log(`[Scheduler] Fila total: ${queue.length} | Pendentes de envio hoje: ${pendingItems.length}`);
+    console.log(`[Scheduler] Fila total: ${queue.length} | Pendentes habilitados hoje: ${pendingItems.length}`);
 
     for (const item of pendingItems) {
       // Delay anti-ban humanizado: entre 10 e 18 segundos entre mensagens
@@ -604,8 +686,12 @@ export async function runDailyChargeCycle(manualTrigger: boolean = false): Promi
     console.log(`[Scheduler] Ciclo finalizado! Enviados: ${sent}, Falhas: ${failed}, Ignorados (já enviados): ${skipped}`);
 
     // Executa a campanha de reativação de ex-clientes (2 por dia, após o ciclo principal)
-    console.log('[Scheduler] Iniciando campanha de reativação de ex-clientes...');
-    await runReactivationCampaign();
+    if (schedulerState.enableReactivation) {
+      console.log('[Scheduler] Iniciando campanha de reativação de ex-clientes...');
+      await runReactivationCampaign(manualTrigger);
+    } else {
+      console.log('[Scheduler] Campanha de reativação desativada nas configurações. Pulando.');
+    }
 
     return { success: true, summary };
   } catch (err) {
