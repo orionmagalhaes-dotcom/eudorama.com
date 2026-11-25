@@ -15,7 +15,9 @@ import {
   connectWhatsApp,
   disconnectWhatsApp,
   getWhatsAppStatus,
-  getQrCodeDataUrl
+  getQrCodeDataUrl,
+  sendWhatsAppTextMessage,
+  formatPhoneToJid
 } from './server/whatsappService.ts';
 import {
   getChargeQueue,
@@ -322,7 +324,6 @@ const server = createServer(async (req, res) => {
 
       const fullMessage = `🧪 *[MENSAGEM DE TESTE - IGNORAR]*\n\n${messageBody}\n\n_— Teste enviado pelo painel EuDorama às ${new Date().toLocaleTimeString('pt-BR')} (Brasília)_`;
 
-      const { formatPhoneToJid } = await import('./server/whatsappService.ts');
       const jid = formatPhoneToJid(phone);
       const result = await sendWhatsAppTextMessage(jid, fullMessage);
 
