@@ -190,6 +190,7 @@ const server = createServer(async (req, res) => {
 
     const job = tvJobs.get(requestId) || passwordJobs.get(requestId);
     if (!job) {
+
       sendJson(res, 404, { success: false, requestId, message: 'requestId not found', status: 'failed', executionStatus: 'failed', steps: [] });
       return;
     }
@@ -324,22 +325,22 @@ const server = createServer(async (req, res) => {
 
       const fullMessage = `🧪 *[MENSAGEM DE TESTE - IGNORAR]*\n\n${messageBody}\n\n_— Teste enviado pelo painel EuDorama às ${new Date().toLocaleTimeString('pt-BR')} (Brasília)_`;
 
-      const jid = formatPhoneToJid(phone);
-      const result = await sendWhatsAppTextMessage(jid, fullMessage);
+      // sendWhatsAppTextMessage já converte phone para JID internamente
+      const jidPreview = formatPhoneToJid(phone);
+      console.log('[Teste] Enviando para ' + phone + ' JID: ' + jidPreview);
+      const result = await sendWhatsAppTextMessage(phone, fullMessage);
+      console.log('[Teste] Resultado: success=' + result.success + ' id=' + result.messageId + ' err=' + result.error);
 
       if (result.success) {
-        sendJson(res, 200, { success: true, message: `Mensagem de teste enviada para +${phone}!`, jid });
+        sendJson(res, 200, { success: true, message: 'Mensagem de teste enviada para +' + phone + '! ID: ' + (result.messageId || 'N/A'), jid: jidPreview });
       } else {
         sendJson(res, 400, { success: false, message: result.error || 'Falha ao enviar mensagem de teste' });
       }
-    } catch (e: any) {
-      sendJson(res, 500, { success: false, message: e?.message || 'Erro interno ao enviar teste' });
+    } catch (e) {
+      sendJson(res, 500, { success: false, message: (e && e.message) || 'Erro interno ao enviar teste' });
     }
     return;
   }
-
-  sendJson(res, 404, { success: false, message: 'Not Found' });
-});
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log('\nMotor de Automacao Eudorama rodando.');
