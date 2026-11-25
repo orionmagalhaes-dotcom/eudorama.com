@@ -473,7 +473,7 @@ export async function sendSingleCharge(
     return { success: false, message: 'Cliente/assinatura não elegível para cobrança no momento.' };
   }
 
-  const result = await sendWhatsAppTextMessage(target.phoneNumber, target.message);
+  const result = await sendWhatsAppTextMessage(target.phoneNumber, target.message, { labelName: 'Cobrança' });
 
   if (result.success) {
     await markClientAsCharged(target.clientId, target.phoneNumber, target.service, target.stage, target.expiryDateStr);
@@ -637,7 +637,7 @@ export async function sendSingleReactivation(clientId: string): Promise<{ succes
     return { success: false, message: `${target.clientName} já recebeu a mensagem promocional anteriormente.` };
   }
 
-  const result = await sendWhatsAppTextMessage(target.phoneNumber, target.message);
+  const result = await sendWhatsAppTextMessage(target.phoneNumber, target.message, { labelName: 'Promoção' });
 
   if (result.success) {
     reactivationState.sentToday++;
@@ -742,7 +742,7 @@ export async function runReactivationCampaign(manualTrigger: boolean = false): P
     console.log(`[Reativação] Aguardando ${Math.round(delayMs / 1000)}s antes de enviar para ${target.clientName}...`);
     await new Promise((r) => setTimeout(r, delayMs));
 
-    const result = await sendWhatsAppTextMessage(target.phoneNumber, target.message);
+    const result = await sendWhatsAppTextMessage(target.phoneNumber, target.message, { labelName: 'Promoção' });
 
     if (result.success) {
       sent++;
@@ -866,7 +866,7 @@ export async function runDailyChargeCycle(manualTrigger: boolean = false): Promi
       console.log(`[Scheduler] Aguardando ${Math.round(delayMs / 1000)}s antes de enviar para ${item.clientName} (${item.phoneNumber})...`);
       await new Promise((resolve) => setTimeout(resolve, delayMs));
 
-      const sendRes = await sendWhatsAppTextMessage(item.phoneNumber, item.message);
+      const sendRes = await sendWhatsAppTextMessage(item.phoneNumber, item.message, { labelName: 'Cobrança' });
 
       if (sendRes.success) {
         sent += 1;

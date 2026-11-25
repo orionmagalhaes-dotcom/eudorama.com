@@ -26,6 +26,85 @@ export type WhatsAppStatus = {
 };
 
 const AUTH_DIR = path.resolve(process.cwd(), 'artifacts/whatsapp-auth');
+const LABELS_FILE = path.resolve(process.cwd(), 'artifacts/whatsapp-labels.json');
+
+type StoredLabel = { id: string; name: string; color: number; deleted?: boolean };
+const labelsById = new Map<string, StoredLabel>();
+
+try {
+  if (fs.existsSync(LABELS_FILE)) {
+    const rawLabels = JSON.parse(fs.readFileSync(LABELS_FILE, 'utf-8'));
+    if (Array.isArray(rawLabels)) {
+      rawLabels.forEach((l: StoredLabel) => {
+        if (l?.id && l?.name) labelsById.set(String(l.id), l);
+      });
+    }
+  }
+} catch {}
+
+function saveLabelsToFile() {
+  try {
+    const dir = path.dirname(LABELS_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(LABELS_FILE, JSON.stringify(Array.from(labelsById.values()), null, 2), 'utf-8');
+  } catch {}
+}
+
+function normalizeLabelName(name: string): string {
+  return String(name || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+async function ensureLabelExists(labelName: string, color: number = 5): Promise<string | null> {
+  if (!sock || currentStatus !== 'connected') return null;
+  const targetNorm = normalizeLabelName(labelName);
+  if (!targetNorm) return null;
+
+  for (const l of labelsById.values()) {
+    if (!l.deleted && normalizeLabelName(l.name) === targetNorm) {
+      return l.id;
+    }
+  }
+
+  // Cria nova etiqueta no WhatsApp Business se ainda não existir
+  try {
+    const numericIds = Array.from(labelsById.keys())
+      .map((id) => parseInt(id, 10))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    const nextId = String(Math.max(10, ...numericIds) + 1);
+
+    await sock.addLabel('', {
+      id: nextId,
+      name: labelName.trim(),
+      color,
+      deleted: false
+    });
+
+    labelsById.set(nextId, { id: nextId, name: labelName.trim(), color, deleted: false });
+    saveLabelsToFile();
+    console.log(`[WhatsApp Server] 🏷️ Etiqueta "${labelName}" criada automaticamente (ID: ${nextId}).`);
+    return nextId;
+  } catch (err: any) {
+    console.warn(`[WhatsApp Server] Não foi possível criar etiqueta "${labelName}":`, err?.message || err);
+    return null;
+  }
+}
+
+async function applyChatLabelByName(jid: string, labelName: string) {
+  if (!sock || currentStatus !== 'connected' || !jid || !labelName) return;
+  try {
+    const defaultColor = normalizeLabelName(labelName) === 'promocao' ? 5 : 2;
+    const labelId = await ensureLabelExists(labelName, defaultColor);
+    if (!labelId) return;
+    await sock.addChatLabel(jid, labelId);
+    console.log(`[WhatsApp Server] 🏷️ Etiqueta "${labelName}" (ID: ${labelId}) aplicada em ${jid}`);
+  } catch (err: any) {
+    console.warn(`[WhatsApp Server] Falha ao aplicar etiqueta "${labelName}" em ${jid}:`, err?.message || err);
+  }
+}
 
 let sock: WASocket | null = null;
 let currentStatus: WhatsAppState = 'disconnected';
@@ -131,6 +210,18 @@ export async function connectWhatsApp(): Promise<WhatsAppStatus> {
 
     sock.ev.on('creds.update', saveCreds);
 
+    sock.ev.on('labels.edit', (label) => {
+      if (!label?.id) return;
+      labelsById.set(String(label.id), {
+        id: String(label.id),
+        name: String(label.name || ''),
+        color: Number(label.color ?? 0),
+        deleted: Boolean(label.deleted)
+      });
+      saveLabelsToFile();
+      console.log(`[WhatsApp Server] 🏷️ Etiqueta sincronizada: "${label.name}" (ID: ${label.id}, deleted: ${Boolean(label.deleted)})`);
+    });
+
     sock.ev.on('connection.update', async (update: Partial<ConnectionState>) => {
       const { connection, lastDisconnect, qr } = update;
 
@@ -152,6 +243,11 @@ export async function connectWhatsApp(): Promise<WhatsAppStatus> {
         connectedUserPhone = userJid.split(':')[0] || userJid.split('@')[0];
         connectedUserName = sock?.user?.name || 'EuDorama Atendimento';
         console.log(`[WhatsApp Server] ✅ Conectado com sucesso com o número: ${connectedUserPhone} (${connectedUserName})`);
+
+        // Aguarda sincronização inicial de etiquetas do WhatsApp Business e garante a etiqueta "Promoção"
+        setTimeout(() => {
+          void ensureLabelExists('Promoção', 5);
+        }, 5000);
       }
 
       if (connection === 'close') {
@@ -249,7 +345,8 @@ export function formatPhoneToJid(phone: string): string | null {
 
 export async function sendWhatsAppTextMessage(
   phoneNumber: string,
-  messageText: string
+  messageText: string,
+  options?: { labelName?: string }
 ): Promise<{ success: boolean; messageId?: string; error?: string; jidUsed?: string }> {
   if (!sock || currentStatus !== 'connected') {
     return { success: false, error: 'WhatsApp não está conectado. Conecte via QR Code no painel.' };
@@ -311,6 +408,9 @@ export async function sendWhatsAppTextMessage(
     const result = await sock.sendMessage(finalJid, { text: messageText });
     storeSentMessage(result?.key?.id, result?.message);
     console.log(`[WhatsApp Server] ✅ Mensagem enviada para ${finalJid} | ID: ${result?.key?.id}`);
+    if (options?.labelName) {
+      await applyChatLabelByName(finalJid, options.labelName);
+    }
     return { success: true, messageId: result?.key?.id || undefined, jidUsed: finalJid };
   } catch (err: any) {
     console.error(`[WhatsApp Server] ❌ Erro ao enviar para ${finalJid}:`, err?.message || err);
