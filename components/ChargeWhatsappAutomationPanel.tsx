@@ -1596,7 +1596,7 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
               <h3 className="text-xl font-black">
                 {serverStatus.scheduler?.enabled === false
                   ? 'Disparos Automáticos Desativados'
-                  : 'Disparo Diário Programado — 15:00 às 20:00 (Seg a Sex)'}
+                  : 'Cobranças: 15:00 às 20:00 (Todos os dias) · Promoções: Seg a Sex'}
               </h3>
               <p className="text-xs text-emerald-100 font-semibold max-w-xl">
                 {serverStatus.scheduler?.enabled === false

@@ -213,17 +213,28 @@ export function updateSchedulerConfig(patch: SchedulerConfigPatch) {
   saveConfigToFile();
 }
 
-// Verifica se está dentro da janela permitida: Segunda a Sexta, das 15:00 às 19:59 (Brasília)
-function isWithinAllowedSendingWindow(): { allowed: boolean; reason?: string } {
+// Cobranças: TODOS os dias (inclusive sábado e domingo), das 15:00 às 19:59 (Brasília)
+function isWithinBillingWindow(): { allowed: boolean; reason?: string } {
+  const nowSp = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+  const hour = nowSp.getHours();
+
+  if (hour < 15 || hour >= 20) {
+    return { allowed: false, reason: `Fora do horário de cobrança (15h às 20h Brasília, agora são ${hour}h)` };
+  }
+  return { allowed: true };
+}
+
+// Promoções de ex-clientes: Segunda a Sexta (SEM finais de semana), das 15:00 às 19:59 (Brasília)
+function isWithinPromoWindow(): { allowed: boolean; reason?: string } {
   const nowSp = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
   const day = nowSp.getDay(); // 0 = Domingo, 6 = Sábado
   const hour = nowSp.getHours();
 
   if (day === 0 || day === 6) {
-    return { allowed: false, reason: 'Fim de semana (envios automáticos pausados sábados e domingos)' };
+    return { allowed: false, reason: 'Fim de semana (mensagens promocionais pausadas sábados e domingos)' };
   }
   if (hour < 15 || hour >= 20) {
-    return { allowed: false, reason: `Fora do horário permitido (15h às 20h Brasília, agora são ${hour}h)` };
+    return { allowed: false, reason: `Fora do horário promocional (15h às 20h Brasília, agora são ${hour}h)` };
   }
   return { allowed: true };
 }
@@ -264,16 +275,25 @@ function formatCurrency(val: number): string {
   return val.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
-function parseChargeWhatsappEntries(raw: any): Record<string, { service: string; chargedAt: string }> {
+type ChargeEntryRecord = {
+  service: string;
+  chargedAt: string;
+  expiryKey?: string;
+  stagesSent?: string[];
+};
+
+function parseChargeWhatsappEntries(raw: any): Record<string, ChargeEntryRecord> {
   if (!raw || typeof raw !== 'object') return {};
-  const normalized: Record<string, { service: string; chargedAt: string }> = {};
+  const normalized: Record<string, ChargeEntryRecord> = {};
   Object.entries(raw).forEach(([k, v]) => {
     if (!v || typeof v !== 'object') return;
     const sKey = normalizeServiceKey(k);
     if (!sKey) return;
     normalized[sKey] = {
       service: String((v as any).service || k).trim(),
-      chargedAt: String((v as any).chargedAt || '').trim()
+      chargedAt: String((v as any).chargedAt || '').trim(),
+      expiryKey: typeof (v as any).expiryKey === 'string' ? (v as any).expiryKey : undefined,
+      stagesSent: Array.isArray((v as any).stagesSent) ? (v as any).stagesSent : []
     };
   });
   return normalized;
@@ -314,8 +334,11 @@ export function buildChargeMessage(
   const precoFmt = price > 0 ? formatCurrency(price) : 'o valor regular do seu plano';
 
   if (stage === 'reminder') {
-    // D-5 apenas: informativo e gentil, SEM pressão de pagamento, SEM promoções
-    return `Olá, ${displayName}! Tudo bem com você? ✨ Passando apenas para te avisar com carinho que a sua assinatura do *${service}* vence no dia ${dataFmt} (daqui a 5 dias). O valor da assinatura é de *${precoFmt}*. É apenas um lembrete para você poder se organizar com calma! Se tiver qualquer dúvida ou precisar de algo, estamos sempre à disposição por aqui. Tenha um ótimo dia e aproveite seus doramas! 🌸🍿`;
+    // Lembrete antecipado (D-5, ou repescagem até D-1): informativo e gentil, SEM pressão de pagamento, SEM promoções
+    if (daysRemaining === 1) {
+      return `Olá, ${displayName}! Tudo bem com você? ✨ Passando apenas para te avisar com carinho que a sua assinatura do *${service}* vence amanhã, dia ${dataFmt}. O valor da assinatura é de *${precoFmt}*. É apenas um lembrete para você poder se organizar com calma! Se tiver qualquer dúvida ou precisar de algo, estamos sempre à disposição por aqui. Tenha um ótimo dia e aproveite seus doramas! 🌸🍿`;
+    }
+    return `Olá, ${displayName}! Tudo bem com você? ✨ Passando apenas para te avisar com carinho que a sua assinatura do *${service}* vence no dia ${dataFmt} (daqui a ${daysRemaining} dias). O valor da assinatura é de *${precoFmt}*. É apenas um lembrete para você poder se organizar com calma! Se tiver qualquer dúvida ou precisar de algo, estamos sempre à disposição por aqui. Tenha um ótimo dia e aproveite seus doramas! 🌸🍿`;
   }
 
   if (stage === 'due') {
@@ -368,27 +391,30 @@ export async function getChargeQueue(): Promise<ChargeQueueItem[]> {
 
       const expiry = calculateExpiry(startDateStr, duration);
       const daysRemaining = getDaysRemaining(expiry);
+      const expiryKey = `${expiry.getFullYear()}-${String(expiry.getMonth() + 1).padStart(2, '0')}-${String(expiry.getDate()).padStart(2, '0')}`;
+      const serviceKey = normalizeServiceKey(serviceName);
+      const lastEntry = entryMap[serviceKey];
+      // Etapas já enviadas neste ciclo de vencimento (se renovou para outro mês, a lista zera)
+      const stagesSentThisCycle = lastEntry?.expiryKey === expiryKey ? lastEntry.stagesSent || [] : [];
 
       let stage: 'reminder' | 'due' | 'followup' | null = null;
       let stageLabel = '';
 
-      if (daysRemaining === 5) {
+      if (daysRemaining >= 1 && daysRemaining <= 5 && !stagesSentThisCycle.includes('reminder')) {
         stage = 'reminder';
-        stageLabel = 'Vence em 5 dias (D-5)';
-      } else if (daysRemaining === 0) {
+        stageLabel = daysRemaining === 5 ? 'Vence em 5 dias (D-5)' : `Lembrete (D-${daysRemaining})`;
+      } else if (daysRemaining <= 0 && daysRemaining >= -1 && !stagesSentThisCycle.includes('due')) {
         stage = 'due';
-        stageLabel = 'Vence Hoje (D0)';
-      } else if (daysRemaining === -2) {
+        stageLabel = daysRemaining === 0 ? 'Vence Hoje (D0)' : 'Vencimento (D0 - repescagem)';
+      } else if (daysRemaining <= -2 && daysRemaining >= -5 && !stagesSentThisCycle.includes('followup')) {
         stage = 'followup';
-        stageLabel = 'Vencido há 2 dias (D+2)';
+        stageLabel = `Vencido há ${Math.abs(daysRemaining)} dias (D+${Math.abs(daysRemaining)})`;
       }
 
       if (!stage) continue;
 
       const price = getServicePrice(serviceName, duration);
       const priceFormatted = price > 0 ? formatCurrency(price) : 'Valor Regular';
-      const serviceKey = normalizeServiceKey(serviceName);
-      const lastEntry = entryMap[serviceKey];
       const lastChargedAt = lastEntry?.chargedAt || progress._charge_whatsapp_last_at || null;
       const alreadySent = wasChargedToday(lastChargedAt);
 
@@ -433,17 +459,6 @@ export async function sendSingleCharge(
   clientId: string,
   serviceName: string
 ): Promise<{ success: boolean; message: string }> {
-  if (!manualTrigger) {
-    const win = isWithinAllowedSendingWindow();
-    if (!win.allowed) {
-      console.log(`[Scheduler] Ciclo automático não iniciado: ${win.reason}`);
-      return {
-        success: false,
-        summary: { total: 0, sent: 0, failed: 0, skipped: 0 }
-      };
-    }
-  }
-
   const wsStatus = getWhatsAppStatus();
   if (wsStatus.state !== 'connected') {
     return { success: false, message: 'WhatsApp não está conectado no servidor.' };
@@ -461,7 +476,7 @@ export async function sendSingleCharge(
   const result = await sendWhatsAppTextMessage(target.phoneNumber, target.message);
 
   if (result.success) {
-    await markClientAsCharged(target.clientId, target.phoneNumber, target.service);
+    await markClientAsCharged(target.clientId, target.phoneNumber, target.service, target.stage, target.expiryDateStr);
 
     const logEntry: SchedulerLogEntry = {
       id: `${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
@@ -495,12 +510,18 @@ export async function sendSingleCharge(
   }
 }
 
-// Marca no Supabase que o cliente recebeu a mensagem hoje
-async function markClientAsCharged(clientId: string, phoneNumber: string, serviceName: string) {
+// Marca no Supabase que o cliente recebeu a mensagem hoje e registra a etapa no ciclo atual
+async function markClientAsCharged(
+  clientId: string,
+  phoneNumber: string,
+  serviceName: string,
+  stage?: 'reminder' | 'due' | 'followup',
+  expiryDateStr?: string
+) {
   try {
     const { data: client } = await supabase
       .from('clients')
-      .select('game_progress')
+      .select('game_progress, subscriptions, duration_months')
       .eq('id', clientId)
       .maybeSingle();
 
@@ -512,10 +533,23 @@ async function markClientAsCharged(clientId: string, phoneNumber: string, servic
     const previousEntries = parseChargeWhatsappEntries(currentProgress._charge_whatsapp_entries);
     const serviceKey = normalizeServiceKey(serviceName);
 
+    // Converte DD/MM/AAAA para YYYY-MM-DD para chave estável do ciclo
+    let expiryKey = previousEntries[serviceKey]?.expiryKey || '';
+    if (expiryDateStr && expiryDateStr.includes('/')) {
+      const [dd, mm, yyyy] = expiryDateStr.split('/');
+      if (dd && mm && yyyy) expiryKey = `${yyyy}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}`;
+    }
+
+    const prevStages =
+      previousEntries[serviceKey]?.expiryKey === expiryKey ? previousEntries[serviceKey]?.stagesSent || [] : [];
+    const nextStages = stage ? Array.from(new Set([...prevStages, stage])) : prevStages;
+
     if (serviceKey) {
       previousEntries[serviceKey] = {
         service: serviceName,
-        chargedAt: nowIso
+        chargedAt: nowIso,
+        expiryKey: expiryKey || undefined,
+        stagesSent: nextStages
       };
     }
 
@@ -589,17 +623,6 @@ export async function getReactivationQueue(): Promise<ReactivationQueueItem[]> {
 }
 
 export async function sendSingleReactivation(clientId: string): Promise<{ success: boolean; message: string }> {
-  if (!manualTrigger) {
-    const win = isWithinAllowedSendingWindow();
-    if (!win.allowed) {
-      console.log(`[Scheduler] Ciclo automático não iniciado: ${win.reason}`);
-      return {
-        success: false,
-        summary: { total: 0, sent: 0, failed: 0, skipped: 0 }
-      };
-    }
-  }
-
   const wsStatus = getWhatsAppStatus();
   if (wsStatus.state !== 'connected') {
     return { success: false, message: 'WhatsApp não está conectado no servidor.' };
@@ -670,21 +693,10 @@ export async function runReactivationCampaign(manualTrigger: boolean = false): P
       console.log('[Reativação] Automação geral desativada. Pulando.');
       return { sent: 0, failed: 0, skipped: 0 };
     }
-    const win = isWithinAllowedSendingWindow();
+    const win = isWithinPromoWindow();
     if (!win.allowed) {
       console.log(`[Reativação] ${win.reason}. Pulando.`);
       return { sent: 0, failed: 0, skipped: 0 };
-    }
-  }
-
-  if (!manualTrigger) {
-    const win = isWithinAllowedSendingWindow();
-    if (!win.allowed) {
-      console.log(`[Scheduler] Ciclo automático não iniciado: ${win.reason}`);
-      return {
-        success: false,
-        summary: { total: 0, sent: 0, failed: 0, skipped: 0 }
-      };
     }
   }
 
@@ -720,7 +732,7 @@ export async function runReactivationCampaign(manualTrigger: boolean = false): P
 
   for (const target of targets) {
     if (!manualTrigger) {
-      const win = isWithinAllowedSendingWindow();
+      const win = isWithinPromoWindow();
       if (!win.allowed) {
         console.log(`[Reativação] Parando ciclo automático: ${win.reason}.`);
         break;
@@ -803,7 +815,7 @@ export async function runDailyChargeCycle(manualTrigger: boolean = false): Promi
   }
 
   if (!manualTrigger) {
-    const win = isWithinAllowedSendingWindow();
+    const win = isWithinBillingWindow();
     if (!win.allowed) {
       console.log(`[Scheduler] Ciclo automático não iniciado: ${win.reason}`);
       return {
@@ -843,7 +855,7 @@ export async function runDailyChargeCycle(manualTrigger: boolean = false): Promi
 
     for (const item of pendingItems) {
       if (!manualTrigger) {
-        const win = isWithinAllowedSendingWindow();
+        const win = isWithinBillingWindow();
         if (!win.allowed) {
           console.log(`[Scheduler] Parando ciclo automático: ${win.reason}.`);
           break;
@@ -858,7 +870,7 @@ export async function runDailyChargeCycle(manualTrigger: boolean = false): Promi
 
       if (sendRes.success) {
         sent += 1;
-        await markClientAsCharged(item.clientId, item.phoneNumber, item.service);
+        await markClientAsCharged(item.clientId, item.phoneNumber, item.service, item.stage, item.expiryDateStr);
 
         recentLogs.unshift({
           id: `${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
@@ -914,15 +926,17 @@ export async function runDailyChargeCycle(manualTrigger: boolean = false): Promi
   }
 }
 
-// Inicia o agendador em segundo plano que checa a janela permitida (Seg-Sex, 15:00 às 20:00 Brasília)
+// Inicia o agendador em segundo plano:
+// Cobranças: todos os dias (Seg-Dom), 15h às 20h Brasília
+// Promoções: Segunda a Sexta (sem fins de semana), 15h às 20h Brasília
 export function startDailyChargeScheduler() {
-  console.log('[Scheduler] Agendador ativado. Janela de envio: Segunda a Sexta, 15:00 às 20:00 (Brasília).');
+  console.log('[Scheduler] Agendador ativado. Cobranças: todos os dias 15h-20h | Promoções: Seg-Sex 15h-20h (Brasília).');
 
   // Checa a cada 1 minuto se está dentro da janela permitida
   setInterval(() => {
     if (!schedulerState.enabled || schedulerState.isRunning) return;
 
-    const win = isWithinAllowedSendingWindow();
+    const win = isWithinBillingWindow();
     if (!win.allowed) return;
 
     // Hora de São Paulo (UTC-3)
@@ -941,7 +955,7 @@ export function startDailyChargeScheduler() {
       }
     }
 
-    console.log('[Scheduler] Dentro da janela permitida (Seg-Sex, 15h-20h)! Iniciando ciclo diário...');
+    console.log('[Scheduler] Dentro da janela permitida (15h-20h)! Iniciando ciclo diário...');
     void runDailyChargeCycle(false);
   }, 60000);
 }
