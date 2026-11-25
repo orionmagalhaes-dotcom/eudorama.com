@@ -364,7 +364,7 @@ export function buildReactivationMessage(clientName?: string | null, templateOve
 export async function getChargeQueue(): Promise<ChargeQueueItem[]> {
   const { data: clients, error } = await supabase
     .from('clients')
-    .select('*')
+    .select('id, phone_number, client_name, subscriptions, duration_months, deleted, game_progress')
     .eq('deleted', false);
 
   if (error || !clients) {
@@ -579,12 +579,21 @@ async function markClientAsCharged(
 
 let reactivationState = { sentToday: 0, lastRunDate: '', lastRunAt: '' };
 
+function isValidPhoneCandidate(phone?: string | null): boolean {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (digits.length < 10 || digits.length > 15) return false;
+  // Ignora números fictícios como 00000000000 ou 5500000000000
+  const withoutCountry = digits.startsWith('55') && digits.length >= 12 ? digits.slice(2) : digits;
+  if (/^0+$/.test(withoutCountry) || /^(\d)\1{7,}$/.test(withoutCountry)) return false;
+  return true;
+}
+
 // Lista ex-clientes elegíveis: APENAS quem está completamente na lixeira (deleted=true e sem nenhum app),
-// ordenado das pessoas que deixaram de ser clientes mais recentemente para as demais.
+// ordenado das pessoas que estão há mais tempo na lixeira primeiro até as mais recentes.
 export async function getReactivationQueue(): Promise<ReactivationQueueItem[]> {
   const { data: deletedClients, error } = await supabase
     .from('clients')
-    .select('*')
+    .select('id, phone_number, client_name, subscriptions, deleted, created_at, last_active_at, game_progress')
     .eq('deleted', true);
 
   if (error || !deletedClients) {
@@ -595,12 +604,13 @@ export async function getReactivationQueue(): Promise<ReactivationQueueItem[]> {
   const items: ReactivationQueueItem[] = [];
 
   for (const c of deletedClients as ClientDBRow[]) {
-    if (!c.phone_number) continue;
+    if (!isValidPhoneCandidate(c.phone_number)) continue;
     const subs = normalizeSubscriptions(c.subscriptions).filter((s) => String(s || '').trim().length > 0);
     // Regra: "completamente na lixeira, sem nenhum app"
     if (subs.length > 0) continue;
 
     const progress = c.game_progress || {};
+    if (progress._reactivation_campaign_invalid_phone) continue;
     const deletedAt: string | null = progress._deleted_at || c.last_active_at || c.created_at || null;
     const parsedTime = deletedAt ? new Date(deletedAt).getTime() : 0;
     const sortTimestamp = Number.isFinite(parsedTime) ? parsedTime : 0;
@@ -725,12 +735,15 @@ export async function runReactivationCampaign(manualTrigger: boolean = false): P
   const fullQueue = await getReactivationQueue();
   const pendingExClients = fullQueue.filter((item) => !item.alreadySent);
 
-  const targets = pendingExClients.slice(0, remaining);
-  console.log(`[Reativação] ${pendingExClients.length} ex-clientes elegíveis (lixeira sem apps, mais antigas primeiro). Limite: ${dailyLimit}/dia. Enviando para ${targets.length}.`);
+  // Separa margem extra caso algum número antigo da lixeira não tenha WhatsApp, até atingir `remaining` envios com sucesso
+  const maxAttempts = Math.min(pendingExClients.length, remaining * 4);
+  const candidates = pendingExClients.slice(0, maxAttempts);
+  console.log(`[Reativação] ${pendingExClients.length} ex-clientes elegíveis (lixeira sem apps, mais antigas primeiro). Meta hoje: ${remaining}.`);
 
   let sent = 0, failed = 0;
 
-  for (const target of targets) {
+  for (const target of candidates) {
+    if (sent >= remaining) break;
     if (!manualTrigger) {
       const win = isWithinPromoWindow();
       if (!win.allowed) {
@@ -773,6 +786,18 @@ export async function runReactivationCampaign(manualTrigger: boolean = false): P
       console.log(`[Reativação] ✅ Enviado para ${target.clientName} (${target.phoneNumber})`);
     } else {
       failed++;
+      // Se o número não existe no WhatsApp ou é inválido, marca para não travar a fila nos próximos dias
+      const errMsg = String(result.error || '');
+      if (errMsg.includes('não está no WhatsApp') || errMsg.includes('não encontrado no WhatsApp') || errMsg.includes('inválido')) {
+        try {
+          const { data: row } = await supabase.from('clients').select('game_progress').eq('id', target.clientId).maybeSingle();
+          const progress = (row as any)?.game_progress || {};
+          await supabase
+            .from('clients')
+            .update({ game_progress: { ...progress, _reactivation_campaign_invalid_phone: new Date().toISOString() } })
+            .eq('id', target.clientId);
+        } catch {}
+      }
       recentLogs.unshift({
         id: `${Date.now()}-react-fail-${Math.random().toString(36).substring(2, 6)}`,
         timestamp: new Date().toISOString(),
