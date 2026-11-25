@@ -342,6 +342,9 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  sendJson(res, 404, { success: false, message: 'Not Found' });
+});
+
 server.listen(PORT, '0.0.0.0', () => {
   console.log('\nMotor de Automacao Eudorama rodando.');
   console.log(`Porta: ${PORT}`);
