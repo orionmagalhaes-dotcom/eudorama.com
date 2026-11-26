@@ -347,7 +347,7 @@ export async function sendWhatsAppTextMessage(
   phoneNumber: string,
   messageText: string,
   options?: { labelName?: string }
-): Promise<{ success: boolean; messageId?: string; error?: string; jidUsed?: string }> {
+): Promise<{ success: boolean; messageId?: string; messageTimestamp?: number; error?: string; jidUsed?: string }> {
   if (!sock || currentStatus !== 'connected') {
     return { success: false, error: 'WhatsApp não está conectado. Conecte via QR Code no painel.' };
   }
@@ -407,13 +407,70 @@ export async function sendWhatsAppTextMessage(
 
     const result = await sock.sendMessage(finalJid, { text: messageText });
     storeSentMessage(result?.key?.id, result?.message);
+    const msgTs = Number(result?.messageTimestamp) || Math.floor(Date.now() / 1000);
     console.log(`[WhatsApp Server] ✅ Mensagem enviada para ${finalJid} | ID: ${result?.key?.id}`);
     if (options?.labelName) {
       await applyChatLabelByName(finalJid, options.labelName);
     }
-    return { success: true, messageId: result?.key?.id || undefined, jidUsed: finalJid };
+    return { success: true, messageId: result?.key?.id || undefined, messageTimestamp: msgTs, jidUsed: finalJid };
   } catch (err: any) {
     console.error(`[WhatsApp Server] ❌ Erro ao enviar para ${finalJid}:`, err?.message || err);
     return { success: false, error: err?.message || 'Falha ao enviar mensagem pelo WhatsApp' };
+  }
+}
+
+export async function deleteWhatsAppChat(
+  phoneNumber: string,
+  options?: { jid?: string; lastMessageId?: string; lastMessageTimestamp?: number }
+): Promise<{ success: boolean; error?: string; jidUsed?: string }> {
+  if (!sock || currentStatus !== 'connected') {
+    return { success: false, error: 'WhatsApp não está conectado. Conecte via QR Code no painel.' };
+  }
+
+  if (!sock.user?.id) {
+    return { success: false, error: 'Sessão do WhatsApp não está totalmente inicializada.' };
+  }
+
+  let finalJid = options?.jid || '';
+  if (!finalJid) {
+    const digits = String(phoneNumber || '').replace(/\D/g, '');
+    if (!digits || digits.length < 10) {
+      return { success: false, error: `Número de telefone inválido: "${phoneNumber}"` };
+    }
+    try {
+      const normalized = digits.startsWith('55') ? digits : `55${digits}`;
+      const [result] = await sock.onWhatsApp(normalized);
+      if (result?.exists) {
+        finalJid = result.jid;
+      } else {
+        const withoutNine = normalized.length === 13 ? normalized.slice(0, 4) + normalized.slice(5) : null;
+        if (withoutNine) {
+          const [r2] = await sock.onWhatsApp(withoutNine);
+          if (r2?.exists) finalJid = r2.jid;
+        }
+      }
+    } catch {}
+    if (!finalJid) {
+      finalJid = formatPhoneToJid(digits) || `${digits.startsWith('55') ? digits : '55' + digits}@s.whatsapp.net`;
+    }
+  }
+
+  try {
+    const lastMessages =
+      options?.lastMessageId && options?.lastMessageTimestamp
+        ? [
+            {
+              key: { remoteJid: finalJid, id: options.lastMessageId, fromMe: true },
+              messageTimestamp: options.lastMessageTimestamp
+            }
+          ]
+        : { lastMessageTimestamp: options?.lastMessageTimestamp || Math.floor(Date.now() / 1000) };
+
+    await sock.chatModify({ delete: true, lastMessages }, finalJid);
+    console.log(`[WhatsApp Server] 🗑️ Conversa apagada automaticamente no WhatsApp: ${finalJid}`);
+    return { success: true, jidUsed: finalJid };
+  } catch (err: any) {
+    console.error(`[WhatsApp Server] ❌ Erro ao apagar conversa ${finalJid}:`, err?.message || err);
+    return { success: false, error: err?.message || 'Falha ao apagar conversa pelo WhatsApp' };
   }
 }

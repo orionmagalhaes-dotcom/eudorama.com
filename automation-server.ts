@@ -31,7 +31,11 @@ import {
   runReactivationCampaign,
   getReactivationStatus,
   getReactivationQueue,
-  sendSingleReactivation
+  sendSingleReactivation,
+  runClientPromoCampaign,
+  getClientPromoStatus,
+  getClientPromoQueue,
+  sendSingleClientPromo
 } from './server/whatsappChargeScheduler.ts';
 
 const PORT = Number(process.env.PORT || 3000);
@@ -336,6 +340,47 @@ const server = createServer(async (req, res) => {
       sendJson(res, 200, { success: true, ...result });
     } catch (e: any) {
       sendJson(res, 500, { success: false, message: e?.message || 'Erro ao disparar campanha de reativação' });
+    }
+    return;
+  }
+
+  if (method === 'GET' && path === '/api/whatsapp/client-promo-status') {
+    sendJson(res, 200, { success: true, status: getClientPromoStatus() });
+    return;
+  }
+
+  if (method === 'GET' && path === '/api/whatsapp/client-promo-queue') {
+    try {
+      const queue = await getClientPromoQueue();
+      sendJson(res, 200, { success: true, queue });
+    } catch (e: any) {
+      sendJson(res, 500, { success: false, message: e?.message || 'Erro ao carregar fila de promo cliente' });
+    }
+    return;
+  }
+
+  if (method === 'POST' && path === '/api/whatsapp/send-client-promo-single') {
+    try {
+      const data = await readJsonBody(req);
+      const clientId = String(data.clientId || '').trim();
+      if (!clientId) {
+        sendJson(res, 400, { success: false, message: 'clientId é obrigatório' });
+        return;
+      }
+      const result = await sendSingleClientPromo(clientId);
+      sendJson(res, result.success ? 200 : 400, result);
+    } catch (e: any) {
+      sendJson(res, 500, { success: false, message: e?.message || 'Erro ao enviar promoção para cliente' });
+    }
+    return;
+  }
+
+  if (method === 'POST' && path === '/api/whatsapp/trigger-client-promo') {
+    try {
+      const result = await runClientPromoCampaign(true);
+      sendJson(res, 200, { success: true, ...result });
+    } catch (e: any) {
+      sendJson(res, 500, { success: false, message: e?.message || 'Erro ao disparar campanha promo cliente' });
     }
     return;
   }

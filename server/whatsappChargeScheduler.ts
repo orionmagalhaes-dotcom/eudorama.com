@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import path from 'path';
 import fs from 'fs';
-import { sendWhatsAppTextMessage, getWhatsAppStatus } from './whatsappService.ts';
+import { sendWhatsAppTextMessage, deleteWhatsAppChat, getWhatsAppStatus } from './whatsappService.ts';
 import { getServicePrice } from '../services/pricingConfig.ts';
 import { ClientDBRow } from '../types.ts';
 
@@ -58,6 +58,67 @@ Faz um tempinho que você não está por aqui e sentimos muito a sua falta! Prep
 
 Você teria interesse em saber mais sobre a nossa promoção? É só me responder aqui e te explico tudo com carinho! Tenha um lindo dia! ✨🍿`;
 
+export const DEFAULT_REACTIVATION_TEMPLATE_2 = `Olá, {nome}! Tudo bem? 🌸
+
+Passando para te apresentar a nossa promoção especial de retorno na *EuDorama*! 🎁
+
+Você pode garantir o combo *Viki Pass + Kocowa Plus + WeTV VIP por R$ 29,90*! ✨
+
+Essa promoção é válida durante *3 meses* para você aproveitar os 3 apps pagando bem menos. 💜🍿
+
+Tem interesse em ativar? É só me responder aqui! 😊`;
+
+export const DEFAULT_REACTIVATION_TEMPLATE_3 = `Olá, {nome}! Tudo bem? 🌸
+
+Como queremos muito te ver maratonando com a gente de novo na *EuDorama*, conseguimos aumentar ainda mais o desconto para você! 🎁✨
+
+O combo *Viki Pass + Kocowa Plus + WeTV VIP* caiu de R$ 29,90 para apenas *R$ 24,90*! 😱💜
+
+A promoção continua válida por *3 meses* nos 3 apps, e você tem um prazo de até *7 dias* para realizar a compra com esse valor especial. ⏳🍿
+
+Se quiser aproveitar antes que o prazo acabe, é só me responder aqui! Tenha um ótimo dia! 😊`;
+
+export type ReactivationStep = 1 | 2 | 3 | 'completed' | 'chat_deleted' | 'converted';
+
+export const CLIENT_PROMO_APPS = [
+  { key: 'viki', label: 'Viki Pass', promoPrice: 19.90, matchers: ['viki'] },
+  { key: 'iqiyi', label: 'iQIYI', promoPrice: 14.90, matchers: ['iqiyi', 'iqyi'] },
+  { key: 'kocowa', label: 'Kocowa', promoPrice: 9.90, matchers: ['kocowa'] },
+  { key: 'wetv', label: 'WeTV', promoPrice: 9.90, matchers: ['wetv'] },
+  { key: 'youku', label: 'Youku', promoPrice: 9.90, matchers: ['youku'] },
+  { key: 'dramabox', label: 'DramaBox', promoPrice: 9.90, matchers: ['dramabox'] }
+] as const;
+
+export const DEFAULT_CLIENT_PROMO_TEMPLATE = `Olá, {nome}! Tudo bem com você? 🌸
+
+Aqui é o Orion, da *EuDorama*! Passando com muito carinho para agradecer por fazer parte da nossa família dorameira! 💜
+
+Como você já é nossa cliente especial com *{apps_atuais}*, preparamos uma promoção exclusiva nos outros apps que você ainda não tem para deixar a sua maratona ainda mais completa:
+
+{lista_ofertas}
+{bloco_combo_50}
+✨ Essa promoção é válida por *1 mês* e você só tem *7 dias* a partir de hoje para adquirir! ⏳🍿
+
+Se quiser aproveitar algum deles ou o combo completo, é só me responder por aqui que ativo com todo carinho para você! Tenha um lindo dia! 😊`;
+
+export type ClientPromoQueueItem = {
+  clientId: string;
+  clientName: string;
+  phoneNumber: string;
+  createdAt: string | null;
+  sortTimestamp: number;
+  ownedApps: string[];
+  missingApps: Array<{ key: string; label: string; promoPrice: number; originalPrice: number }>;
+  originalTotal: number;
+  combo50Price: number;
+  message: string;
+  alreadySent: boolean;
+  sentAt: string | null;
+  purchasedAt: string | null;
+  chatDeletedAt: string | null;
+  deleteEligibleDate: string | null;
+};
+
 export type ReactivationQueueItem = {
   clientId: string;
   clientName: string;
@@ -67,6 +128,13 @@ export type ReactivationQueueItem = {
   message: string;
   alreadySent: boolean;
   sentAt: string | null;
+  currentStep: ReactivationStep;
+  step1SentAt: string | null;
+  step2SentAt: string | null;
+  step3SentAt: string | null;
+  chatDeletedAt: string | null;
+  nextEligibleDate: string | null;
+  eligibleNow: boolean;
 };
 
 export type SchedulerState = {
@@ -77,6 +145,11 @@ export type SchedulerState = {
   enableReactivation: boolean;
   reactivationDailyLimit: number;
   reactivationTemplate: string;
+  reactivationTemplate2: string;
+  reactivationTemplate3: string;
+  enableClientPromo: boolean;
+  clientPromoDailyLimit: number;
+  clientPromoTemplate: string;
   targetHour: number; // ex: 15 (15:00)
   targetMinute: number; // ex: 0 (15:00)
   isRunning: boolean;
@@ -97,6 +170,11 @@ let schedulerState: SchedulerState = {
   enableReactivation: true,
   reactivationDailyLimit: 2,
   reactivationTemplate: DEFAULT_REACTIVATION_TEMPLATE,
+  reactivationTemplate2: DEFAULT_REACTIVATION_TEMPLATE_2,
+  reactivationTemplate3: DEFAULT_REACTIVATION_TEMPLATE_3,
+  enableClientPromo: true,
+  clientPromoDailyLimit: 2,
+  clientPromoTemplate: DEFAULT_CLIENT_PROMO_TEMPLATE,
   targetHour: 15,
   targetMinute: 0,
   isRunning: false
@@ -117,6 +195,19 @@ try {
       }
       if (typeof rawCfg.reactivationTemplate === 'string' && rawCfg.reactivationTemplate.trim()) {
         schedulerState.reactivationTemplate = rawCfg.reactivationTemplate;
+      }
+      if (typeof rawCfg.reactivationTemplate2 === 'string' && rawCfg.reactivationTemplate2.trim()) {
+        schedulerState.reactivationTemplate2 = rawCfg.reactivationTemplate2;
+      }
+      if (typeof rawCfg.reactivationTemplate3 === 'string' && rawCfg.reactivationTemplate3.trim()) {
+        schedulerState.reactivationTemplate3 = rawCfg.reactivationTemplate3;
+      }
+      if (typeof rawCfg.enableClientPromo === 'boolean') schedulerState.enableClientPromo = rawCfg.enableClientPromo;
+      if (typeof rawCfg.clientPromoDailyLimit === 'number' && rawCfg.clientPromoDailyLimit >= 1 && rawCfg.clientPromoDailyLimit <= 100) {
+        schedulerState.clientPromoDailyLimit = Math.floor(rawCfg.clientPromoDailyLimit);
+      }
+      if (typeof rawCfg.clientPromoTemplate === 'string' && rawCfg.clientPromoTemplate.trim()) {
+        schedulerState.clientPromoTemplate = rawCfg.clientPromoTemplate;
       }
       if (typeof rawCfg.targetHour === 'number') schedulerState.targetHour = rawCfg.targetHour;
       if (typeof rawCfg.targetMinute === 'number') schedulerState.targetMinute = rawCfg.targetMinute;
@@ -139,6 +230,11 @@ function saveConfigToFile() {
           enableReactivation: schedulerState.enableReactivation,
           reactivationDailyLimit: schedulerState.reactivationDailyLimit,
           reactivationTemplate: schedulerState.reactivationTemplate,
+          reactivationTemplate2: schedulerState.reactivationTemplate2,
+          reactivationTemplate3: schedulerState.reactivationTemplate3,
+          enableClientPromo: schedulerState.enableClientPromo,
+          clientPromoDailyLimit: schedulerState.clientPromoDailyLimit,
+          clientPromoTemplate: schedulerState.clientPromoTemplate,
           targetHour: schedulerState.targetHour,
           targetMinute: schedulerState.targetMinute
         },
@@ -189,6 +285,11 @@ export type SchedulerConfigPatch = Partial<
     | 'enableReactivation'
     | 'reactivationDailyLimit'
     | 'reactivationTemplate'
+    | 'reactivationTemplate2'
+    | 'reactivationTemplate3'
+    | 'enableClientPromo'
+    | 'clientPromoDailyLimit'
+    | 'clientPromoTemplate'
     | 'targetHour'
     | 'targetMinute'
   >
@@ -206,6 +307,19 @@ export function updateSchedulerConfig(patch: SchedulerConfigPatch) {
   }
   if (typeof patch.reactivationTemplate === 'string') {
     cleanPatch.reactivationTemplate = patch.reactivationTemplate.trim() || DEFAULT_REACTIVATION_TEMPLATE;
+  }
+  if (typeof patch.reactivationTemplate2 === 'string') {
+    cleanPatch.reactivationTemplate2 = patch.reactivationTemplate2.trim() || DEFAULT_REACTIVATION_TEMPLATE_2;
+  }
+  if (typeof patch.reactivationTemplate3 === 'string') {
+    cleanPatch.reactivationTemplate3 = patch.reactivationTemplate3.trim() || DEFAULT_REACTIVATION_TEMPLATE_3;
+  }
+  if (typeof patch.enableClientPromo === 'boolean') cleanPatch.enableClientPromo = patch.enableClientPromo;
+  if (typeof patch.clientPromoDailyLimit === 'number' && !isNaN(patch.clientPromoDailyLimit)) {
+    cleanPatch.clientPromoDailyLimit = Math.min(100, Math.max(1, Math.floor(patch.clientPromoDailyLimit)));
+  }
+  if (typeof patch.clientPromoTemplate === 'string') {
+    cleanPatch.clientPromoTemplate = patch.clientPromoTemplate.trim() || DEFAULT_CLIENT_PROMO_TEMPLATE;
   }
   if (typeof patch.targetHour === 'number' && patch.targetHour >= 0 && patch.targetHour <= 23) cleanPatch.targetHour = patch.targetHour;
   if (typeof patch.targetMinute === 'number' && patch.targetMinute >= 0 && patch.targetMinute <= 59) cleanPatch.targetMinute = patch.targetMinute;
@@ -351,12 +465,22 @@ export function buildChargeMessage(
 }
 
 // Constrói a mensagem da campanha de reativação (único lugar onde promoção é permitida)
-export function buildReactivationMessage(clientName?: string | null, templateOverride?: string): string {
+export function buildReactivationMessage(
+  clientName?: string | null,
+  templateOverride?: string,
+  step: 1 | 2 | 3 = 1
+): string {
   const rawName = String(clientName || '').trim();
   const displayName = rawName && rawName.toLowerCase() !== 'null' && rawName.toLowerCase() !== 'sem nome'
     ? rawName
     : 'Dorameira';
-  const tpl = (templateOverride || schedulerState.reactivationTemplate || DEFAULT_REACTIVATION_TEMPLATE).trim();
+  const defaultTpl =
+    step === 2
+      ? schedulerState.reactivationTemplate2 || DEFAULT_REACTIVATION_TEMPLATE_2
+      : step === 3
+        ? schedulerState.reactivationTemplate3 || DEFAULT_REACTIVATION_TEMPLATE_3
+        : schedulerState.reactivationTemplate || DEFAULT_REACTIVATION_TEMPLATE;
+  const tpl = (templateOverride || defaultTpl).trim();
   return tpl.replace(/\{nome\}/gi, displayName);
 }
 
@@ -573,11 +697,66 @@ async function markClientAsCharged(
   }
 }
 
-// --- CAMPANHA DE REATIVAÇÃO DE EX-CLIENTES ---
-// Envia até 2 mensagens por dia para ex-clientes que nunca receberam a campanha.
-// ÚNICO lugar onde promoção é permitida.
+// --- CAMPANHA DE REATIVAÇÃO DE EX-CLIENTES (FUNIL DE 3 MENSAGENS) ---
+// Mensagem 1: Pergunta interesse na promoção (respeita limite diário)
+// Mensagem 2: 1 dia útil depois — Viki Pass + Kocowa Plus + WeTV VIP por R$ 29,90 (válido por 3 meses)
+// Mensagem 3: 1 dia útil após a 2ª — Desconto para R$ 24,90 (válido por 3 meses nos 3 apps, prazo de até 7 dias)
+// Pós-campanha: 7 dias após a Mensagem 3, se não houver compra, apaga a conversa no WhatsApp automaticamente.
 
 let reactivationState = { sentToday: 0, lastRunDate: '', lastRunAt: '' };
+
+function getSpDateKey(date: Date = new Date()): string {
+  const sp = new Date(date.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+  return `${sp.getFullYear()}-${String(sp.getMonth() + 1).padStart(2, '0')}-${String(sp.getDate()).padStart(2, '0')}`;
+}
+
+function addBusinessDaysSp(isoTimestamp: string, businessDays: number): string {
+  const parsed = new Date(isoTimestamp);
+  if (isNaN(parsed.getTime())) return getSpDateKey();
+  const sp = new Date(parsed.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+  sp.setHours(12, 0, 0, 0);
+  let added = 0;
+  while (added < businessDays) {
+    sp.setDate(sp.getDate() + 1);
+    const dow = sp.getDay();
+    if (dow !== 0 && dow !== 6) {
+      added++;
+    }
+  }
+  return `${sp.getFullYear()}-${String(sp.getMonth() + 1).padStart(2, '0')}-${String(sp.getDate()).padStart(2, '0')}`;
+}
+
+function addCalendarDaysSp(isoTimestamp: string, days: number): string {
+  const parsed = new Date(isoTimestamp);
+  if (isNaN(parsed.getTime())) return getSpDateKey();
+  const sp = new Date(parsed.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+  sp.setHours(12, 0, 0, 0);
+  sp.setDate(sp.getDate() + days);
+  return `${sp.getFullYear()}-${String(sp.getMonth() + 1).padStart(2, '0')}-${String(sp.getDate()).padStart(2, '0')}`;
+}
+
+function getPhoneMatchKeys(phone?: string | null): string[] {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (digits.length < 10) return [];
+  const keys = new Set<string>([digits]);
+  const without55 = digits.startsWith('55') && digits.length >= 12 ? digits.slice(2) : digits;
+  keys.add(without55);
+  keys.add(`55${without55}`);
+  if (without55.length === 11 && without55[2] === '9') {
+    const noNine = without55.slice(0, 2) + without55.slice(3);
+    keys.add(noNine);
+    keys.add(`55${noNine}`);
+  } else if (without55.length === 10) {
+    const withNine = without55.slice(0, 2) + '9' + without55.slice(2);
+    keys.add(withNine);
+    keys.add(`55${withNine}`);
+  }
+  return Array.from(keys);
+}
+
+function isPhoneActiveCustomer(phone: string | null | undefined, activePhoneKeys: Set<string>): boolean {
+  return getPhoneMatchKeys(phone).some((k) => activePhoneKeys.has(k));
+}
 
 function isValidPhoneCandidate(phone?: string | null): boolean {
   const digits = String(phone || '').replace(/\D/g, '');
@@ -588,33 +767,98 @@ function isValidPhoneCandidate(phone?: string | null): boolean {
   return true;
 }
 
-// Lista ex-clientes elegíveis: APENAS quem está completamente na lixeira (deleted=true e sem nenhum app),
-// ordenado das pessoas que estão há mais tempo na lixeira primeiro até as mais recentes.
-export async function getReactivationQueue(): Promise<ReactivationQueueItem[]> {
-  const { data: deletedClients, error } = await supabase
+async function fetchActiveCustomerPhoneKeys(): Promise<Set<string>> {
+  const activeKeys = new Set<string>();
+  const { data: rows, error } = await supabase
     .from('clients')
-    .select('id, phone_number, client_name, subscriptions, deleted, created_at, last_active_at, game_progress')
-    .eq('deleted', true);
+    .select('phone_number, subscriptions, deleted');
 
-  if (error || !deletedClients) {
-    console.error('[Reativação] Erro ao carregar ex-clientes do Supabase:', error);
+  if (error || !rows) return activeKeys;
+  for (const row of rows as Array<{ phone_number?: string; subscriptions?: any; deleted?: boolean }>) {
+    const subs = normalizeSubscriptions(row.subscriptions).filter((s) => String(s || '').trim().length > 0);
+    if (!row.deleted || subs.length > 0) {
+      for (const k of getPhoneMatchKeys(row.phone_number)) {
+        activeKeys.add(k);
+      }
+    }
+  }
+  return activeKeys;
+}
+
+// Lista ex-clientes elegíveis: APENAS quem está completamente na lixeira (deleted=true e sem nenhum app)
+// e que NÃO realizou compra em nenhum cadastro com o mesmo número.
+export async function getReactivationQueue(): Promise<ReactivationQueueItem[]> {
+  const { data: allClients, error } = await supabase
+    .from('clients')
+    .select('id, phone_number, client_name, subscriptions, deleted, created_at, last_active_at, game_progress');
+
+  if (error || !allClients) {
+    console.error('[Reativação] Erro ao carregar clientes do Supabase:', error);
     return [];
   }
 
+  const activePhoneKeys = new Set<string>();
+  for (const row of allClients as ClientDBRow[]) {
+    const subs = normalizeSubscriptions(row.subscriptions).filter((s) => String(s || '').trim().length > 0);
+    if (!row.deleted || subs.length > 0) {
+      for (const k of getPhoneMatchKeys(row.phone_number)) {
+        activePhoneKeys.add(k);
+      }
+    }
+  }
+
+  const todaySp = getSpDateKey();
   const items: ReactivationQueueItem[] = [];
 
-  for (const c of deletedClients as ClientDBRow[]) {
+  for (const c of allClients as ClientDBRow[]) {
+    if (!c.deleted) continue;
     if (!isValidPhoneCandidate(c.phone_number)) continue;
     const subs = normalizeSubscriptions(c.subscriptions).filter((s) => String(s || '').trim().length > 0);
     // Regra: "completamente na lixeira, sem nenhum app"
     if (subs.length > 0) continue;
+    // Se o número realizou compra / está cadastrado como cliente ativo, para o funil de promoção
+    if (isPhoneActiveCustomer(c.phone_number, activePhoneKeys)) continue;
 
     const progress = c.game_progress || {};
     if (progress._reactivation_campaign_invalid_phone) continue;
+
     const deletedAt: string | null = progress._deleted_at || c.last_active_at || c.created_at || null;
     const parsedTime = deletedAt ? new Date(deletedAt).getTime() : 0;
     const sortTimestamp = Number.isFinite(parsedTime) ? parsedTime : 0;
-    const sentAt: string | null = progress._reactivation_campaign_sent_at || null;
+
+    const step1SentAt: string | null = progress._reactivation_campaign_sent_at || null;
+    const step2SentAt: string | null = progress._reactivation_step2_sent_at || null;
+    const step3SentAt: string | null = progress._reactivation_step3_sent_at || null;
+    const chatDeletedAt: string | null = progress._reactivation_chat_deleted_at || null;
+
+    let currentStep: ReactivationStep = 1;
+    let nextEligibleDate: string | null = todaySp;
+    let eligibleNow = true;
+    let messageStep: 1 | 2 | 3 = 1;
+
+    if (chatDeletedAt) {
+      currentStep = 'chat_deleted';
+      nextEligibleDate = null;
+      eligibleNow = false;
+      messageStep = 3;
+    } else if (step3SentAt) {
+      currentStep = 'completed';
+      nextEligibleDate = addCalendarDaysSp(step3SentAt, 7);
+      eligibleNow = todaySp >= nextEligibleDate;
+      messageStep = 3;
+    } else if (step2SentAt) {
+      currentStep = 3;
+      nextEligibleDate = addBusinessDaysSp(step2SentAt, 1);
+      eligibleNow = todaySp >= nextEligibleDate;
+      messageStep = 3;
+    } else if (step1SentAt) {
+      currentStep = 2;
+      nextEligibleDate = addBusinessDaysSp(step1SentAt, 1);
+      eligibleNow = todaySp >= nextEligibleDate;
+      messageStep = 2;
+    }
+
+    const alreadySent = currentStep === 'completed' || currentStep === 'chat_deleted';
 
     items.push({
       clientId: c.id,
@@ -622,14 +866,47 @@ export async function getReactivationQueue(): Promise<ReactivationQueueItem[]> {
       phoneNumber: c.phone_number,
       deletedAt,
       sortTimestamp,
-      message: buildReactivationMessage(c.client_name),
-      alreadySent: Boolean(sentAt),
-      sentAt
+      message: buildReactivationMessage(c.client_name, undefined, messageStep),
+      alreadySent,
+      sentAt: step1SentAt,
+      currentStep,
+      step1SentAt,
+      step2SentAt,
+      step3SentAt,
+      chatDeletedAt,
+      nextEligibleDate,
+      eligibleNow
     });
   }
 
   // Mais antigas na lixeira primeiro (das que estão há mais tempo para as mais recentes)
   return items.sort((a, b) => a.sortTimestamp - b.sortTimestamp);
+}
+
+async function saveReactivationStepProgress(
+  clientId: string,
+  step: 1 | 2 | 3,
+  meta: { jidUsed?: string; messageId?: string; messageTimestamp?: number }
+) {
+  try {
+    const { data: row } = await supabase.from('clients').select('game_progress').eq('id', clientId).maybeSingle();
+    const progress = (row as any)?.game_progress || {};
+    const nowIso = new Date().toISOString();
+    const stepPatch: Record<string, any> = {};
+    if (step === 1) stepPatch._reactivation_campaign_sent_at = nowIso;
+    if (step === 2) stepPatch._reactivation_step2_sent_at = nowIso;
+    if (step === 3) stepPatch._reactivation_step3_sent_at = nowIso;
+    if (meta.jidUsed) stepPatch._reactivation_last_jid = meta.jidUsed;
+    if (meta.messageId) stepPatch._reactivation_last_msg_id = meta.messageId;
+    if (meta.messageTimestamp) stepPatch._reactivation_last_msg_ts = meta.messageTimestamp;
+
+    await supabase
+      .from('clients')
+      .update({ game_progress: { ...progress, ...stepPatch } })
+      .eq('id', clientId);
+  } catch (err) {
+    console.error(`[Reativação] Erro ao marcar etapa ${step} para cliente ${clientId}:`, err);
+  }
 }
 
 export async function sendSingleReactivation(clientId: string): Promise<{ success: boolean; message: string }> {
@@ -641,28 +918,26 @@ export async function sendSingleReactivation(clientId: string): Promise<{ succes
   const queue = await getReactivationQueue();
   const target = queue.find((q) => q.clientId === clientId);
   if (!target) {
-    return { success: false, message: 'Ex-cliente não encontrado ou não está completamente na lixeira sem apps.' };
+    return { success: false, message: 'Ex-cliente não encontrado, já realizou compra ou não está na lixeira sem apps.' };
   }
-  if (target.alreadySent) {
-    return { success: false, message: `${target.clientName} já recebeu a mensagem promocional anteriormente.` };
+  if (target.currentStep !== 1 && target.currentStep !== 2 && target.currentStep !== 3) {
+    return { success: false, message: `${target.clientName} já completou todas as 3 mensagens promocionais.` };
   }
 
+  const stepToSend = target.currentStep;
   const result = await sendWhatsAppTextMessage(target.phoneNumber, target.message, { labelName: 'Promoção' });
 
   if (result.success) {
-    reactivationState.sentToday++;
+    if (stepToSend === 1) {
+      reactivationState.sentToday++;
+    }
     reactivationState.lastRunAt = new Date().toISOString();
 
-    try {
-      const { data: row } = await supabase.from('clients').select('game_progress').eq('id', target.clientId).maybeSingle();
-      const progress = (row as any)?.game_progress || {};
-      await supabase
-        .from('clients')
-        .update({ game_progress: { ...progress, _reactivation_campaign_sent_at: new Date().toISOString() } })
-        .eq('id', target.clientId);
-    } catch (err) {
-      console.error('[Reativação] Erro ao marcar cliente:', err);
-    }
+    await saveReactivationStepProgress(target.clientId, stepToSend, {
+      jidUsed: result.jidUsed,
+      messageId: result.messageId,
+      messageTimestamp: result.messageTimestamp
+    });
 
     recentLogs.unshift({
       id: `${Date.now()}-react-single-${Math.random().toString(36).substring(2, 6)}`,
@@ -670,12 +945,12 @@ export async function sendSingleReactivation(clientId: string): Promise<{ succes
       phoneNumber: target.phoneNumber,
       clientName: target.clientName,
       service: 'Campanha',
-      stage: 'Reativação de Ex-cliente',
+      stage: `Promoção - Mensagem ${stepToSend}/3`,
       status: 'success',
       messageText: target.message
     });
     saveLogsToFile();
-    return { success: true, message: `Mensagem promocional enviada com sucesso para ${target.clientName}!` };
+    return { success: true, message: `Mensagem promocional ${stepToSend}/3 enviada com sucesso para ${target.clientName}!` };
   } else {
     recentLogs.unshift({
       id: `${Date.now()}-react-single-fail-${Math.random().toString(36).substring(2, 6)}`,
@@ -683,7 +958,7 @@ export async function sendSingleReactivation(clientId: string): Promise<{ succes
       phoneNumber: target.phoneNumber,
       clientName: target.clientName,
       service: 'Campanha',
-      stage: 'Reativação de Ex-cliente',
+      stage: `Promoção - Mensagem ${stepToSend}/3`,
       status: 'failed',
       error: result.error
     });
@@ -716,77 +991,128 @@ export async function runReactivationCampaign(manualTrigger: boolean = false): P
     return { sent: 0, failed: 0, skipped: 0 };
   }
 
-  // Fuso horário de São Paulo para controle diário
-  const nowSp = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
-  const today = `${nowSp.getFullYear()}-${String(nowSp.getMonth()).padStart(2, '0')}-${String(nowSp.getDate()).padStart(2, '0')}`;
-
+  const today = getSpDateKey();
   if (reactivationState.lastRunDate !== today) {
     reactivationState.sentToday = 0;
     reactivationState.lastRunDate = today;
   }
 
-  const dailyLimit = Math.max(1, schedulerState.reactivationDailyLimit || 2);
-  if (reactivationState.sentToday >= dailyLimit) {
-    console.log(`[Reativação] Já atingiu o limite diário de ${dailyLimit} mensagens hoje. Pulando.`);
-    return { sent: 0, failed: 0, skipped: 1 };
+  const fullQueue = await getReactivationQueue();
+  const activePhoneKeys = await fetchActiveCustomerPhoneKeys();
+
+  let sent = 0;
+  let failed = 0;
+  let skipped = 0;
+
+  // 1. Auto-exclusão de conversas 7 dias após a 3ª mensagem se o número não realizou nenhuma compra
+  const chatsToDelete = fullQueue.filter((item) => item.currentStep === 'completed' && item.eligibleNow);
+  if (chatsToDelete.length > 0) {
+    console.log(`[Reativação] ${chatsToDelete.length} conversa(s) elegíveis para exclusão automática (7 dias após 3ª mensagem sem compra).`);
+  }
+  for (const target of chatsToDelete) {
+    if (isPhoneActiveCustomer(target.phoneNumber, activePhoneKeys)) {
+      skipped++;
+      continue;
+    }
+    try {
+      const { data: row } = await supabase.from('clients').select('game_progress').eq('id', target.clientId).maybeSingle();
+      const progress = (row as any)?.game_progress || {};
+      const delRes = await deleteWhatsAppChat(target.phoneNumber, {
+        jid: progress._reactivation_last_jid,
+        lastMessageId: progress._reactivation_last_msg_id,
+        lastMessageTimestamp: progress._reactivation_last_msg_ts
+      });
+
+      if (delRes.success) {
+        await supabase
+          .from('clients')
+          .update({ game_progress: { ...progress, _reactivation_chat_deleted_at: new Date().toISOString() } })
+          .eq('id', target.clientId);
+
+        recentLogs.unshift({
+          id: `${Date.now()}-react-del-${Math.random().toString(36).substring(2, 6)}`,
+          timestamp: new Date().toISOString(),
+          phoneNumber: target.phoneNumber,
+          clientName: target.clientName,
+          service: 'Campanha',
+          stage: 'Promoção - Conversa Apagada (7d sem compra)',
+          status: 'success'
+        });
+        console.log(`[Reativação] 🗑️ Conversa apagada para ${target.clientName} (${target.phoneNumber})`);
+      } else {
+        recentLogs.unshift({
+          id: `${Date.now()}-react-del-fail-${Math.random().toString(36).substring(2, 6)}`,
+          timestamp: new Date().toISOString(),
+          phoneNumber: target.phoneNumber,
+          clientName: target.clientName,
+          service: 'Campanha',
+          stage: 'Promoção - Conversa Apagada (7d sem compra)',
+          status: 'failed',
+          error: delRes.error
+        });
+      }
+      saveLogsToFile();
+    } catch (err: any) {
+      console.error(`[Reativação] Erro ao apagar conversa de ${target.clientName}:`, err?.message || err);
+    }
   }
 
-  const remaining = dailyLimit - reactivationState.sentToday;
-  const fullQueue = await getReactivationQueue();
-  const pendingExClients = fullQueue.filter((item) => !item.alreadySent);
+  // 2. Follow-ups (Etapa 3 e Etapa 2) — enviados no dia útil previsto para quem ainda não comprou
+  const step3Targets = fullQueue.filter((item) => item.currentStep === 3 && item.eligibleNow);
+  const step2Targets = fullQueue.filter((item) => item.currentStep === 2 && item.eligibleNow);
 
-  // Separa margem extra caso algum número antigo da lixeira não tenha WhatsApp, até atingir `remaining` envios com sucesso
-  const maxAttempts = Math.min(pendingExClients.length, remaining * 4);
-  const candidates = pendingExClients.slice(0, maxAttempts);
-  console.log(`[Reativação] ${pendingExClients.length} ex-clientes elegíveis (lixeira sem apps, mais antigas primeiro). Meta hoje: ${remaining}.`);
+  // 3. Novos contatos (Etapa 1) — respeita o limite diário configurado
+  const dailyLimit = Math.max(1, schedulerState.reactivationDailyLimit || 2);
+  const remainingStep1 = Math.max(0, dailyLimit - reactivationState.sentToday);
+  const step1Pending = fullQueue.filter((item) => item.currentStep === 1 && item.eligibleNow);
+  const step1Candidates = step1Pending.slice(0, Math.min(step1Pending.length, remainingStep1 * 4));
 
-  let sent = 0, failed = 0;
+  console.log(
+    `[Reativação] Elegíveis hoje → Etapa 3: ${step3Targets.length} | Etapa 2: ${step2Targets.length} | Etapa 1 (meta ${remainingStep1}/${dailyLimit}): ${step1Pending.length}`
+  );
 
-  for (const target of candidates) {
-    if (sent >= remaining) break;
+  const sendPromoItem = async (target: ReactivationQueueItem, step: 1 | 2 | 3): Promise<boolean> => {
     if (!manualTrigger) {
       const win = isWithinPromoWindow();
       if (!win.allowed) {
         console.log(`[Reativação] Parando ciclo automático: ${win.reason}.`);
-        break;
+        return false;
       }
     }
+    if (isPhoneActiveCustomer(target.phoneNumber, activePhoneKeys)) {
+      skipped++;
+      return true;
+    }
+
     const delayMs = Math.floor(Math.random() * 8000) + 10000;
-    console.log(`[Reativação] Aguardando ${Math.round(delayMs / 1000)}s antes de enviar para ${target.clientName}...`);
+    console.log(`[Reativação] Aguardando ${Math.round(delayMs / 1000)}s antes de enviar Msg ${step}/3 para ${target.clientName}...`);
     await new Promise((r) => setTimeout(r, delayMs));
 
     const result = await sendWhatsAppTextMessage(target.phoneNumber, target.message, { labelName: 'Promoção' });
 
     if (result.success) {
       sent++;
-      reactivationState.sentToday++;
+      if (step === 1) reactivationState.sentToday++;
 
-      // Marca no Supabase para nunca reenviar
-      try {
-        const { data: row } = await supabase.from('clients').select('game_progress').eq('id', target.clientId).maybeSingle();
-        const progress = (row as any)?.game_progress || {};
-        await supabase
-          .from('clients')
-          .update({ game_progress: { ...progress, _reactivation_campaign_sent_at: new Date().toISOString() } })
-          .eq('id', target.clientId);
-      } catch (err) {
-        console.error('[Reativação] Erro ao marcar cliente:', err);
-      }
+      await saveReactivationStepProgress(target.clientId, step, {
+        jidUsed: result.jidUsed,
+        messageId: result.messageId,
+        messageTimestamp: result.messageTimestamp
+      });
 
       recentLogs.unshift({
-        id: `${Date.now()}-react-${Math.random().toString(36).substring(2, 6)}`,
+        id: `${Date.now()}-react-s${step}-${Math.random().toString(36).substring(2, 6)}`,
         timestamp: new Date().toISOString(),
         phoneNumber: target.phoneNumber,
         clientName: target.clientName,
         service: 'Campanha',
-        stage: 'Reativação de Ex-cliente',
+        stage: `Promoção - Mensagem ${step}/3`,
         status: 'success',
         messageText: target.message
       });
-      console.log(`[Reativação] ✅ Enviado para ${target.clientName} (${target.phoneNumber})`);
+      console.log(`[Reativação] ✅ Msg ${step}/3 enviada para ${target.clientName} (${target.phoneNumber})`);
     } else {
       failed++;
-      // Se o número não existe no WhatsApp ou é inválido, marca para não travar a fila nos próximos dias
       const errMsg = String(result.error || '');
       if (errMsg.includes('não está no WhatsApp') || errMsg.includes('não encontrado no WhatsApp') || errMsg.includes('inválido')) {
         try {
@@ -799,23 +1125,43 @@ export async function runReactivationCampaign(manualTrigger: boolean = false): P
         } catch {}
       }
       recentLogs.unshift({
-        id: `${Date.now()}-react-fail-${Math.random().toString(36).substring(2, 6)}`,
+        id: `${Date.now()}-react-s${step}-fail-${Math.random().toString(36).substring(2, 6)}`,
         timestamp: new Date().toISOString(),
         phoneNumber: target.phoneNumber,
         clientName: target.clientName,
         service: 'Campanha',
-        stage: 'Reativação de Ex-cliente',
+        stage: `Promoção - Mensagem ${step}/3`,
         status: 'failed',
         error: result.error
       });
-      console.error(`[Reativação] ❌ Falha ao enviar para ${target.clientName}: ${result.error}`);
+      console.error(`[Reativação] ❌ Falha ao enviar Msg ${step}/3 para ${target.clientName}: ${result.error}`);
     }
     saveLogsToFile();
+    return true;
+  };
+
+  for (const target of step3Targets) {
+    const keepGoing = await sendPromoItem(target, 3);
+    if (!keepGoing) break;
+  }
+
+  for (const target of step2Targets) {
+    const keepGoing = await sendPromoItem(target, 2);
+    if (!keepGoing) break;
+  }
+
+  let step1SentThisRun = 0;
+  for (const target of step1Candidates) {
+    if (step1SentThisRun >= remainingStep1) break;
+    const beforeSent = sent;
+    const keepGoing = await sendPromoItem(target, 1);
+    if (sent > beforeSent) step1SentThisRun++;
+    if (!keepGoing) break;
   }
 
   reactivationState.lastRunAt = new Date().toISOString();
-  console.log(`[Reativação] Campanha finalizada. Enviados: ${sent}, Falhas: ${failed}`);
-  return { sent, failed, skipped: 0 };
+  console.log(`[Reativação] Campanha finalizada. Enviados: ${sent}, Falhas: ${failed}, Ignorados: ${skipped}`);
+  return { sent, failed, skipped };
 }
 
 export function getReactivationStatus(): ReactivationCampaignStatus {
@@ -942,6 +1288,14 @@ export async function runDailyChargeCycle(manualTrigger: boolean = false): Promi
       console.log('[Scheduler] Campanha de reativação desativada nas configurações. Pulando.');
     }
 
+    // Executa a campanha de promoção de apps extras para clientes ativos
+    if (schedulerState.enableClientPromo) {
+      console.log('[Scheduler] Iniciando campanha promocional para clientes ativos...');
+      await runClientPromoCampaign(manualTrigger);
+    } else {
+      console.log('[Scheduler] Campanha promocional para clientes ativos desativada nas configurações. Pulando.');
+    }
+
     return { success: true, summary };
   } catch (err) {
     console.error('[Scheduler] Erro crítico no ciclo de cobranças:', err);
@@ -983,4 +1337,408 @@ export function startDailyChargeScheduler() {
     console.log('[Scheduler] Dentro da janela permitida (15h-20h)! Iniciando ciclo diário...');
     void runDailyChargeCycle(false);
   }, 60000);
+}
+
+// --- CAMPANHA PROMOCIONAL PARA CLIENTES ATIVOS ("promo cliente") ---
+// Verifica os apps que o cliente já possui e oferece os demais com valores promocionais
+// + opção de levar todos os que faltam com 50% de desconto do valor original.
+// Ordem: clientes mais antigos para os mais recentes.
+// Se não comprar em 7 dias após o envio, apaga a conversa do WhatsApp automaticamente.
+
+let clientPromoState = { sentToday: 0, lastRunDate: '', lastRunAt: '' };
+
+function extractOwnedAppKeys(subs: string[]): { ownedKeys: Set<string>; ownedLabels: string[] } {
+  const ownedKeys = new Set<string>();
+  const ownedLabels: string[] = [];
+  for (const sub of subs) {
+    const serviceName = String(sub.split('|')[0] || '').trim().toLowerCase();
+    if (!serviceName) continue;
+    for (const app of CLIENT_PROMO_APPS) {
+      if (app.matchers.some((m) => serviceName.includes(m))) {
+        if (!ownedKeys.has(app.key)) {
+          ownedKeys.add(app.key);
+          ownedLabels.push(app.label);
+        }
+      }
+    }
+  }
+  return { ownedKeys, ownedLabels };
+}
+
+export function buildClientPromoMessage(
+  clientName: string | null | undefined,
+  ownedApps: string[],
+  missingApps: Array<{ key: string; label: string; promoPrice: number; originalPrice: number }>,
+  originalTotal: number,
+  combo50Price: number,
+  templateOverride?: string
+): string {
+  const rawName = String(clientName || '').trim();
+  const displayName = rawName && rawName.toLowerCase() !== 'null' && rawName.toLowerCase() !== 'sem nome'
+    ? rawName
+    : 'Dorameira';
+
+  const appsAtuais = ownedApps.length > 0 ? ownedApps.join(', ') : 'seus apps';
+  const listaOfertas = missingApps
+    .map((app) => `• *${app.label}*: ${formatCurrency(app.promoPrice)}/mês`)
+    .join('\n');
+
+  const blocoCombo50 =
+    missingApps.length >= 2
+      ? `\n🎁 *E se quiser levar TODOS os ${missingApps.length} apps que faltam:* você ganha *50% de desconto* sobre o valor original — de ${formatCurrency(originalTotal)} por apenas *${formatCurrency(combo50Price)}*!\n`
+      : `\n🎁 *Ou com 50% de desconto do valor original:* de ${formatCurrency(originalTotal)} por apenas *${formatCurrency(combo50Price)}*!\n`;
+
+  const tpl = (templateOverride || schedulerState.clientPromoTemplate || DEFAULT_CLIENT_PROMO_TEMPLATE).trim();
+  return tpl
+    .replace(/\{nome\}/gi, displayName)
+    .replace(/\{apps_atuais\}/gi, appsAtuais)
+    .replace(/\{lista_ofertas\}/gi, listaOfertas)
+    .replace(/\{valor_original_combo\}/gi, formatCurrency(originalTotal))
+    .replace(/\{valor_combo_50\}/gi, formatCurrency(combo50Price))
+    .replace(/\{bloco_combo_50\}/gi, blocoCombo50);
+}
+
+export async function getClientPromoQueue(): Promise<ClientPromoQueueItem[]> {
+  const { data: activeClients, error } = await supabase
+    .from('clients')
+    .select('id, phone_number, client_name, subscriptions, deleted, created_at, game_progress')
+    .eq('deleted', false);
+
+  if (error || !activeClients) {
+    console.error('[Promo Cliente] Erro ao carregar clientes ativos do Supabase:', error);
+    return [];
+  }
+
+  const items: ClientPromoQueueItem[] = [];
+
+  for (const c of activeClients as ClientDBRow[]) {
+    if (!isValidPhoneCandidate(c.phone_number)) continue;
+    const subs = normalizeSubscriptions(c.subscriptions).filter((s) => String(s || '').trim().length > 0);
+    if (subs.length === 0) continue;
+
+    const progress = c.game_progress || {};
+    if (progress._client_promo_invalid_phone) continue;
+
+    const { ownedKeys, ownedLabels } = extractOwnedAppKeys(subs);
+    const missingApps = CLIENT_PROMO_APPS
+      .filter((app) => !ownedKeys.has(app.key))
+      .map((app) => ({
+        key: app.key,
+        label: app.label,
+        promoPrice: app.promoPrice,
+        originalPrice: getServicePrice(app.label, 1)
+      }));
+
+    // Se já tem todos os 6 apps, não precisa receber oferta
+    if (missingApps.length === 0) continue;
+
+    const originalTotal = missingApps.reduce((acc, a) => acc + a.originalPrice, 0);
+    const combo50Price = Number((originalTotal * 0.5).toFixed(2));
+
+    // Mais antigas primeiro (created_at ou data de início mais antiga das assinaturas)
+    let earliestTs = c.created_at ? new Date(c.created_at).getTime() : Number.MAX_SAFE_INTEGER;
+    for (const sub of subs) {
+      const startStr = String(sub.split('|')[1] || '').trim();
+      if (startStr) {
+        const t = new Date(startStr).getTime();
+        if (Number.isFinite(t) && t < earliestTs) earliestTs = t;
+      }
+    }
+    const sortTimestamp = Number.isFinite(earliestTs) ? earliestTs : 0;
+
+    const sentAt: string | null = progress._client_promo_sent_at || null;
+    const chatDeletedAt: string | null = progress._client_promo_chat_deleted_at || null;
+    const offeredKeys: string[] = Array.isArray(progress._client_promo_offered_apps)
+      ? progress._client_promo_offered_apps
+      : [];
+    const initialSubsCount = Number(progress._client_promo_initial_subs_count ?? subs.length);
+    const boughtOfferedApp =
+      Boolean(sentAt) &&
+      (subs.length > initialSubsCount || offeredKeys.some((k) => ownedKeys.has(k)));
+    const purchasedAt: string | null =
+      progress._client_promo_purchased_at || (boughtOfferedApp ? new Date().toISOString() : null);
+
+    const deleteEligibleDate = sentAt && !purchasedAt && !chatDeletedAt ? addCalendarDaysSp(sentAt, 7) : null;
+
+    items.push({
+      clientId: c.id,
+      clientName: c.client_name || 'Dorameira',
+      phoneNumber: c.phone_number,
+      createdAt: c.created_at || null,
+      sortTimestamp,
+      ownedApps: ownedLabels,
+      missingApps,
+      originalTotal,
+      combo50Price,
+      message: buildClientPromoMessage(c.client_name, ownedLabels, missingApps, originalTotal, combo50Price),
+      alreadySent: Boolean(sentAt),
+      sentAt,
+      purchasedAt,
+      chatDeletedAt,
+      deleteEligibleDate
+    });
+  }
+
+  return items.sort((a, b) => a.sortTimestamp - b.sortTimestamp);
+}
+
+export async function sendSingleClientPromo(clientId: string): Promise<{ success: boolean; message: string }> {
+  const wsStatus = getWhatsAppStatus();
+  if (wsStatus.state !== 'connected') {
+    return { success: false, message: 'WhatsApp não está conectado no servidor.' };
+  }
+
+  const queue = await getClientPromoQueue();
+  const target = queue.find((q) => q.clientId === clientId);
+  if (!target) {
+    return { success: false, message: 'Cliente não encontrado ou já possui todos os 6 apps.' };
+  }
+  if (target.alreadySent) {
+    return { success: false, message: `${target.clientName} já recebeu a promoção para clientes anteriormente.` };
+  }
+
+  const result = await sendWhatsAppTextMessage(target.phoneNumber, target.message, { labelName: 'promo cliente' });
+
+  if (result.success) {
+    clientPromoState.sentToday++;
+    clientPromoState.lastRunAt = new Date().toISOString();
+
+    try {
+      const { data: row } = await supabase.from('clients').select('game_progress, subscriptions').eq('id', target.clientId).maybeSingle();
+      const progress = (row as any)?.game_progress || {};
+      const subs = normalizeSubscriptions((row as any)?.subscriptions).filter((s) => String(s || '').trim().length > 0);
+      await supabase
+        .from('clients')
+        .update({
+          game_progress: {
+            ...progress,
+            _client_promo_sent_at: new Date().toISOString(),
+            _client_promo_offered_apps: target.missingApps.map((a) => a.key),
+            _client_promo_initial_subs_count: subs.length,
+            _client_promo_last_jid: result.jidUsed,
+            _client_promo_last_msg_id: result.messageId,
+            _client_promo_last_msg_ts: result.messageTimestamp
+          }
+        })
+        .eq('id', target.clientId);
+    } catch (err) {
+      console.error('[Promo Cliente] Erro ao marcar cliente:', err);
+    }
+
+    recentLogs.unshift({
+      id: `${Date.now()}-cpromo-single-${Math.random().toString(36).substring(2, 6)}`,
+      timestamp: new Date().toISOString(),
+      phoneNumber: target.phoneNumber,
+      clientName: target.clientName,
+      service: target.missingApps.map((a) => a.label).join(', '),
+      stage: 'Promo Cliente (Apps Extras)',
+      status: 'success',
+      messageText: target.message
+    });
+    saveLogsToFile();
+    return { success: true, message: `Promoção enviada com sucesso para ${target.clientName} (etiqueta: promo cliente)!` };
+  } else {
+    recentLogs.unshift({
+      id: `${Date.now()}-cpromo-single-fail-${Math.random().toString(36).substring(2, 6)}`,
+      timestamp: new Date().toISOString(),
+      phoneNumber: target.phoneNumber,
+      clientName: target.clientName,
+      service: target.missingApps.map((a) => a.label).join(', '),
+      stage: 'Promo Cliente (Apps Extras)',
+      status: 'failed',
+      error: result.error
+    });
+    saveLogsToFile();
+    return { success: false, message: result.error || 'Erro ao enviar promoção para cliente.' };
+  }
+}
+
+export async function runClientPromoCampaign(manualTrigger: boolean = false): Promise<{ sent: number; failed: number; skipped: number }> {
+  if (!schedulerState.enableClientPromo) {
+    console.log('[Promo Cliente] Campanha desativada nas configurações. Pulando.');
+    return { sent: 0, failed: 0, skipped: 0 };
+  }
+
+  if (!manualTrigger) {
+    if (!schedulerState.enabled) {
+      console.log('[Promo Cliente] Automação geral desativada. Pulando.');
+      return { sent: 0, failed: 0, skipped: 0 };
+    }
+    const win = isWithinPromoWindow();
+    if (!win.allowed) {
+      console.log(`[Promo Cliente] ${win.reason}. Pulando.`);
+      return { sent: 0, failed: 0, skipped: 0 };
+    }
+  }
+
+  const wsStatus = getWhatsAppStatus();
+  if (wsStatus.state !== 'connected') {
+    console.log('[Promo Cliente] WhatsApp não conectado. Pulando campanha.');
+    return { sent: 0, failed: 0, skipped: 0 };
+  }
+
+  const today = getSpDateKey();
+  if (clientPromoState.lastRunDate !== today) {
+    clientPromoState.sentToday = 0;
+    clientPromoState.lastRunDate = today;
+  }
+
+  const fullQueue = await getClientPromoQueue();
+  let sent = 0;
+  let failed = 0;
+  let skipped = 0;
+
+  // 1. Apagar conversa 7 dias após o envio se não comprou nenhum dos apps oferecidos
+  const chatsToDelete = fullQueue.filter(
+    (item) => item.alreadySent && !item.purchasedAt && !item.chatDeletedAt && item.deleteEligibleDate && today >= item.deleteEligibleDate
+  );
+  for (const target of chatsToDelete) {
+    try {
+      const { data: row } = await supabase.from('clients').select('game_progress').eq('id', target.clientId).maybeSingle();
+      const progress = (row as any)?.game_progress || {};
+      const delRes = await deleteWhatsAppChat(target.phoneNumber, {
+        jid: progress._client_promo_last_jid,
+        lastMessageId: progress._client_promo_last_msg_id,
+        lastMessageTimestamp: progress._client_promo_last_msg_ts
+      });
+
+      if (delRes.success) {
+        await supabase
+          .from('clients')
+          .update({ game_progress: { ...progress, _client_promo_chat_deleted_at: new Date().toISOString() } })
+          .eq('id', target.clientId);
+
+        recentLogs.unshift({
+          id: `${Date.now()}-cpromo-del-${Math.random().toString(36).substring(2, 6)}`,
+          timestamp: new Date().toISOString(),
+          phoneNumber: target.phoneNumber,
+          clientName: target.clientName,
+          service: target.missingApps.map((a) => a.label).join(', '),
+          stage: 'Promo Cliente - Conversa Apagada (7d sem compra)',
+          status: 'success'
+        });
+        console.log(`[Promo Cliente] 🗑️ Conversa apagada para ${target.clientName} (${target.phoneNumber})`);
+      } else {
+        recentLogs.unshift({
+          id: `${Date.now()}-cpromo-del-fail-${Math.random().toString(36).substring(2, 6)}`,
+          timestamp: new Date().toISOString(),
+          phoneNumber: target.phoneNumber,
+          clientName: target.clientName,
+          service: target.missingApps.map((a) => a.label).join(', '),
+          stage: 'Promo Cliente - Conversa Apagada (7d sem compra)',
+          status: 'failed',
+          error: delRes.error
+        });
+      }
+      saveLogsToFile();
+    } catch (err: any) {
+      console.error(`[Promo Cliente] Erro ao apagar conversa de ${target.clientName}:`, err?.message || err);
+    }
+  }
+
+  // 2. Enviar promoções para clientes ativos pendentes (mais antigas primeiro)
+  const dailyLimit = Math.max(1, schedulerState.clientPromoDailyLimit || 2);
+  if (clientPromoState.sentToday >= dailyLimit) {
+    console.log(`[Promo Cliente] Já atingiu o limite diário de ${dailyLimit} mensagens hoje. Pulando.`);
+    return { sent: 0, failed: 0, skipped: 1 };
+  }
+
+  const remaining = dailyLimit - clientPromoState.sentToday;
+  const pendingClients = fullQueue.filter((item) => !item.alreadySent);
+  const candidates = pendingClients.slice(0, Math.min(pendingClients.length, remaining * 4));
+  console.log(`[Promo Cliente] ${pendingClients.length} clientes elegíveis (mais antigas primeiro). Meta hoje: ${remaining}.`);
+
+  for (const target of candidates) {
+    if (sent >= remaining) break;
+    if (!manualTrigger) {
+      const win = isWithinPromoWindow();
+      if (!win.allowed) {
+        console.log(`[Promo Cliente] Parando ciclo automático: ${win.reason}.`);
+        break;
+      }
+    }
+
+    const delayMs = Math.floor(Math.random() * 8000) + 10000;
+    console.log(`[Promo Cliente] Aguardando ${Math.round(delayMs / 1000)}s antes de enviar para ${target.clientName}...`);
+    await new Promise((r) => setTimeout(r, delayMs));
+
+    const result = await sendWhatsAppTextMessage(target.phoneNumber, target.message, { labelName: 'promo cliente' });
+
+    if (result.success) {
+      sent++;
+      clientPromoState.sentToday++;
+
+      try {
+        const { data: row } = await supabase.from('clients').select('game_progress, subscriptions').eq('id', target.clientId).maybeSingle();
+        const progress = (row as any)?.game_progress || {};
+        const subs = normalizeSubscriptions((row as any)?.subscriptions).filter((s) => String(s || '').trim().length > 0);
+        await supabase
+          .from('clients')
+          .update({
+            game_progress: {
+              ...progress,
+              _client_promo_sent_at: new Date().toISOString(),
+              _client_promo_offered_apps: target.missingApps.map((a) => a.key),
+              _client_promo_initial_subs_count: subs.length,
+              _client_promo_last_jid: result.jidUsed,
+              _client_promo_last_msg_id: result.messageId,
+              _client_promo_last_msg_ts: result.messageTimestamp
+            }
+          })
+          .eq('id', target.clientId);
+      } catch (err) {
+        console.error('[Promo Cliente] Erro ao marcar cliente:', err);
+      }
+
+      recentLogs.unshift({
+        id: `${Date.now()}-cpromo-${Math.random().toString(36).substring(2, 6)}`,
+        timestamp: new Date().toISOString(),
+        phoneNumber: target.phoneNumber,
+        clientName: target.clientName,
+        service: target.missingApps.map((a) => a.label).join(', '),
+        stage: 'Promo Cliente (Apps Extras)',
+        status: 'success',
+        messageText: target.message
+      });
+      console.log(`[Promo Cliente] ✅ Enviado para ${target.clientName} (${target.phoneNumber})`);
+    } else {
+      failed++;
+      const errMsg = String(result.error || '');
+      if (errMsg.includes('não está no WhatsApp') || errMsg.includes('não encontrado no WhatsApp') || errMsg.includes('inválido')) {
+        try {
+          const { data: row } = await supabase.from('clients').select('game_progress').eq('id', target.clientId).maybeSingle();
+          const progress = (row as any)?.game_progress || {};
+          await supabase
+            .from('clients')
+            .update({ game_progress: { ...progress, _client_promo_invalid_phone: new Date().toISOString() } })
+            .eq('id', target.clientId);
+        } catch {}
+      }
+      recentLogs.unshift({
+        id: `${Date.now()}-cpromo-fail-${Math.random().toString(36).substring(2, 6)}`,
+        timestamp: new Date().toISOString(),
+        phoneNumber: target.phoneNumber,
+        clientName: target.clientName,
+        service: target.missingApps.map((a) => a.label).join(', '),
+        stage: 'Promo Cliente (Apps Extras)',
+        status: 'failed',
+        error: result.error
+      });
+      console.error(`[Promo Cliente] ❌ Falha ao enviar para ${target.clientName}: ${result.error}`);
+    }
+    saveLogsToFile();
+  }
+
+  clientPromoState.lastRunAt = new Date().toISOString();
+  console.log(`[Promo Cliente] Campanha finalizada. Enviados: ${sent}, Falhas: ${failed}, Ignorados: ${skipped}`);
+  return { sent, failed, skipped };
+}
+
+export function getClientPromoStatus(): ReactivationCampaignStatus {
+  return {
+    sentToday: clientPromoState.sentToday,
+    dailyLimit: Math.max(1, schedulerState.clientPromoDailyLimit || 2),
+    pendingCount: 0,
+    lastRunAt: clientPromoState.lastRunAt || undefined
+  };
 }

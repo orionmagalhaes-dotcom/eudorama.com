@@ -51,6 +51,11 @@ type WhatsAppServerStatus = {
     enableReactivation?: boolean;
     reactivationDailyLimit?: number;
     reactivationTemplate?: string;
+    reactivationTemplate2?: string;
+    reactivationTemplate3?: string;
+    enableClientPromo?: boolean;
+    clientPromoDailyLimit?: number;
+    clientPromoTemplate?: string;
     targetHour: number;
     targetMinute: number;
     isRunning: boolean;
@@ -64,6 +69,8 @@ type WhatsAppServerStatus = {
   };
 };
 
+type ReactivationStep = 1 | 2 | 3 | 'completed' | 'chat_deleted' | 'converted';
+
 type ReactivationQueueItem = {
   clientId: string;
   clientName: string;
@@ -73,6 +80,13 @@ type ReactivationQueueItem = {
   message: string;
   alreadySent: boolean;
   sentAt: string | null;
+  currentStep?: ReactivationStep;
+  step1SentAt?: string | null;
+  step2SentAt?: string | null;
+  step3SentAt?: string | null;
+  chatDeletedAt?: string | null;
+  nextEligibleDate?: string | null;
+  eligibleNow?: boolean;
 };
 
 const DEFAULT_REACTIVATION_TEMPLATE = `Olá, {nome}! Tudo bem? 🌸
@@ -82,6 +96,65 @@ Sou o Orion, da *EuDorama* — uma plataforma dedicada a quem ama doramas e cont
 Faz um tempinho que você não está por aqui e sentimos muito a sua falta! Preparamos uma *condição especial* pensando em você para facilitar o seu retorno. 🎁
 
 Você teria interesse em saber mais sobre a nossa promoção? É só me responder aqui e te explico tudo com carinho! Tenha um lindo dia! ✨🍿`;
+
+const DEFAULT_REACTIVATION_TEMPLATE_2 = `Olá, {nome}! Tudo bem? 🌸
+
+Passando para te apresentar a nossa promoção especial de retorno na *EuDorama*! 🎁
+
+Você pode garantir o combo *Viki Pass + Kocowa Plus + WeTV VIP por R$ 29,90*! ✨
+
+Essa promoção é válida durante *3 meses* para você aproveitar os 3 apps pagando bem menos. 💜🍿
+
+Tem interesse em ativar? É só me responder aqui! 😊`;
+
+const DEFAULT_REACTIVATION_TEMPLATE_3 = `Olá, {nome}! Tudo bem? 🌸
+
+Como queremos muito te ver maratonando com a gente de novo na *EuDorama*, conseguimos aumentar ainda mais o desconto para você! 🎁✨
+
+O combo *Viki Pass + Kocowa Plus + WeTV VIP* caiu de R$ 29,90 para apenas *R$ 24,90*! 😱💜
+
+A promoção continua válida por *3 meses* nos 3 apps, e você tem um prazo de até *7 dias* para realizar a compra com esse valor especial. ⏳🍿
+
+Se quiser aproveitar antes que o prazo acabe, é só me responder aqui! Tenha um ótimo dia! 😊`;
+
+const CLIENT_PROMO_APPS = [
+  { key: 'viki', label: 'Viki Pass', promoPrice: 19.90, matchers: ['viki'] },
+  { key: 'iqiyi', label: 'iQIYI', promoPrice: 14.90, matchers: ['iqiyi', 'iqyi'] },
+  { key: 'kocowa', label: 'Kocowa', promoPrice: 9.90, matchers: ['kocowa'] },
+  { key: 'wetv', label: 'WeTV', promoPrice: 9.90, matchers: ['wetv'] },
+  { key: 'youku', label: 'Youku', promoPrice: 9.90, matchers: ['youku'] },
+  { key: 'dramabox', label: 'DramaBox', promoPrice: 9.90, matchers: ['dramabox'] }
+] as const;
+
+const DEFAULT_CLIENT_PROMO_TEMPLATE = `Olá, {nome}! Tudo bem com você? 🌸
+
+Aqui é o Orion, da *EuDorama*! Passando com muito carinho para agradecer por fazer parte da nossa família dorameira! 💜
+
+Como você já é nossa cliente especial com *{apps_atuais}*, preparamos uma promoção exclusiva nos outros apps que você ainda não tem para deixar a sua maratona ainda mais completa:
+
+{lista_ofertas}
+{bloco_combo_50}
+✨ Essa promoção é válida por *1 mês* e você só tem *7 dias* a partir de hoje para adquirir! ⏳🍿
+
+Se quiser aproveitar algum deles ou o combo completo, é só me responder por aqui que ativo com todo carinho para você! Tenha um lindo dia! 😊`;
+
+type ClientPromoQueueItem = {
+  clientId: string;
+  clientName: string;
+  phoneNumber: string;
+  createdAt: string | null;
+  sortTimestamp: number;
+  ownedApps: string[];
+  missingApps: Array<{ key: string; label: string; promoPrice: number; originalPrice: number }>;
+  originalTotal: number;
+  combo50Price: number;
+  message: string;
+  alreadySent: boolean;
+  sentAt: string | null;
+  purchasedAt: string | null;
+  chatDeletedAt: string | null;
+  deleteEligibleDate: string | null;
+};
 
 type QueueItem = {
   id: string;
@@ -149,14 +222,19 @@ const STAGE_RULES = [
   },
   {
     id: 'reactivation',
-    label: 'Campanha de Reativação',
-    range: 'Ex-clientes (2/dia)',
+    label: 'Campanha de Reativação (3 Etapas)',
+    range: 'Ex-clientes · Seg-Sex',
     color: 'purple',
     icon: Gift,
-    tone: 'Saudades + oferta especial do Orion',
-    allowed: ['Tom de "sentimos sua falta"', 'Apresentar a EuDorama', 'Mencionar o Orion pelo nome', 'Oferecer condição/promoção especial', 'Perguntar se tem interesse'],
-    blocked: ['❌ Tom de cobrador', '❌ Mencionar dívida ou atraso', '❌ Enviar duas vezes para a mesma pessoa'],
-    example: 'Olá! Sou o Orion, da EuDorama! Sentimos muito a sua falta 🥰 Preparamos uma condição especial pensando em você — teria interesse em saber mais?'
+    tone: 'Funil de 3 mensagens com desconto progressivo',
+    allowed: [
+      'Msg 1: Perguntar interesse na promoção',
+      'Msg 2 (1 dia útil): Viki Pass + Kocowa Plus + WeTV VIP por R$ 29,90 (3 meses)',
+      'Msg 3 (1 dia útil): Desconto para R$ 24,90 (3 meses nos 3 apps, prazo 7 dias)',
+      'Apagar conversa automaticamente 7 dias após Msg 3 se não houver compra'
+    ],
+    blocked: ['❌ Enviar para quem realizou compra após qualquer mensagem', '❌ Mencionar dívida ou atraso', '❌ Enviar em fins de semana'],
+    example: 'Msg 1: Interesse na promoção -> Msg 2: 3 apps por R$ 29,90 (3 meses) -> Msg 3: R$ 24,90 (prazo 7 dias).'
   }
 ];
 
@@ -231,10 +309,27 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
   const [reactivationFilter, setReactivationFilter] = useState<'pending' | 'sent' | 'all'>('pending');
   const [reactivationSearch, setReactivationSearch] = useState('');
   const [reactivationTemplateDraft, setReactivationTemplateDraft] = useState(DEFAULT_REACTIVATION_TEMPLATE);
+  const [reactivationTemplate2Draft, setReactivationTemplate2Draft] = useState(DEFAULT_REACTIVATION_TEMPLATE_2);
+  const [reactivationTemplate3Draft, setReactivationTemplate3Draft] = useState(DEFAULT_REACTIVATION_TEMPLATE_3);
+  const [activePromoTemplateStep, setActivePromoTemplateStep] = useState<1 | 2 | 3>(1);
   const [reactivationTemplateDirty, setReactivationTemplateDirty] = useState(false);
   const [reactivationDailyLimitDraft, setReactivationDailyLimitDraft] = useState<number>(2);
   const [reactivationExpandedId, setReactivationExpandedId] = useState<string | null>(null);
   const [sendingReactivationId, setSendingReactivationId] = useState<string | null>(null);
+
+  // Sub-aba promocional e estado da campanha para clientes ativos ("promo cliente")
+  const [promoSubTab, setPromoSubTab] = useState<'reactivation' | 'client_promo'>('reactivation');
+  const [clientPromoStatus, setClientPromoStatus] = useState<{ sentToday: number; dailyLimit?: number; lastRunAt?: string } | null>(null);
+  const [clientPromoLoading, setClientPromoLoading] = useState(false);
+  const [clientPromoQueue, setClientPromoQueue] = useState<ClientPromoQueueItem[]>([]);
+  const [clientPromoQueueLoading, setClientPromoQueueLoading] = useState(false);
+  const [clientPromoFilter, setClientPromoFilter] = useState<'pending' | 'sent' | 'all'>('pending');
+  const [clientPromoSearch, setClientPromoSearch] = useState('');
+  const [clientPromoTemplateDraft, setClientPromoTemplateDraft] = useState(DEFAULT_CLIENT_PROMO_TEMPLATE);
+  const [clientPromoTemplateDirty, setClientPromoTemplateDirty] = useState(false);
+  const [clientPromoDailyLimitDraft, setClientPromoDailyLimitDraft] = useState<number>(2);
+  const [clientPromoExpandedId, setClientPromoExpandedId] = useState<string | null>(null);
+  const [sendingClientPromoId, setSendingClientPromoId] = useState<string | null>(null);
 
   // Configuração de URL do motor
   const [motorBaseUrl, setMotorBaseUrl] = useState<string>(() => {
@@ -261,8 +356,20 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
         if (data.scheduler?.reactivationTemplate && !reactivationTemplateDirty) {
           setReactivationTemplateDraft(data.scheduler.reactivationTemplate);
         }
+        if (data.scheduler?.reactivationTemplate2 && !reactivationTemplateDirty) {
+          setReactivationTemplate2Draft(data.scheduler.reactivationTemplate2);
+        }
+        if (data.scheduler?.reactivationTemplate3 && !reactivationTemplateDirty) {
+          setReactivationTemplate3Draft(data.scheduler.reactivationTemplate3);
+        }
         if (typeof data.scheduler?.reactivationDailyLimit === 'number') {
           setReactivationDailyLimitDraft(data.scheduler.reactivationDailyLimit);
+        }
+        if (data.scheduler?.clientPromoTemplate && !clientPromoTemplateDirty) {
+          setClientPromoTemplateDraft(data.scheduler.clientPromoTemplate);
+        }
+        if (typeof data.scheduler?.clientPromoDailyLimit === 'number') {
+          setClientPromoDailyLimitDraft(data.scheduler.clientPromoDailyLimit);
         }
       } else {
         setServerOnline(false);
@@ -270,7 +377,121 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
     } catch {
       setServerOnline(false);
     }
-  }, [getApiUrl, reactivationTemplateDirty]);
+  }, [getApiUrl, reactivationTemplateDirty, clientPromoTemplateDirty]);
+
+  const fetchClientPromoStatus = useCallback(async () => {
+    try {
+      const res = await fetch(getApiUrl('/api/whatsapp/client-promo-status'));
+      if (res.ok) {
+        const data = await res.json();
+        if (data.status) setClientPromoStatus(data.status);
+      }
+    } catch {}
+  }, [getApiUrl]);
+
+  const generateLocalClientPromoQueue = useCallback(() => {
+    const formatBrl = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    const items: ClientPromoQueueItem[] = [];
+    clients.forEach((c) => {
+      if (c.deleted || !c.phone_number) return;
+      const subs = Array.isArray(c.subscriptions)
+        ? c.subscriptions.filter((s) => String(s || '').trim().length > 0)
+        : [];
+      if (subs.length === 0) return;
+
+      const ownedKeys = new Set<string>();
+      const ownedLabels: string[] = [];
+      subs.forEach((sub) => {
+        const sName = String(sub.split('|')[0] || '').trim().toLowerCase();
+        CLIENT_PROMO_APPS.forEach((app) => {
+          if (app.matchers.some((m) => sName.includes(m)) && !ownedKeys.has(app.key)) {
+            ownedKeys.add(app.key);
+            ownedLabels.push(app.label);
+          }
+        });
+      });
+
+      const missingApps = CLIENT_PROMO_APPS
+        .filter((app) => !ownedKeys.has(app.key))
+        .map((app) => ({
+          key: app.key,
+          label: app.label,
+          promoPrice: app.promoPrice,
+          originalPrice: getServicePrice(app.label, 1)
+        }));
+      if (missingApps.length === 0) return;
+
+      const originalTotal = missingApps.reduce((acc, a) => acc + a.originalPrice, 0);
+      const combo50Price = Number((originalTotal * 0.5).toFixed(2));
+      const progress = c.game_progress || {};
+      const sentAt: string | null = progress._client_promo_sent_at || null;
+      const chatDeletedAt: string | null = progress._client_promo_chat_deleted_at || null;
+      const purchasedAt: string | null = progress._client_promo_purchased_at || null;
+
+      let earliestTs = c.created_at ? new Date(c.created_at).getTime() : Number.MAX_SAFE_INTEGER;
+      subs.forEach((sub) => {
+        const startStr = String(sub.split('|')[1] || '').trim();
+        if (startStr) {
+          const t = new Date(startStr).getTime();
+          if (Number.isFinite(t) && t < earliestTs) earliestTs = t;
+        }
+      });
+
+      const rawName = String(c.client_name || '').trim();
+      const displayName = rawName && rawName.toLowerCase() !== 'null' && rawName.toLowerCase() !== 'sem nome' ? rawName : 'Dorameira';
+      const listaOfertas = missingApps.map((a) => `• *${a.label}*: ${formatBrl(a.promoPrice)}/mês`).join('\n');
+      const blocoCombo50 =
+        missingApps.length >= 2
+          ? `\n🎁 *E se quiser levar TODOS os ${missingApps.length} apps que faltam:* você ganha *50% de desconto* sobre o valor original — de ${formatBrl(originalTotal)} por apenas *${formatBrl(combo50Price)}*!\n`
+          : `\n🎁 *Ou com 50% de desconto do valor original:* de ${formatBrl(originalTotal)} por apenas *${formatBrl(combo50Price)}*!\n`;
+      const msg = (clientPromoTemplateDraft || DEFAULT_CLIENT_PROMO_TEMPLATE)
+        .trim()
+        .replace(/\{nome\}/gi, displayName)
+        .replace(/\{apps_atuais\}/gi, ownedLabels.join(', ') || 'seus apps')
+        .replace(/\{lista_ofertas\}/gi, listaOfertas)
+        .replace(/\{valor_original_combo\}/gi, formatBrl(originalTotal))
+        .replace(/\{valor_combo_50\}/gi, formatBrl(combo50Price))
+        .replace(/\{bloco_combo_50\}/gi, blocoCombo50);
+
+      items.push({
+        clientId: c.id,
+        clientName: displayName,
+        phoneNumber: c.phone_number,
+        createdAt: c.created_at || null,
+        sortTimestamp: Number.isFinite(earliestTs) ? earliestTs : 0,
+        ownedApps: ownedLabels,
+        missingApps,
+        originalTotal,
+        combo50Price,
+        message: msg,
+        alreadySent: Boolean(sentAt),
+        sentAt,
+        purchasedAt,
+        chatDeletedAt,
+        deleteEligibleDate: null
+      });
+    });
+    setClientPromoQueue(items.sort((a, b) => a.sortTimestamp - b.sortTimestamp));
+  }, [clients, clientPromoTemplateDraft]);
+
+  const fetchClientPromoQueue = useCallback(async () => {
+    setClientPromoQueueLoading(true);
+    try {
+      const res = await fetch(getApiUrl('/api/whatsapp/client-promo-queue'));
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.queue)) {
+          setClientPromoQueue(data.queue);
+          return;
+        }
+      }
+      generateLocalClientPromoQueue();
+    } catch {
+      generateLocalClientPromoQueue();
+    } finally {
+      setClientPromoQueueLoading(false);
+    }
+  }, [getApiUrl, generateLocalClientPromoQueue]);
 
   const fetchReactivationStatus = useCallback(async () => {
     try {
@@ -283,6 +504,17 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
   }, [getApiUrl]);
 
   const generateLocalReactivationQueue = useCallback(() => {
+    const activePhones = new Set<string>();
+    clients.forEach((c) => {
+      const subs = Array.isArray(c.subscriptions)
+        ? c.subscriptions.filter((s) => String(s || '').trim().length > 0)
+        : [];
+      if (!c.deleted || subs.length > 0) {
+        const digits = String(c.phone_number || '').replace(/\D/g, '');
+        if (digits.length >= 10) activePhones.add(digits.slice(-10));
+      }
+    });
+
     const items: ReactivationQueueItem[] = [];
     clients.forEach((c) => {
       if (!c.deleted || !c.phone_number) return;
@@ -290,13 +522,36 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
         ? c.subscriptions.filter((s) => String(s || '').trim().length > 0)
         : [];
       if (subs.length > 0) return;
+      const digits = String(c.phone_number || '').replace(/\D/g, '');
+      if (digits.length >= 10 && activePhones.has(digits.slice(-10))) return;
+
       const progress = c.game_progress || {};
       const deletedAt: string | null = progress._deleted_at || c.last_active_at || c.created_at || null;
       const ts = deletedAt ? new Date(deletedAt).getTime() : 0;
-      const sentAt: string | null = progress._reactivation_campaign_sent_at || null;
+      const step1SentAt: string | null = progress._reactivation_campaign_sent_at || null;
+      const step2SentAt: string | null = progress._reactivation_step2_sent_at || null;
+      const step3SentAt: string | null = progress._reactivation_step3_sent_at || null;
+      const chatDeletedAt: string | null = progress._reactivation_chat_deleted_at || null;
+
+      let currentStep: ReactivationStep = 1;
+      let tpl = reactivationTemplateDraft || DEFAULT_REACTIVATION_TEMPLATE;
+      if (chatDeletedAt) {
+        currentStep = 'chat_deleted';
+        tpl = reactivationTemplate3Draft || DEFAULT_REACTIVATION_TEMPLATE_3;
+      } else if (step3SentAt) {
+        currentStep = 'completed';
+        tpl = reactivationTemplate3Draft || DEFAULT_REACTIVATION_TEMPLATE_3;
+      } else if (step2SentAt) {
+        currentStep = 3;
+        tpl = reactivationTemplate3Draft || DEFAULT_REACTIVATION_TEMPLATE_3;
+      } else if (step1SentAt) {
+        currentStep = 2;
+        tpl = reactivationTemplate2Draft || DEFAULT_REACTIVATION_TEMPLATE_2;
+      }
+
       const rawName = String(c.client_name || '').trim();
       const displayName = rawName && rawName.toLowerCase() !== 'null' && rawName.toLowerCase() !== 'sem nome' ? rawName : 'Dorameira';
-      const msg = (reactivationTemplateDraft || DEFAULT_REACTIVATION_TEMPLATE).trim().replace(/\{nome\}/gi, displayName);
+      const msg = tpl.trim().replace(/\{nome\}/gi, displayName);
       items.push({
         clientId: c.id,
         clientName: displayName,
@@ -304,12 +559,17 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
         deletedAt,
         sortTimestamp: Number.isFinite(ts) ? ts : 0,
         message: msg,
-        alreadySent: Boolean(sentAt),
-        sentAt
+        alreadySent: currentStep === 'completed' || currentStep === 'chat_deleted',
+        sentAt: step1SentAt,
+        currentStep,
+        step1SentAt,
+        step2SentAt,
+        step3SentAt,
+        chatDeletedAt
       });
     });
     setReactivationQueue(items.sort((a, b) => a.sortTimestamp - b.sortTimestamp));
-  }, [clients, reactivationTemplateDraft]);
+  }, [clients, reactivationTemplateDraft, reactivationTemplate2Draft, reactivationTemplate3Draft]);
 
   const fetchReactivationQueue = useCallback(async () => {
     setReactivationQueueLoading(true);
@@ -488,17 +748,20 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
     void fetchLogs();
     void fetchReactivationStatus();
     void fetchReactivationQueue();
+    void fetchClientPromoStatus();
+    void fetchClientPromoQueue();
 
     const interval = setInterval(() => {
       void fetchStatus();
       void fetchReactivationStatus();
+      void fetchClientPromoStatus();
       if (serverStatus.state === 'connecting' || serverStatus.state === 'qr_ready') {
         void fetchQrCode();
       }
     }, 6000);
 
     return () => clearInterval(interval);
-  }, [fetchStatus, fetchQueue, fetchLogs, serverStatus.state, fetchQrCode, fetchReactivationStatus, fetchReactivationQueue]);
+  }, [fetchStatus, fetchQueue, fetchLogs, serverStatus.state, fetchQrCode, fetchReactivationStatus, fetchReactivationQueue, fetchClientPromoStatus, fetchClientPromoQueue]);
 
   const handleConnect = async () => {
     try {
@@ -589,24 +852,32 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
     }
   };
 
-  const handleSaveReactivationTemplate = async (templateToSave?: string) => {
-    const finalTpl = (templateToSave ?? reactivationTemplateDraft).trim() || DEFAULT_REACTIVATION_TEMPLATE;
+  const handleSaveReactivationTemplate = async () => {
+    const finalTpl1 = reactivationTemplateDraft.trim() || DEFAULT_REACTIVATION_TEMPLATE;
+    const finalTpl2 = reactivationTemplate2Draft.trim() || DEFAULT_REACTIVATION_TEMPLATE_2;
+    const finalTpl3 = reactivationTemplate3Draft.trim() || DEFAULT_REACTIVATION_TEMPLATE_3;
     setConfigSaving(true);
     try {
       const res = await fetch(getApiUrl('/api/whatsapp/scheduler-config'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reactivationTemplate: finalTpl })
+        body: JSON.stringify({
+          reactivationTemplate: finalTpl1,
+          reactivationTemplate2: finalTpl2,
+          reactivationTemplate3: finalTpl3
+        })
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        setReactivationTemplateDraft(finalTpl);
+        setReactivationTemplateDraft(finalTpl1);
+        setReactivationTemplate2Draft(finalTpl2);
+        setReactivationTemplate3Draft(finalTpl3);
         setReactivationTemplateDirty(false);
         if (data.scheduler) setServerStatus((prev) => ({ ...prev, scheduler: data.scheduler }));
         await fetchReactivationQueue();
-        alert('Mensagem promocional salva no servidor!');
+        alert('Mensagens promocionais salvas no servidor!');
       } else {
-        alert('Erro ao salvar mensagem promocional.');
+        alert('Erro ao salvar mensagens promocionais.');
       }
     } catch (e: any) {
       alert('Erro de conexão com o servidor: ' + e?.message);
@@ -616,7 +887,8 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
   };
 
   const handleSendSingleReactivation = async (item: ReactivationQueueItem) => {
-    if (!window.confirm(`Enviar mensagem promocional agora para ${item.clientName} (${item.phoneNumber})?`)) return;
+    const stepLabel = typeof item.currentStep === 'number' ? ` (${item.currentStep}/3)` : '';
+    if (!window.confirm(`Enviar mensagem promocional${stepLabel} agora para ${item.clientName} (${item.phoneNumber})?`)) return;
     setSendingReactivationId(item.clientId);
     try {
       const res = await fetch(getApiUrl('/api/whatsapp/send-reactivation-single'), {
@@ -637,6 +909,80 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
       alert('Erro de conexão: ' + e?.message);
     } finally {
       setSendingReactivationId(null);
+    }
+  };
+
+  const handleTriggerClientPromo = async () => {
+    const limit = serverStatus.scheduler?.clientPromoDailyLimit ?? clientPromoDailyLimitDraft ?? 2;
+    if (!window.confirm(`Deseja disparar a promoção de apps extras ("promo cliente") para até ${limit} cliente(s) ativo(s) agora?`)) return;
+    setClientPromoLoading(true);
+    setReactivationResult(null);
+    try {
+      const res = await fetch(getApiUrl('/api/whatsapp/trigger-client-promo'), { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setReactivationResult({ ok: true, message: `Promo Clientes executada! Enviadas: ${data.sent || 0} | Falhas: ${data.failed || 0}` });
+        await fetchClientPromoStatus();
+        await fetchClientPromoQueue();
+        await fetchLogs();
+      } else {
+        setReactivationResult({ ok: false, message: data.message || 'Erro ao disparar promo clientes.' });
+      }
+    } catch (e: any) {
+      setReactivationResult({ ok: false, message: 'Erro de conexão: ' + (e?.message || 'Servidor offline?') });
+    } finally {
+      setClientPromoLoading(false);
+    }
+  };
+
+  const handleSaveClientPromoTemplate = async () => {
+    const finalTpl = clientPromoTemplateDraft.trim() || DEFAULT_CLIENT_PROMO_TEMPLATE;
+    setConfigSaving(true);
+    try {
+      const res = await fetch(getApiUrl('/api/whatsapp/scheduler-config'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientPromoTemplate: finalTpl })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setClientPromoTemplateDraft(finalTpl);
+        setClientPromoTemplateDirty(false);
+        if (data.scheduler) setServerStatus((prev) => ({ ...prev, scheduler: data.scheduler }));
+        await fetchClientPromoQueue();
+        alert('Mensagem "Promo Cliente" salva no servidor!');
+      } else {
+        alert('Erro ao salvar mensagem.');
+      }
+    } catch (e: any) {
+      alert('Erro de conexão com o servidor: ' + e?.message);
+    } finally {
+      setConfigSaving(false);
+    }
+  };
+
+  const handleSendSingleClientPromo = async (item: ClientPromoQueueItem) => {
+    if (!window.confirm(`Enviar promoção de apps extras (etiqueta "promo cliente") agora para ${item.clientName} (${item.phoneNumber})?`)) return;
+    setSendingClientPromoId(item.clientId);
+    try {
+      const res = await fetch(getApiUrl('/api/whatsapp/send-client-promo-single'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientId: item.clientId })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        alert(data.message || `Enviado para ${item.clientName}!`);
+        await fetchClientPromoStatus();
+        await fetchClientPromoQueue();
+        await fetchLogs();
+      } else {
+        alert('Erro ao enviar: ' + (data?.message || 'Falha no envio'));
+      }
+    } catch (e: any) {
+      alert('Erro de conexão: ' + e?.message);
+    } finally {
+      setSendingClientPromoId(null);
     }
   };
 
@@ -814,6 +1160,30 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
     });
   }, [reactivationQueue, reactivationFilter, reactivationSearch]);
 
+  const clientPromoSummary = useMemo(() => {
+    const pending = clientPromoQueue.filter((i) => !i.alreadySent).length;
+    const sent = clientPromoQueue.filter((i) => i.alreadySent).length;
+    return { total: clientPromoQueue.length, pending, sent };
+  }, [clientPromoQueue]);
+
+  const filteredClientPromoQueue = useMemo(() => {
+    return clientPromoQueue.filter((item) => {
+      if (clientPromoFilter === 'pending' && item.alreadySent) return false;
+      if (clientPromoFilter === 'sent' && !item.alreadySent) return false;
+      if (clientPromoSearch.trim()) {
+        const q = clientPromoSearch.toLowerCase().trim();
+        if (
+          !item.clientName.toLowerCase().includes(q) &&
+          !item.phoneNumber.includes(q) &&
+          !item.missingApps.some((a) => a.label.toLowerCase().includes(q))
+        ) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [clientPromoQueue, clientPromoFilter, clientPromoSearch]);
+
   const stageColor = (stage: string) => {
     if (stage === 'due') return colorMap.red;
     if (stage === 'followup') return colorMap.amber;
@@ -886,10 +1256,359 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
       </div>
 
       {/* ══════════════════════════════════════════
-          ABA: PROMOCIONAIS / REATIVAÇÃO DE EX-CLIENTES
+          ABA: PROMOCIONAIS (EX-CLIENTES & CLIENTES ATIVOS)
       ══════════════════════════════════════════ */}
       {activeTab === 'promotional' && (
         <div className="space-y-6">
+          {/* SELETOR DE CAMPANHA PROMOCIONAL */}
+          <div className="flex flex-wrap items-center gap-2 bg-white dark:bg-slate-900 p-2 rounded-2xl border border-purple-100 dark:border-slate-800 shadow-sm w-fit">
+            <button
+              type="button"
+              onClick={() => setPromoSubTab('reactivation')}
+              className={`px-4 py-2 rounded-xl text-xs font-black uppercase transition-all flex items-center gap-2 ${
+                promoSubTab === 'reactivation'
+                  ? 'bg-purple-600 text-white shadow-sm'
+                  : 'text-gray-500 hover:text-gray-900 dark:hover:text-white'
+              }`}
+            >
+              <Gift size={14} /> Ex-Clientes (Reativação · {reactivationSummary.pending})
+            </button>
+            <button
+              type="button"
+              onClick={() => setPromoSubTab('client_promo')}
+              className={`px-4 py-2 rounded-xl text-xs font-black uppercase transition-all flex items-center gap-2 ${
+                promoSubTab === 'client_promo'
+                  ? 'bg-pink-600 text-white shadow-sm'
+                  : 'text-gray-500 hover:text-gray-900 dark:hover:text-white'
+              }`}
+            >
+              <Heart size={14} /> Clientes Ativos (Apps Extras · {clientPromoSummary.pending})
+            </button>
+          </div>
+
+          {promoSubTab === 'client_promo' && (
+            <div className="space-y-6">
+              {/* RESUMO PROMO CLIENTE */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="p-5 bg-white dark:bg-slate-900 rounded-3xl border border-pink-100 dark:border-slate-800 shadow-sm flex items-center justify-between">
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-wider text-pink-500">Aguardando Envio</p>
+                    <p className="text-2xl font-black text-pink-700 dark:text-pink-400">{clientPromoSummary.pending}</p>
+                    <p className="text-[11px] text-gray-400 font-bold mt-0.5">Clientes ativos com apps faltando</p>
+                  </div>
+                  <div className="p-3 bg-pink-50 text-pink-600 rounded-2xl">
+                    <Heart size={22} />
+                  </div>
+                </div>
+
+                <div className="p-5 bg-white dark:bg-slate-900 rounded-3xl border border-indigo-100 dark:border-slate-800 shadow-sm flex items-center justify-between">
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-wider text-indigo-500">Enviadas Hoje</p>
+                    <p className="text-2xl font-black text-indigo-700 dark:text-indigo-400">
+                      {clientPromoStatus?.sentToday ?? 0} / {serverStatus.scheduler?.clientPromoDailyLimit ?? clientPromoDailyLimitDraft}
+                    </p>
+                    <p className="text-[11px] text-gray-400 font-bold mt-0.5">Etiqueta automática: promo cliente</p>
+                  </div>
+                  <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl">
+                    <Clock size={22} />
+                  </div>
+                </div>
+
+                <div className="p-5 bg-white dark:bg-slate-900 rounded-3xl border border-emerald-100 dark:border-slate-800 shadow-sm flex items-center justify-between">
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-wider text-emerald-500">Já Receberam</p>
+                    <p className="text-2xl font-black text-emerald-700 dark:text-emerald-400">{clientPromoSummary.sent}</p>
+                    <p className="text-[11px] text-gray-400 font-bold mt-0.5">Apaga chat após 7d sem compra</p>
+                  </div>
+                  <div className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl">
+                    <CheckCircle2 size={22} />
+                  </div>
+                </div>
+              </div>
+
+              {/* CONTROLE DIÁRIO PROMO CLIENTE */}
+              <div className="bg-white dark:bg-slate-900 rounded-3xl p-5 shadow-sm border border-pink-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <h4 className="text-sm font-black text-gray-900 dark:text-white">
+                    Quantas clientes ativas devem receber "promo cliente" por dia?
+                  </h4>
+                  <p className="text-xs text-gray-500">
+                    Oferta automática dos apps faltantes (Viki R$ 19,90 · iQIYI R$ 14,90 · Kocowa/WeTV/Youku/DramaBox R$ 9,90) + combo 50% OFF. Válida 1 mês (7 dias para adquirir).
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {[1, 2, 5, 10, 15, 20].map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      disabled={configSaving || serverOnline === false}
+                      onClick={() => {
+                        setClientPromoDailyLimitDraft(preset);
+                        void handleUpdateSchedulerConfig({ clientPromoDailyLimit: preset });
+                      }}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all ${
+                        (serverStatus.scheduler?.clientPromoDailyLimit ?? clientPromoDailyLimitDraft) === preset
+                          ? 'bg-pink-600 text-white shadow-sm'
+                          : 'bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-gray-300 hover:bg-pink-100'
+                      }`}
+                    >
+                      {preset}/dia
+                    </button>
+                  ))}
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={clientPromoDailyLimitDraft}
+                    onChange={(e) => setClientPromoDailyLimitDraft(Math.max(1, Math.min(100, Number(e.target.value) || 1)))}
+                    className="w-20 px-3 py-1.5 bg-gray-50 dark:bg-slate-800 rounded-xl text-xs font-black border border-gray-200 dark:border-slate-700 text-center"
+                  />
+                  <button
+                    type="button"
+                    disabled={configSaving || serverOnline === false}
+                    onClick={() => handleUpdateSchedulerConfig({ clientPromoDailyLimit: clientPromoDailyLimitDraft })}
+                    className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black uppercase disabled:opacity-50"
+                  >
+                    Salvar
+                  </button>
+                </div>
+              </div>
+
+              {/* EDITOR DA MENSAGEM PROMO CLIENTE */}
+              <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-pink-100 dark:border-slate-800 grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div>
+                      <h3 className="text-base font-black text-gray-900 dark:text-white flex items-center gap-2">
+                        <Heart size={18} className="text-pink-600" />
+                        Mensagem "Promo Cliente" (Editável)
+                      </h3>
+                      <p className="text-xs text-gray-500">
+                        Variáveis: <code className="bg-gray-100 dark:bg-slate-800 px-1 rounded font-bold">{'{nome}'}</code>{' '}
+                        <code className="bg-gray-100 dark:bg-slate-800 px-1 rounded font-bold">{'{apps_atuais}'}</code>{' '}
+                        <code className="bg-gray-100 dark:bg-slate-800 px-1 rounded font-bold">{'{lista_ofertas}'}</code>{' '}
+                        <code className="bg-gray-100 dark:bg-slate-800 px-1 rounded font-bold">{'{bloco_combo_50}'}</code>
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setClientPromoTemplateDraft(DEFAULT_CLIENT_PROMO_TEMPLATE);
+                        setClientPromoTemplateDirty(true);
+                      }}
+                      className="text-xs font-bold text-gray-500 hover:text-pink-600 underline"
+                    >
+                      Restaurar padrão
+                    </button>
+                  </div>
+
+                  <textarea
+                    rows={8}
+                    value={clientPromoTemplateDraft}
+                    onChange={(e) => {
+                      setClientPromoTemplateDraft(e.target.value);
+                      setClientPromoTemplateDirty(true);
+                    }}
+                    className="w-full p-3.5 bg-gray-50 dark:bg-slate-800 rounded-2xl text-xs font-semibold border border-gray-200 dark:border-slate-700 outline-none focus:border-pink-400 leading-relaxed"
+                  />
+
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <span className="text-[11px] font-bold text-gray-400">
+                      {clientPromoTemplateDirty ? '⚠️ Alterações não salvas' : '✅ Sincronizado com o servidor'}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={configSaving || serverOnline === false}
+                      onClick={() => handleSaveClientPromoTemplate()}
+                      className="px-5 py-2.5 rounded-2xl bg-pink-600 hover:bg-pink-700 text-white font-black text-xs uppercase transition-all shadow-md disabled:opacity-50"
+                    >
+                      {configSaving ? 'Salvando...' : 'Salvar Mensagem Promo Cliente'}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <p className="text-xs font-black uppercase text-gray-500">Prévia no WhatsApp (exemplo com Viki Pass ativo)</p>
+                  <div className="bg-[#e5ddd5] dark:bg-slate-700 rounded-3xl p-4 min-h-[230px]">
+                    <div className="bg-white dark:bg-slate-800 rounded-2xl rounded-tl-none p-3.5 max-w-[92%] shadow-sm">
+                      <p className="text-xs text-gray-800 dark:text-gray-200 leading-relaxed whitespace-pre-wrap">
+                        {(clientPromoTemplateDraft || DEFAULT_CLIENT_PROMO_TEMPLATE)
+                          .replace(/\{nome\}/gi, 'Maria')
+                          .replace(/\{apps_atuais\}/gi, 'Viki Pass')
+                          .replace(
+                            /\{lista_ofertas\}/gi,
+                            '• *iQIYI*: R$ 14,90/mês\n• *Kocowa*: R$ 9,90/mês\n• *WeTV*: R$ 9,90/mês\n• *Youku*: R$ 9,90/mês\n• *DramaBox*: R$ 9,90/mês'
+                          )
+                          .replace(
+                            /\{bloco_combo_50\}/gi,
+                            '\n🎁 *E se quiser levar TODOS os 5 apps que faltam:* você ganha *50% de desconto* sobre o valor original — de R$ 87,50 por apenas *R$ 43,75*!\n'
+                          )
+                          .replace(/\{valor_original_combo\}/gi, 'R$ 87,50')
+                          .replace(/\{valor_combo_50\}/gi, 'R$ 43,75')}
+                      </p>
+                      <p className="text-[10px] text-gray-400 text-right mt-1.5">15:00 ✓✓</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* BARRA DE AÇÕES E FILTROS PROMO CLIENTE */}
+              <div className="bg-white dark:bg-slate-900 rounded-3xl p-4 shadow-sm border border-gray-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  {[
+                    { id: 'pending', label: `Pendentes (${clientPromoSummary.pending})` },
+                    { id: 'sent', label: `Já Enviadas (${clientPromoSummary.sent})` },
+                    { id: 'all', label: `Todas (${clientPromoSummary.total})` }
+                  ].map((f) => (
+                    <button
+                      key={f.id}
+                      onClick={() => setClientPromoFilter(f.id as any)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-black uppercase transition-all ${
+                        clientPromoFilter === f.id
+                          ? 'bg-pink-600 text-white shadow-sm'
+                          : 'bg-gray-100 dark:bg-slate-800 text-gray-500 hover:text-gray-900'
+                      }`}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  <input
+                    type="text"
+                    value={clientPromoSearch}
+                    onChange={(e) => setClientPromoSearch(e.target.value)}
+                    placeholder="Buscar cliente, número ou app..."
+                    className="px-4 py-2 bg-gray-50 dark:bg-slate-800 rounded-xl text-xs font-bold border border-gray-200 dark:border-slate-700 outline-none w-56"
+                  />
+                  <button
+                    onClick={fetchClientPromoQueue}
+                    disabled={clientPromoQueueLoading}
+                    className="px-3.5 py-2 rounded-xl bg-gray-100 dark:bg-slate-800 text-gray-700 dark:text-gray-200 font-black text-xs uppercase flex items-center gap-1.5"
+                  >
+                    <RefreshCw size={14} className={clientPromoQueueLoading ? 'animate-spin' : ''} /> Atualizar
+                  </button>
+                  <button
+                    onClick={handleTriggerClientPromo}
+                    disabled={clientPromoLoading || serverStatus.state !== 'connected' || clientPromoSummary.pending === 0}
+                    className="px-4 py-2 rounded-xl bg-pink-600 hover:bg-pink-700 text-white font-black text-xs uppercase shadow-md disabled:opacity-50 flex items-center gap-1.5"
+                  >
+                    <Heart size={14} /> {clientPromoLoading ? 'Enviando...' : `Disparar ${serverStatus.scheduler?.clientPromoDailyLimit ?? clientPromoDailyLimitDraft} Próximas`}
+                  </button>
+                </div>
+              </div>
+
+              <div className="bg-pink-50/70 dark:bg-pink-950/20 border border-pink-200 dark:border-pink-800/40 rounded-2xl px-4 py-3 text-xs font-semibold text-pink-900 dark:text-pink-200">
+                📌 <strong>Ordem de envio:</strong> Clientes ativas ordenadas das <strong>mais antigas para as mais recentes</strong>. Etiqueta automática: <strong>promo cliente</strong>. Se não comprar nenhum app ofertado em 7 dias, a conversa é apagada automaticamente.
+              </div>
+
+              {filteredClientPromoQueue.length === 0 ? (
+                <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-12 text-center border border-dashed border-gray-200 dark:border-slate-800 space-y-2">
+                  <Heart size={36} className="text-pink-400 mx-auto" />
+                  <p className="text-sm font-black text-gray-800 dark:text-white">Nenhuma cliente encontrada neste filtro</p>
+                  <p className="text-xs text-gray-400">Clientes que já possuem todos os 6 apps não entram na fila.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {filteredClientPromoQueue.map((item, idx) => {
+                    const isExpanded = clientPromoExpandedId === item.clientId;
+                    const isSending = sendingClientPromoId === item.clientId;
+                    return (
+                      <div
+                        key={item.clientId}
+                        className={`rounded-3xl border p-5 space-y-3 transition-all ${
+                          item.alreadySent
+                            ? 'bg-emerald-50/30 dark:bg-emerald-950/10 border-emerald-200 dark:border-emerald-800/40'
+                            : 'bg-white dark:bg-slate-900 border-pink-100 dark:border-slate-800 shadow-sm'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              {!item.alreadySent && (
+                                <span className="px-2 py-0.5 rounded-full bg-pink-100 text-pink-800 text-[10px] font-black">
+                                  #{idx + 1}
+                                </span>
+                              )}
+                              <p className="font-black text-gray-900 dark:text-white text-sm">{item.clientName}</p>
+                            </div>
+                            <p className="text-xs font-semibold text-gray-500 mt-0.5">{item.phoneNumber}</p>
+                            <p className="text-[11px] text-gray-500 font-bold mt-1">
+                              Já tem: <span className="text-indigo-600">{item.ownedApps.join(', ') || '—'}</span>
+                            </p>
+                            <p className="text-[11px] text-gray-500 font-bold">
+                              Faltam ({item.missingApps.length}):{' '}
+                              <span className="text-pink-600">
+                                {item.missingApps.map((a) => `${a.label} (R$ ${a.promoPrice.toFixed(2).replace('.', ',')})`).join(' · ')}
+                              </span>
+                            </p>
+                            <p className="text-[11px] text-emerald-700 font-black">
+                              Combo 50% OFF: R$ {item.combo50Price.toFixed(2).replace('.', ',')} (original R$ {item.originalTotal.toFixed(2).replace('.', ',')})
+                            </p>
+                          </div>
+
+                          {item.chatDeletedAt ? (
+                            <span className="px-3 py-1 rounded-full bg-gray-200 text-gray-700 font-black text-[10px] uppercase flex items-center gap-1 shrink-0">
+                              <CheckCircle2 size={12} /> Conversa Apagada
+                            </span>
+                          ) : item.purchasedAt ? (
+                            <span className="px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 font-black text-[10px] uppercase flex items-center gap-1 shrink-0">
+                              <CheckCircle2 size={12} /> Comprou!
+                            </span>
+                          ) : item.alreadySent ? (
+                            <span className="px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 font-black text-[10px] uppercase flex items-center gap-1 shrink-0">
+                              <CheckCircle2 size={12} /> Enviado {item.sentAt ? new Date(item.sentAt).toLocaleDateString('pt-BR') : ''}
+                            </span>
+                          ) : (
+                            <span className="px-3 py-1 rounded-full bg-pink-100 text-pink-800 font-black text-[10px] uppercase flex items-center gap-1 shrink-0">
+                              <Clock size={12} /> Na Fila
+                            </span>
+                          )}
+                        </div>
+
+                        <div>
+                          <div className="text-[11px] font-semibold text-gray-600 dark:text-gray-300 leading-relaxed p-3 rounded-2xl bg-pink-50/50 dark:bg-slate-800/60 border border-pink-100 dark:border-slate-700 whitespace-pre-wrap">
+                            {isExpanded ? item.message : `${item.message.slice(0, 140)}...`}
+                          </div>
+                          <button
+                            onClick={() => setClientPromoExpandedId(isExpanded ? null : item.clientId)}
+                            className="text-[11px] font-bold text-pink-600 hover:text-pink-800 mt-1.5 flex items-center gap-1"
+                          >
+                            {isExpanded ? <><EyeOff size={12} /> Recolher mensagem</> : <><Eye size={12} /> Ver mensagem completa</>}
+                          </button>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-2 pt-1">
+                          <button
+                            onClick={() => handleCopyMessage(item.message, `cpromo-${item.clientId}`)}
+                            className="p-2 rounded-xl bg-gray-100 dark:bg-slate-800 text-gray-600 hover:text-pink-600 font-bold text-xs flex items-center gap-1.5"
+                          >
+                            {copiedId === `cpromo-${item.clientId}` ? <Check size={14} className="text-emerald-600" /> : <Copy size={14} />}
+                            {copiedId === `cpromo-${item.clientId}` ? 'Copiado!' : 'Copiar'}
+                          </button>
+
+                          {!item.alreadySent && (
+                            <button
+                              onClick={() => handleSendSingleClientPromo(item)}
+                              disabled={isSending || serverStatus.state !== 'connected'}
+                              className="px-4 py-2 rounded-xl bg-pink-600 hover:bg-pink-700 text-white font-black text-xs uppercase flex items-center gap-1.5 shadow-md disabled:opacity-40"
+                            >
+                              {isSending ? <RefreshCw size={14} className="animate-spin" /> : <Send size={14} />}
+                              {isSending ? 'Enviando...' : 'Enviar Agora'}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {promoSubTab === 'reactivation' && (
+          <>
           {/* RESUMO */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="p-5 bg-white dark:bg-slate-900 rounded-3xl border border-purple-100 dark:border-slate-800 shadow-sm flex items-center justify-between">
@@ -976,36 +1695,68 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
             </div>
           </div>
 
-          {/* EDITOR DA MENSAGEM PROMOCIONAL */}
+          {/* EDITOR DAS 3 MENSAGENS PROMOCIONAIS */}
           <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-purple-100 dark:border-slate-800 grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="space-y-3">
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <div>
                   <h3 className="text-base font-black text-gray-900 dark:text-white flex items-center gap-2">
                     <Gift size={18} className="text-purple-600" />
-                    Mensagem Promocional Enviada
+                    Funil de 3 Mensagens Promocionais
                   </h3>
                   <p className="text-xs text-gray-500">
-                    Use <code className="bg-gray-100 dark:bg-slate-800 px-1.5 py-0.5 rounded font-bold">{'{nome}'}</code> para inserir automaticamente o nome do ex-cliente.
+                    Use <code className="bg-gray-100 dark:bg-slate-800 px-1.5 py-0.5 rounded font-bold">{'{nome}'}</code> para inserir o nome. A Msg 2 sai 1 dia útil após a 1ª; a Msg 3 sai 1 dia útil após a 2ª.
                   </p>
                 </div>
                 <button
                   type="button"
                   onClick={() => {
-                    setReactivationTemplateDraft(DEFAULT_REACTIVATION_TEMPLATE);
+                    if (activePromoTemplateStep === 1) setReactivationTemplateDraft(DEFAULT_REACTIVATION_TEMPLATE);
+                    if (activePromoTemplateStep === 2) setReactivationTemplate2Draft(DEFAULT_REACTIVATION_TEMPLATE_2);
+                    if (activePromoTemplateStep === 3) setReactivationTemplate3Draft(DEFAULT_REACTIVATION_TEMPLATE_3);
                     setReactivationTemplateDirty(true);
                   }}
                   className="text-xs font-bold text-gray-500 hover:text-purple-600 underline"
                 >
-                  Restaurar padrão
+                  Restaurar padrão (Msg {activePromoTemplateStep})
                 </button>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { step: 1 as const, label: '1ª Msg · Interesse' },
+                  { step: 2 as const, label: '2ª Msg · R$ 29,90 (1 dia útil)' },
+                  { step: 3 as const, label: '3ª Msg · R$ 24,90 (1 dia útil)' }
+                ].map((tab) => (
+                  <button
+                    key={tab.step}
+                    type="button"
+                    onClick={() => setActivePromoTemplateStep(tab.step)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all ${
+                      activePromoTemplateStep === tab.step
+                        ? 'bg-purple-600 text-white shadow-sm'
+                        : 'bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-gray-300 hover:bg-purple-100'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
               </div>
 
               <textarea
                 rows={7}
-                value={reactivationTemplateDraft}
+                value={
+                  activePromoTemplateStep === 1
+                    ? reactivationTemplateDraft
+                    : activePromoTemplateStep === 2
+                      ? reactivationTemplate2Draft
+                      : reactivationTemplate3Draft
+                }
                 onChange={(e) => {
-                  setReactivationTemplateDraft(e.target.value);
+                  const val = e.target.value;
+                  if (activePromoTemplateStep === 1) setReactivationTemplateDraft(val);
+                  if (activePromoTemplateStep === 2) setReactivationTemplate2Draft(val);
+                  if (activePromoTemplateStep === 3) setReactivationTemplate3Draft(val);
                   setReactivationTemplateDirty(true);
                 }}
                 className="w-full p-3.5 bg-gray-50 dark:bg-slate-800 rounded-2xl text-xs font-semibold border border-gray-200 dark:border-slate-700 outline-none focus:border-purple-400 leading-relaxed"
@@ -1021,17 +1772,25 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
                   onClick={() => handleSaveReactivationTemplate()}
                   className="px-5 py-2.5 rounded-2xl bg-purple-600 hover:bg-purple-700 text-white font-black text-xs uppercase transition-all shadow-md disabled:opacity-50"
                 >
-                  {configSaving ? 'Salvando...' : 'Salvar Mensagem Promocional'}
+                  {configSaving ? 'Salvando...' : 'Salvar Mensagens Promocionais'}
                 </button>
               </div>
             </div>
 
             <div className="space-y-3">
-              <p className="text-xs font-black uppercase text-gray-500">Prévia no WhatsApp (como o cliente recebe)</p>
+              <p className="text-xs font-black uppercase text-gray-500">
+                Prévia no WhatsApp · Mensagem {activePromoTemplateStep}/3
+              </p>
               <div className="bg-[#e5ddd5] dark:bg-slate-700 rounded-3xl p-4 min-h-[210px]">
                 <div className="bg-white dark:bg-slate-800 rounded-2xl rounded-tl-none p-3.5 max-w-[92%] shadow-sm">
                   <p className="text-xs text-gray-800 dark:text-gray-200 leading-relaxed whitespace-pre-wrap">
-                    {(reactivationTemplateDraft || DEFAULT_REACTIVATION_TEMPLATE).replace(/\{nome\}/gi, 'Maria')}
+                    {(
+                      activePromoTemplateStep === 1
+                        ? reactivationTemplateDraft || DEFAULT_REACTIVATION_TEMPLATE
+                        : activePromoTemplateStep === 2
+                          ? reactivationTemplate2Draft || DEFAULT_REACTIVATION_TEMPLATE_2
+                          : reactivationTemplate3Draft || DEFAULT_REACTIVATION_TEMPLATE_3
+                    ).replace(/\{nome\}/gi, 'Maria')}
                   </p>
                   <p className="text-[10px] text-gray-400 text-right mt-1.5">15:00 ✓✓</p>
                 </div>
@@ -1128,13 +1887,17 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
                         </p>
                       </div>
 
-                      {item.alreadySent ? (
+                      {item.currentStep === 'chat_deleted' ? (
+                        <span className="px-3 py-1 rounded-full bg-gray-200 text-gray-700 font-black text-[10px] uppercase flex items-center gap-1 shrink-0">
+                          <CheckCircle2 size={12} /> Conversa Apagada
+                        </span>
+                      ) : item.alreadySent ? (
                         <span className="px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 font-black text-[10px] uppercase flex items-center gap-1 shrink-0">
-                          <CheckCircle2 size={12} /> Enviado {item.sentAt ? new Date(item.sentAt).toLocaleDateString('pt-BR') : ''}
+                          <CheckCircle2 size={12} /> 3/3 Enviadas {item.nextEligibleDate ? `· Apaga ${item.nextEligibleDate.split('-').reverse().join('/')}` : ''}
                         </span>
                       ) : (
                         <span className="px-3 py-1 rounded-full bg-purple-100 text-purple-800 font-black text-[10px] uppercase flex items-center gap-1 shrink-0">
-                          <Clock size={12} /> Na Fila
+                          <Clock size={12} /> Etapa {item.currentStep || 1}/3 {item.nextEligibleDate && !item.eligibleNow ? `· ${item.nextEligibleDate.split('-').reverse().join('/')}` : '· Na Fila'}
                         </span>
                       )}
                     </div>
@@ -1175,6 +1938,8 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
                 );
               })}
             </div>
+          )}
+          </>
           )}
         </div>
       )}
