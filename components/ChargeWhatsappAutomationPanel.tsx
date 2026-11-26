@@ -53,9 +53,20 @@ type WhatsAppServerStatus = {
     reactivationTemplate?: string;
     reactivationTemplate2?: string;
     reactivationTemplate3?: string;
+    reactivationStep2Price?: number;
+    reactivationStep3Price?: number;
     enableClientPromo?: boolean;
     clientPromoDailyLimit?: number;
     clientPromoTemplate?: string;
+    clientPromoDiscountPercent?: number;
+    clientPromoPrices?: {
+      viki: number;
+      iqiyi: number;
+      kocowa: number;
+      wetv: number;
+      youku: number;
+      dramabox: number;
+    };
     targetHour: number;
     targetMinute: number;
     isRunning: boolean;
@@ -101,7 +112,7 @@ const DEFAULT_REACTIVATION_TEMPLATE_2 = `Olá, {nome}! Tudo bem? 🌸
 
 Passando para te apresentar a nossa promoção especial de retorno na *EuDorama*! 🎁
 
-Você pode garantir o combo *Viki Pass + Kocowa Plus + WeTV VIP por R$ 29,90*! ✨
+Você pode garantir o combo *Viki Pass + Kocowa Plus + WeTV VIP por {valor_etapa2}*! ✨
 
 Essa promoção é válida durante *3 meses* para você aproveitar os 3 apps pagando bem menos. 💜🍿
 
@@ -111,7 +122,7 @@ const DEFAULT_REACTIVATION_TEMPLATE_3 = `Olá, {nome}! Tudo bem? 🌸
 
 Como queremos muito te ver maratonando com a gente de novo na *EuDorama*, conseguimos aumentar ainda mais o desconto para você! 🎁✨
 
-O combo *Viki Pass + Kocowa Plus + WeTV VIP* caiu de R$ 29,90 para apenas *R$ 24,90*! 😱💜
+O combo *Viki Pass + Kocowa Plus + WeTV VIP* caiu de {valor_etapa2} para apenas *{valor_etapa3}*! 😱💜
 
 A promoção continua válida por *3 meses* nos 3 apps, e você tem um prazo de até *7 dias* para realizar a compra com esse valor especial. ⏳🍿
 
@@ -330,6 +341,18 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
   const [clientPromoDailyLimitDraft, setClientPromoDailyLimitDraft] = useState<number>(2);
   const [clientPromoExpandedId, setClientPromoExpandedId] = useState<string | null>(null);
   const [sendingClientPromoId, setSendingClientPromoId] = useState<string | null>(null);
+  const [reactivationStep2PriceDraft, setReactivationStep2PriceDraft] = useState<number>(29.9);
+  const [reactivationStep3PriceDraft, setReactivationStep3PriceDraft] = useState<number>(24.9);
+  const [clientPromoDiscountDraft, setClientPromoDiscountDraft] = useState<number>(30);
+  const [clientPromoPricesDraft, setClientPromoPricesDraft] = useState({
+    viki: 19.9,
+    iqiyi: 14.9,
+    kocowa: 9.9,
+    wetv: 9.9,
+    youku: 9.9,
+    dramabox: 9.9
+  });
+  const [promoValuesDirty, setPromoValuesDirty] = useState(false);
 
   // Configuração de URL do motor
   const [motorBaseUrl, setMotorBaseUrl] = useState<string>(() => {
@@ -371,13 +394,27 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
         if (typeof data.scheduler?.clientPromoDailyLimit === 'number') {
           setClientPromoDailyLimitDraft(data.scheduler.clientPromoDailyLimit);
         }
+        if (!promoValuesDirty) {
+          if (typeof data.scheduler?.reactivationStep2Price === 'number') {
+            setReactivationStep2PriceDraft(data.scheduler.reactivationStep2Price);
+          }
+          if (typeof data.scheduler?.reactivationStep3Price === 'number') {
+            setReactivationStep3PriceDraft(data.scheduler.reactivationStep3Price);
+          }
+          if (typeof data.scheduler?.clientPromoDiscountPercent === 'number') {
+            setClientPromoDiscountDraft(data.scheduler.clientPromoDiscountPercent);
+          }
+          if (data.scheduler?.clientPromoPrices) {
+            setClientPromoPricesDraft((prev) => ({ ...prev, ...data.scheduler.clientPromoPrices }));
+          }
+        }
       } else {
         setServerOnline(false);
       }
     } catch {
       setServerOnline(false);
     }
-  }, [getApiUrl, reactivationTemplateDirty, clientPromoTemplateDirty]);
+  }, [getApiUrl, reactivationTemplateDirty, clientPromoTemplateDirty, promoValuesDirty]);
 
   const fetchClientPromoStatus = useCallback(async () => {
     try {
@@ -416,13 +453,14 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
         .map((app) => ({
           key: app.key,
           label: app.label,
-          promoPrice: app.promoPrice,
+          promoPrice: Number((clientPromoPricesDraft[app.key] ?? app.promoPrice).toFixed(2)),
           originalPrice: getServicePrice(app.label, 1)
         }));
       if (missingApps.length === 0) return;
 
       const originalTotal = missingApps.reduce((acc, a) => acc + a.originalPrice, 0);
-      const combo50Price = Number((originalTotal * 0.5).toFixed(2));
+      const discountPct = Math.min(95, Math.max(1, Math.round(clientPromoDiscountDraft || 30)));
+      const combo50Price = Number((originalTotal * (1 - discountPct / 100)).toFixed(2));
       const progress = c.game_progress || {};
       const sentAt: string | null = progress._client_promo_sent_at || null;
       const chatDeletedAt: string | null = progress._client_promo_chat_deleted_at || null;
@@ -442,8 +480,8 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
       const listaOfertas = missingApps.map((a) => `• *${a.label}*: ${formatBrl(a.promoPrice)}/mês`).join('\n');
       const blocoCombo50 =
         missingApps.length >= 2
-          ? `\n🎁 *E se quiser levar TODOS os ${missingApps.length} apps que faltam:* você ganha *50% de desconto* sobre o valor original — de ${formatBrl(originalTotal)} por apenas *${formatBrl(combo50Price)}*!\n`
-          : `\n🎁 *Ou com 50% de desconto do valor original:* de ${formatBrl(originalTotal)} por apenas *${formatBrl(combo50Price)}*!\n`;
+          ? `\n🎁 *E se quiser levar TODOS os ${missingApps.length} apps que faltam:* você ganha *${discountPct}% de desconto* sobre o valor original — de ${formatBrl(originalTotal)} por apenas *${formatBrl(combo50Price)}*!\n`
+          : `\n🎁 *Ou com ${discountPct}% de desconto do valor original:* de ${formatBrl(originalTotal)} por apenas *${formatBrl(combo50Price)}*!\n`;
       const msg = (clientPromoTemplateDraft || DEFAULT_CLIENT_PROMO_TEMPLATE)
         .trim()
         .replace(/\{nome\}/gi, displayName)
@@ -451,7 +489,10 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
         .replace(/\{lista_ofertas\}/gi, listaOfertas)
         .replace(/\{valor_original_combo\}/gi, formatBrl(originalTotal))
         .replace(/\{valor_combo_50\}/gi, formatBrl(combo50Price))
-        .replace(/\{bloco_combo_50\}/gi, blocoCombo50);
+        .replace(/\{valor_combo\}/gi, formatBrl(combo50Price))
+        .replace(/\{porcentagem_desconto\}/gi, `${discountPct}%`)
+        .replace(/\{bloco_combo_50\}/gi, blocoCombo50)
+        .replace(/\{bloco_combo\}/gi, blocoCombo50);
 
       items.push({
         clientId: c.id,
@@ -472,7 +513,7 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
       });
     });
     setClientPromoQueue(items.sort((a, b) => a.sortTimestamp - b.sortTimestamp));
-  }, [clients, clientPromoTemplateDraft]);
+  }, [clients, clientPromoTemplateDraft, clientPromoPricesDraft, clientPromoDiscountDraft]);
 
   const fetchClientPromoQueue = useCallback(async () => {
     setClientPromoQueueLoading(true);
@@ -551,7 +592,14 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
 
       const rawName = String(c.client_name || '').trim();
       const displayName = rawName && rawName.toLowerCase() !== 'null' && rawName.toLowerCase() !== 'sem nome' ? rawName : 'Dorameira';
-      const msg = tpl.trim().replace(/\{nome\}/gi, displayName);
+      const v2Fmt = reactivationStep2PriceDraft.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+      const v3Fmt = reactivationStep3PriceDraft.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+      const msg = tpl
+        .trim()
+        .replace(/\{nome\}/gi, displayName)
+        .replace(/\{valor_etapa2\}/gi, v2Fmt)
+        .replace(/\{valor_etapa3\}/gi, v3Fmt)
+        .replace(/\{valor\}/gi, currentStep === 3 ? v3Fmt : v2Fmt);
       items.push({
         clientId: c.id,
         clientName: displayName,
@@ -569,7 +617,7 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
       });
     });
     setReactivationQueue(items.sort((a, b) => a.sortTimestamp - b.sortTimestamp));
-  }, [clients, reactivationTemplateDraft, reactivationTemplate2Draft, reactivationTemplate3Draft]);
+  }, [clients, reactivationTemplateDraft, reactivationTemplate2Draft, reactivationTemplate3Draft, reactivationStep2PriceDraft, reactivationStep3PriceDraft]);
 
   const fetchReactivationQueue = useCallback(async () => {
     setReactivationQueueLoading(true);
@@ -961,6 +1009,43 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
     }
   };
 
+  const handleSavePromoValues = async () => {
+    setConfigSaving(true);
+    try {
+      const payload = {
+        reactivationStep2Price: Number(reactivationStep2PriceDraft) || 29.9,
+        reactivationStep3Price: Number(reactivationStep3PriceDraft) || 24.9,
+        clientPromoDiscountPercent: Math.min(95, Math.max(1, Math.round(Number(clientPromoDiscountDraft) || 30))),
+        clientPromoPrices: {
+          viki: Number(clientPromoPricesDraft.viki) || 19.9,
+          iqiyi: Number(clientPromoPricesDraft.iqiyi) || 14.9,
+          kocowa: Number(clientPromoPricesDraft.kocowa) || 9.9,
+          wetv: Number(clientPromoPricesDraft.wetv) || 9.9,
+          youku: Number(clientPromoPricesDraft.youku) || 9.9,
+          dramabox: Number(clientPromoPricesDraft.dramabox) || 9.9
+        }
+      };
+      const res = await fetch(getApiUrl('/api/whatsapp/scheduler-config'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setPromoValuesDirty(false);
+        if (data.scheduler) setServerStatus((prev) => ({ ...prev, scheduler: data.scheduler }));
+        await Promise.all([fetchReactivationQueue(), fetchClientPromoQueue()]);
+        alert('Valores e porcentagens promocionais salvos no servidor!');
+      } else {
+        alert('Erro ao salvar valores promocionais.');
+      }
+    } catch (e: any) {
+      alert('Erro de conexão com o servidor: ' + e?.message);
+    } finally {
+      setConfigSaving(false);
+    }
+  };
+
   const handleSendSingleClientPromo = async (item: ClientPromoQueueItem) => {
     if (!window.confirm(`Enviar promoção de apps extras (etiqueta "promo cliente") agora para ${item.clientName} (${item.phoneNumber})?`)) return;
     setSendingClientPromoId(item.clientId);
@@ -1333,7 +1418,7 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
                     Quantas clientes ativas devem receber "promo cliente" por dia?
                   </h4>
                   <p className="text-xs text-gray-500">
-                    Oferta automática dos apps faltantes (Viki R$ 19,90 · iQIYI R$ 14,90 · Kocowa/WeTV/Youku/DramaBox R$ 9,90) + combo 50% OFF. Válida 1 mês (7 dias para adquirir).
+                    Oferta automática dos apps faltantes (Viki R$ {clientPromoPricesDraft.viki.toFixed(2).replace('.', ',')} · iQIYI R$ {clientPromoPricesDraft.iqiyi.toFixed(2).replace('.', ',')} · demais R$ {clientPromoPricesDraft.kocowa.toFixed(2).replace('.', ',')}) + combo {clientPromoDiscountDraft}% OFF. Válida 1 mês (7 dias para adquirir).
                   </p>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
@@ -1371,6 +1456,72 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
                   >
                     Salvar
                   </button>
+                </div>
+              </div>
+
+              {/* VALORES DOS APPS E PORCENTAGEM DO COMBO */}
+              <div className="bg-white dark:bg-slate-900 rounded-3xl p-5 shadow-sm border border-pink-100 dark:border-slate-800 space-y-4">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div>
+                    <h4 className="text-sm font-black text-gray-900 dark:text-white">
+                      Valores dos Apps (R$) e Desconto do Combo (%)
+                    </h4>
+                    <p className="text-xs text-gray-500">
+                      Altere aqui apenas os valores de cada app e a porcentagem de desconto do combo sem precisar editar o texto da mensagem.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={configSaving || serverOnline === false}
+                    onClick={handleSavePromoValues}
+                    className="px-4 py-2 rounded-xl bg-pink-600 hover:bg-pink-700 text-white text-xs font-black uppercase shadow-sm disabled:opacity-50"
+                  >
+                    {configSaving ? 'Salvando...' : 'Salvar Valores e %'}
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+                  {(
+                    [
+                      { key: 'viki', label: 'Viki Pass (R$)' },
+                      { key: 'iqiyi', label: 'iQIYI (R$)' },
+                      { key: 'kocowa', label: 'Kocowa (R$)' },
+                      { key: 'wetv', label: 'WeTV (R$)' },
+                      { key: 'youku', label: 'Youku (R$)' },
+                      { key: 'dramabox', label: 'DramaBox (R$)' }
+                    ] as const
+                  ).map((field) => (
+                    <div key={field.key} className="space-y-1">
+                      <label className="block text-[10px] font-black uppercase text-gray-500">{field.label}</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="1"
+                        value={clientPromoPricesDraft[field.key]}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          setClientPromoPricesDraft((prev) => ({ ...prev, [field.key]: isNaN(val) ? 0 : val }));
+                          setPromoValuesDirty(true);
+                        }}
+                        className="w-full px-3 py-2 bg-gray-50 dark:bg-slate-800 rounded-xl text-xs font-black border border-gray-200 dark:border-slate-700 outline-none focus:border-pink-400"
+                      />
+                    </div>
+                  ))}
+                  <div className="space-y-1">
+                    <label className="block text-[10px] font-black uppercase text-pink-600">Desconto Combo (%)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="95"
+                      value={clientPromoDiscountDraft}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value, 10);
+                        setClientPromoDiscountDraft(isNaN(val) ? 1 : Math.min(95, Math.max(1, val)));
+                        setPromoValuesDirty(true);
+                      }}
+                      className="w-full px-3 py-2 bg-pink-50 dark:bg-pink-950/30 rounded-xl text-xs font-black border border-pink-200 dark:border-pink-800 text-pink-700 dark:text-pink-300 outline-none focus:border-pink-500"
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -1437,14 +1588,14 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
                           .replace(/\{apps_atuais\}/gi, 'Viki Pass')
                           .replace(
                             /\{lista_ofertas\}/gi,
-                            '• *iQIYI*: R$ 14,90/mês\n• *Kocowa*: R$ 9,90/mês\n• *WeTV*: R$ 9,90/mês\n• *Youku*: R$ 9,90/mês\n• *DramaBox*: R$ 9,90/mês'
+                            `• *iQIYI*: R$ ${clientPromoPricesDraft.iqiyi.toFixed(2).replace('.', ',')}/mês\n• *Kocowa*: R$ ${clientPromoPricesDraft.kocowa.toFixed(2).replace('.', ',')}/mês\n• *WeTV*: R$ ${clientPromoPricesDraft.wetv.toFixed(2).replace('.', ',')}/mês\n• *Youku*: R$ ${clientPromoPricesDraft.youku.toFixed(2).replace('.', ',')}/mês\n• *DramaBox*: R$ ${clientPromoPricesDraft.dramabox.toFixed(2).replace('.', ',')}/mês`
                           )
                           .replace(
                             /\{bloco_combo_50\}/gi,
-                            '\n🎁 *E se quiser levar TODOS os 5 apps que faltam:* você ganha *50% de desconto* sobre o valor original — de R$ 87,50 por apenas *R$ 43,75*!\n'
+                            `\n🎁 *E se quiser levar TODOS os 5 apps que faltam:* você ganha *${clientPromoDiscountDraft}% de desconto* sobre o valor original — de R$ 87,50 por apenas *R$ ${(87.5 * (1 - clientPromoDiscountDraft / 100)).toFixed(2).replace('.', ',')}*!\n`
                           )
                           .replace(/\{valor_original_combo\}/gi, 'R$ 87,50')
-                          .replace(/\{valor_combo_50\}/gi, 'R$ 43,75')}
+                          .replace(/\{valor_combo_50\}/gi, `R$ ${(87.5 * (1 - clientPromoDiscountDraft / 100)).toFixed(2).replace('.', ',')}`)}
                       </p>
                       <p className="text-[10px] text-gray-400 text-right mt-1.5">15:00 ✓✓</p>
                     </div>
@@ -1544,7 +1695,7 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
                               </span>
                             </p>
                             <p className="text-[11px] text-emerald-700 font-black">
-                              Combo 50% OFF: R$ {item.combo50Price.toFixed(2).replace('.', ',')} (original R$ {item.originalTotal.toFixed(2).replace('.', ',')})
+                              Combo {clientPromoDiscountDraft}% OFF: R$ {item.combo50Price.toFixed(2).replace('.', ',')} (original R$ {item.originalTotal.toFixed(2).replace('.', ',')})
                             </p>
                           </div>
 
@@ -1695,6 +1846,58 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
             </div>
           </div>
 
+          {/* VALORES DA PROMOÇÃO DE REATIVAÇÃO */}
+          <div className="bg-white dark:bg-slate-900 rounded-3xl p-5 shadow-sm border border-purple-100 dark:border-slate-800 flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <h4 className="text-sm font-black text-gray-900 dark:text-white">
+                Valores da Promoção de Reativação (R$)
+              </h4>
+              <p className="text-xs text-gray-500">
+                Altere apenas os valores das etapas 2 e 3 (3 apps por 3 meses).
+              </p>
+            </div>
+            <div className="flex items-end gap-3 flex-wrap">
+              <div className="space-y-1">
+                <label className="block text-[10px] font-black uppercase text-gray-500">2ª Mensagem (R$)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="1"
+                  value={reactivationStep2PriceDraft}
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    setReactivationStep2PriceDraft(isNaN(val) ? 0 : val);
+                    setPromoValuesDirty(true);
+                  }}
+                  className="w-28 px-3 py-2 bg-gray-50 dark:bg-slate-800 rounded-xl text-xs font-black border border-gray-200 dark:border-slate-700 outline-none focus:border-purple-400"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="block text-[10px] font-black uppercase text-purple-600">3ª Mensagem (R$)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="1"
+                  value={reactivationStep3PriceDraft}
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    setReactivationStep3PriceDraft(isNaN(val) ? 0 : val);
+                    setPromoValuesDirty(true);
+                  }}
+                  className="w-28 px-3 py-2 bg-purple-50 dark:bg-purple-950/30 rounded-xl text-xs font-black border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 outline-none focus:border-purple-500"
+                />
+              </div>
+              <button
+                type="button"
+                disabled={configSaving || serverOnline === false}
+                onClick={handleSavePromoValues}
+                className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-black uppercase shadow-sm disabled:opacity-50"
+              >
+                {configSaving ? 'Salvando...' : 'Salvar Valores'}
+              </button>
+            </div>
+          </div>
+
           {/* EDITOR DAS 3 MENSAGENS PROMOCIONAIS */}
           <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-purple-100 dark:border-slate-800 grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="space-y-3">
@@ -1790,7 +1993,10 @@ export const ChargeWhatsappAutomationPanel: React.FC<ChargePanelProps> = ({ clie
                         : activePromoTemplateStep === 2
                           ? reactivationTemplate2Draft || DEFAULT_REACTIVATION_TEMPLATE_2
                           : reactivationTemplate3Draft || DEFAULT_REACTIVATION_TEMPLATE_3
-                    ).replace(/\{nome\}/gi, 'Maria')}
+                    )
+                      .replace(/\{nome\}/gi, 'Maria')
+                      .replace(/\{valor_etapa2\}/gi, reactivationStep2PriceDraft.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }))
+                      .replace(/\{valor_etapa3\}/gi, reactivationStep3PriceDraft.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }))}
                   </p>
                   <p className="text-[10px] text-gray-400 text-right mt-1.5">15:00 ✓✓</p>
                 </div>

@@ -60,9 +60,9 @@ Você teria interesse em saber mais sobre a nossa promoção? É só me responde
 
 export const DEFAULT_REACTIVATION_TEMPLATE_2 = `Olá, {nome}! Tudo bem? 🌸
 
-Passando para te apresentar a nossa promoção especial de retorno na *EuDorama*! 🎁
+Passando para te contar a nossa promoção especial de retorno na *EuDorama*! 🎁
 
-Você pode garantir o combo *Viki Pass + Kocowa Plus + WeTV VIP por R$ 29,90*! ✨
+Você pode garantir o combo *Viki Pass + Kocowa Plus + WeTV VIP por {valor_etapa2}*! ✨
 
 Essa promoção é válida durante *3 meses* para você aproveitar os 3 apps pagando bem menos. 💜🍿
 
@@ -72,7 +72,7 @@ export const DEFAULT_REACTIVATION_TEMPLATE_3 = `Olá, {nome}! Tudo bem? 🌸
 
 Como queremos muito te ver maratonando com a gente de novo na *EuDorama*, conseguimos aumentar ainda mais o desconto para você! 🎁✨
 
-O combo *Viki Pass + Kocowa Plus + WeTV VIP* caiu de R$ 29,90 para apenas *R$ 24,90*! 😱💜
+O combo *Viki Pass + Kocowa Plus + WeTV VIP* caiu de {valor_etapa2} para apenas *{valor_etapa3}*! 😱💜
 
 A promoção continua válida por *3 meses* nos 3 apps, e você tem um prazo de até *7 dias* para realizar a compra com esse valor especial. ⏳🍿
 
@@ -137,6 +137,24 @@ export type ReactivationQueueItem = {
   eligibleNow: boolean;
 };
 
+export type ClientPromoPrices = {
+  viki: number;
+  iqiyi: number;
+  kocowa: number;
+  wetv: number;
+  youku: number;
+  dramabox: number;
+};
+
+export const DEFAULT_CLIENT_PROMO_PRICES: ClientPromoPrices = {
+  viki: 19.90,
+  iqiyi: 14.90,
+  kocowa: 9.90,
+  wetv: 9.90,
+  youku: 9.90,
+  dramabox: 9.90
+};
+
 export type SchedulerState = {
   enabled: boolean;
   enableReminder: boolean;
@@ -147,9 +165,13 @@ export type SchedulerState = {
   reactivationTemplate: string;
   reactivationTemplate2: string;
   reactivationTemplate3: string;
+  reactivationStep2Price: number;
+  reactivationStep3Price: number;
   enableClientPromo: boolean;
   clientPromoDailyLimit: number;
   clientPromoTemplate: string;
+  clientPromoDiscountPercent: number;
+  clientPromoPrices: ClientPromoPrices;
   targetHour: number; // ex: 15 (15:00)
   targetMinute: number; // ex: 0 (15:00)
   isRunning: boolean;
@@ -172,9 +194,13 @@ let schedulerState: SchedulerState = {
   reactivationTemplate: DEFAULT_REACTIVATION_TEMPLATE,
   reactivationTemplate2: DEFAULT_REACTIVATION_TEMPLATE_2,
   reactivationTemplate3: DEFAULT_REACTIVATION_TEMPLATE_3,
+  reactivationStep2Price: 29.90,
+  reactivationStep3Price: 24.90,
   enableClientPromo: true,
   clientPromoDailyLimit: 2,
   clientPromoTemplate: DEFAULT_CLIENT_PROMO_TEMPLATE,
+  clientPromoDiscountPercent: 30,
+  clientPromoPrices: { ...DEFAULT_CLIENT_PROMO_PRICES },
   targetHour: 15,
   targetMinute: 0,
   isRunning: false
@@ -202,12 +228,32 @@ try {
       if (typeof rawCfg.reactivationTemplate3 === 'string' && rawCfg.reactivationTemplate3.trim()) {
         schedulerState.reactivationTemplate3 = rawCfg.reactivationTemplate3;
       }
+      if (typeof rawCfg.reactivationStep2Price === 'number' && rawCfg.reactivationStep2Price > 0) {
+        schedulerState.reactivationStep2Price = Number(rawCfg.reactivationStep2Price.toFixed(2));
+      }
+      if (typeof rawCfg.reactivationStep3Price === 'number' && rawCfg.reactivationStep3Price > 0) {
+        schedulerState.reactivationStep3Price = Number(rawCfg.reactivationStep3Price.toFixed(2));
+      }
       if (typeof rawCfg.enableClientPromo === 'boolean') schedulerState.enableClientPromo = rawCfg.enableClientPromo;
       if (typeof rawCfg.clientPromoDailyLimit === 'number' && rawCfg.clientPromoDailyLimit >= 1 && rawCfg.clientPromoDailyLimit <= 100) {
         schedulerState.clientPromoDailyLimit = Math.floor(rawCfg.clientPromoDailyLimit);
       }
       if (typeof rawCfg.clientPromoTemplate === 'string' && rawCfg.clientPromoTemplate.trim()) {
         schedulerState.clientPromoTemplate = rawCfg.clientPromoTemplate;
+      }
+      if (typeof rawCfg.clientPromoDiscountPercent === 'number' && rawCfg.clientPromoDiscountPercent >= 1 && rawCfg.clientPromoDiscountPercent <= 95) {
+        schedulerState.clientPromoDiscountPercent = Math.round(rawCfg.clientPromoDiscountPercent);
+      }
+      if (rawCfg.clientPromoPrices && typeof rawCfg.clientPromoPrices === 'object') {
+        const p = rawCfg.clientPromoPrices;
+        schedulerState.clientPromoPrices = {
+          viki: typeof p.viki === 'number' && p.viki > 0 ? Number(p.viki.toFixed(2)) : DEFAULT_CLIENT_PROMO_PRICES.viki,
+          iqiyi: typeof p.iqiyi === 'number' && p.iqiyi > 0 ? Number(p.iqiyi.toFixed(2)) : DEFAULT_CLIENT_PROMO_PRICES.iqiyi,
+          kocowa: typeof p.kocowa === 'number' && p.kocowa > 0 ? Number(p.kocowa.toFixed(2)) : DEFAULT_CLIENT_PROMO_PRICES.kocowa,
+          wetv: typeof p.wetv === 'number' && p.wetv > 0 ? Number(p.wetv.toFixed(2)) : DEFAULT_CLIENT_PROMO_PRICES.wetv,
+          youku: typeof p.youku === 'number' && p.youku > 0 ? Number(p.youku.toFixed(2)) : DEFAULT_CLIENT_PROMO_PRICES.youku,
+          dramabox: typeof p.dramabox === 'number' && p.dramabox > 0 ? Number(p.dramabox.toFixed(2)) : DEFAULT_CLIENT_PROMO_PRICES.dramabox
+        };
       }
       if (typeof rawCfg.targetHour === 'number') schedulerState.targetHour = rawCfg.targetHour;
       if (typeof rawCfg.targetMinute === 'number') schedulerState.targetMinute = rawCfg.targetMinute;
@@ -232,9 +278,13 @@ function saveConfigToFile() {
           reactivationTemplate: schedulerState.reactivationTemplate,
           reactivationTemplate2: schedulerState.reactivationTemplate2,
           reactivationTemplate3: schedulerState.reactivationTemplate3,
+          reactivationStep2Price: schedulerState.reactivationStep2Price,
+          reactivationStep3Price: schedulerState.reactivationStep3Price,
           enableClientPromo: schedulerState.enableClientPromo,
           clientPromoDailyLimit: schedulerState.clientPromoDailyLimit,
           clientPromoTemplate: schedulerState.clientPromoTemplate,
+          clientPromoDiscountPercent: schedulerState.clientPromoDiscountPercent,
+          clientPromoPrices: schedulerState.clientPromoPrices,
           targetHour: schedulerState.targetHour,
           targetMinute: schedulerState.targetMinute
         },
@@ -287,9 +337,13 @@ export type SchedulerConfigPatch = Partial<
     | 'reactivationTemplate'
     | 'reactivationTemplate2'
     | 'reactivationTemplate3'
+    | 'reactivationStep2Price'
+    | 'reactivationStep3Price'
     | 'enableClientPromo'
     | 'clientPromoDailyLimit'
     | 'clientPromoTemplate'
+    | 'clientPromoDiscountPercent'
+    | 'clientPromoPrices'
     | 'targetHour'
     | 'targetMinute'
   >
@@ -314,12 +368,33 @@ export function updateSchedulerConfig(patch: SchedulerConfigPatch) {
   if (typeof patch.reactivationTemplate3 === 'string') {
     cleanPatch.reactivationTemplate3 = patch.reactivationTemplate3.trim() || DEFAULT_REACTIVATION_TEMPLATE_3;
   }
+  if (typeof patch.reactivationStep2Price === 'number' && !isNaN(patch.reactivationStep2Price) && patch.reactivationStep2Price > 0) {
+    cleanPatch.reactivationStep2Price = Number(patch.reactivationStep2Price.toFixed(2));
+  }
+  if (typeof patch.reactivationStep3Price === 'number' && !isNaN(patch.reactivationStep3Price) && patch.reactivationStep3Price > 0) {
+    cleanPatch.reactivationStep3Price = Number(patch.reactivationStep3Price.toFixed(2));
+  }
   if (typeof patch.enableClientPromo === 'boolean') cleanPatch.enableClientPromo = patch.enableClientPromo;
   if (typeof patch.clientPromoDailyLimit === 'number' && !isNaN(patch.clientPromoDailyLimit)) {
     cleanPatch.clientPromoDailyLimit = Math.min(100, Math.max(1, Math.floor(patch.clientPromoDailyLimit)));
   }
   if (typeof patch.clientPromoTemplate === 'string') {
     cleanPatch.clientPromoTemplate = patch.clientPromoTemplate.trim() || DEFAULT_CLIENT_PROMO_TEMPLATE;
+  }
+  if (typeof patch.clientPromoDiscountPercent === 'number' && !isNaN(patch.clientPromoDiscountPercent)) {
+    cleanPatch.clientPromoDiscountPercent = Math.min(95, Math.max(1, Math.round(patch.clientPromoDiscountPercent)));
+  }
+  if (patch.clientPromoPrices && typeof patch.clientPromoPrices === 'object') {
+    const cur = schedulerState.clientPromoPrices || DEFAULT_CLIENT_PROMO_PRICES;
+    const p = patch.clientPromoPrices;
+    cleanPatch.clientPromoPrices = {
+      viki: typeof p.viki === 'number' && !isNaN(p.viki) && p.viki > 0 ? Number(p.viki.toFixed(2)) : cur.viki,
+      iqiyi: typeof p.iqiyi === 'number' && !isNaN(p.iqiyi) && p.iqiyi > 0 ? Number(p.iqiyi.toFixed(2)) : cur.iqiyi,
+      kocowa: typeof p.kocowa === 'number' && !isNaN(p.kocowa) && p.kocowa > 0 ? Number(p.kocowa.toFixed(2)) : cur.kocowa,
+      wetv: typeof p.wetv === 'number' && !isNaN(p.wetv) && p.wetv > 0 ? Number(p.wetv.toFixed(2)) : cur.wetv,
+      youku: typeof p.youku === 'number' && !isNaN(p.youku) && p.youku > 0 ? Number(p.youku.toFixed(2)) : cur.youku,
+      dramabox: typeof p.dramabox === 'number' && !isNaN(p.dramabox) && p.dramabox > 0 ? Number(p.dramabox.toFixed(2)) : cur.dramabox
+    };
   }
   if (typeof patch.targetHour === 'number' && patch.targetHour >= 0 && patch.targetHour <= 23) cleanPatch.targetHour = patch.targetHour;
   if (typeof patch.targetMinute === 'number' && patch.targetMinute >= 0 && patch.targetMinute <= 59) cleanPatch.targetMinute = patch.targetMinute;
@@ -481,7 +556,13 @@ export function buildReactivationMessage(
         ? schedulerState.reactivationTemplate3 || DEFAULT_REACTIVATION_TEMPLATE_3
         : schedulerState.reactivationTemplate || DEFAULT_REACTIVATION_TEMPLATE;
   const tpl = (templateOverride || defaultTpl).trim();
-  return tpl.replace(/\{nome\}/gi, displayName);
+  const v2 = formatCurrency(schedulerState.reactivationStep2Price || 29.9);
+  const v3 = formatCurrency(schedulerState.reactivationStep3Price || 24.9);
+  return tpl
+    .replace(/\{nome\}/gi, displayName)
+    .replace(/\{valor_etapa2\}/gi, v2)
+    .replace(/\{valor_etapa3\}/gi, v3)
+    .replace(/\{valor\}/gi, step === 3 ? v3 : v2);
 }
 
 // Avalia a base do Supabase e retorna a fila completa do dia
@@ -1383,10 +1464,11 @@ export function buildClientPromoMessage(
     .map((app) => `• *${app.label}*: ${formatCurrency(app.promoPrice)}/mês`)
     .join('\n');
 
+  const discountPct = Math.min(95, Math.max(1, Math.round(schedulerState.clientPromoDiscountPercent ?? 30)));
   const blocoCombo50 =
     missingApps.length >= 2
-      ? `\n🎁 *E se quiser levar TODOS os ${missingApps.length} apps que faltam:* você ganha *50% de desconto* sobre o valor original — de ${formatCurrency(originalTotal)} por apenas *${formatCurrency(combo50Price)}*!\n`
-      : `\n🎁 *Ou com 50% de desconto do valor original:* de ${formatCurrency(originalTotal)} por apenas *${formatCurrency(combo50Price)}*!\n`;
+      ? `\n🎁 *E se quiser levar TODOS os ${missingApps.length} apps que faltam:* você ganha *${discountPct}% de desconto* sobre o valor original — de ${formatCurrency(originalTotal)} por apenas *${formatCurrency(combo50Price)}*!\n`
+      : `\n🎁 *Ou com ${discountPct}% de desconto do valor original:* de ${formatCurrency(originalTotal)} por apenas *${formatCurrency(combo50Price)}*!\n`;
 
   const tpl = (templateOverride || schedulerState.clientPromoTemplate || DEFAULT_CLIENT_PROMO_TEMPLATE).trim();
   return tpl
@@ -1395,7 +1477,10 @@ export function buildClientPromoMessage(
     .replace(/\{lista_ofertas\}/gi, listaOfertas)
     .replace(/\{valor_original_combo\}/gi, formatCurrency(originalTotal))
     .replace(/\{valor_combo_50\}/gi, formatCurrency(combo50Price))
-    .replace(/\{bloco_combo_50\}/gi, blocoCombo50);
+    .replace(/\{valor_combo\}/gi, formatCurrency(combo50Price))
+    .replace(/\{porcentagem_desconto\}/gi, `${discountPct}%`)
+    .replace(/\{bloco_combo_50\}/gi, blocoCombo50)
+    .replace(/\{bloco_combo\}/gi, blocoCombo50);
 }
 
 export async function getClientPromoQueue(): Promise<ClientPromoQueueItem[]> {
@@ -1420,12 +1505,14 @@ export async function getClientPromoQueue(): Promise<ClientPromoQueueItem[]> {
     if (progress._client_promo_invalid_phone) continue;
 
     const { ownedKeys, ownedLabels } = extractOwnedAppKeys(subs);
+    const customPrices = schedulerState.clientPromoPrices || DEFAULT_CLIENT_PROMO_PRICES;
+    const discountPct = Math.min(95, Math.max(1, Math.round(schedulerState.clientPromoDiscountPercent ?? 30)));
     const missingApps = CLIENT_PROMO_APPS
       .filter((app) => !ownedKeys.has(app.key))
       .map((app) => ({
         key: app.key,
         label: app.label,
-        promoPrice: app.promoPrice,
+        promoPrice: Number((customPrices[app.key] ?? app.promoPrice).toFixed(2)),
         originalPrice: getServicePrice(app.label, 1)
       }));
 
@@ -1433,7 +1520,7 @@ export async function getClientPromoQueue(): Promise<ClientPromoQueueItem[]> {
     if (missingApps.length === 0) continue;
 
     const originalTotal = missingApps.reduce((acc, a) => acc + a.originalPrice, 0);
-    const combo50Price = Number((originalTotal * 0.5).toFixed(2));
+    const combo50Price = Number((originalTotal * (1 - discountPct / 100)).toFixed(2));
 
     // Mais antigas primeiro (created_at ou data de início mais antiga das assinaturas)
     let earliestTs = c.created_at ? new Date(c.created_at).getTime() : Number.MAX_SAFE_INTEGER;
