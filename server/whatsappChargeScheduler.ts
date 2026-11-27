@@ -1120,6 +1120,18 @@ export async function runReactivationCampaign(manualTrigger: boolean = false): P
           status: 'success'
         });
         console.log(`[Reativação] 🗑️ Conversa apagada para ${target.clientName} (${target.phoneNumber})`);
+      } else if (delRes.skippedProtectedLabel) {
+        skipped++;
+        recentLogs.unshift({
+          id: `${Date.now()}-react-del-skip-${Math.random().toString(36).substring(2, 6)}`,
+          timestamp: new Date().toISOString(),
+          phoneNumber: target.phoneNumber,
+          clientName: target.clientName,
+          service: 'Campanha',
+          stage: 'Promoção - Exclusão Bloqueada (Etiqueta ACOMPANHAR)',
+          status: 'skipped',
+          error: delRes.error
+        });
       } else {
         recentLogs.unshift({
           id: `${Date.now()}-react-del-fail-${Math.random().toString(36).substring(2, 6)}`,
@@ -1705,6 +1717,18 @@ export async function runClientPromoCampaign(manualTrigger: boolean = false): Pr
           status: 'success'
         });
         console.log(`[Promo Cliente] 🗑️ Conversa apagada para ${target.clientName} (${target.phoneNumber})`);
+      } else if (delRes.skippedProtectedLabel) {
+        skipped++;
+        recentLogs.unshift({
+          id: `${Date.now()}-cpromo-del-skip-${Math.random().toString(36).substring(2, 6)}`,
+          timestamp: new Date().toISOString(),
+          phoneNumber: target.phoneNumber,
+          clientName: target.clientName,
+          service: target.missingApps.map((a) => a.label).join(', '),
+          stage: 'Promo Cliente - Exclusão Bloqueada (Etiqueta ACOMPANHAR)',
+          status: 'skipped',
+          error: delRes.error
+        });
       } else {
         recentLogs.unshift({
           id: `${Date.now()}-cpromo-del-fail-${Math.random().toString(36).substring(2, 6)}`,

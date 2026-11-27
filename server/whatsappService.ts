@@ -27,9 +27,12 @@ export type WhatsAppStatus = {
 
 const AUTH_DIR = path.resolve(process.cwd(), 'artifacts/whatsapp-auth');
 const LABELS_FILE = path.resolve(process.cwd(), 'artifacts/whatsapp-labels.json');
+const CHAT_LABELS_FILE = path.resolve(process.cwd(), 'artifacts/whatsapp-chat-labels.json');
 
 type StoredLabel = { id: string; name: string; color: number; deleted?: boolean };
 const labelsById = new Map<string, StoredLabel>();
+// Chave: `${chatId}::${labelId}` -> conjunto de alvos ('chat' ou messageId)
+const chatLabelAssociations = new Map<string, Set<string>>();
 
 try {
   if (fs.existsSync(LABELS_FILE)) {
@@ -42,12 +45,87 @@ try {
   }
 } catch {}
 
+try {
+  if (fs.existsSync(CHAT_LABELS_FILE)) {
+    const rawAssoc = JSON.parse(fs.readFileSync(CHAT_LABELS_FILE, 'utf-8'));
+    if (rawAssoc && typeof rawAssoc === 'object') {
+      Object.entries(rawAssoc).forEach(([k, targets]) => {
+        if (Array.isArray(targets) && targets.length > 0) {
+          chatLabelAssociations.set(k, new Set(targets.map(String)));
+        }
+      });
+    }
+  }
+} catch {}
+
 function saveLabelsToFile() {
   try {
     const dir = path.dirname(LABELS_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(LABELS_FILE, JSON.stringify(Array.from(labelsById.values()), null, 2), 'utf-8');
   } catch {}
+}
+
+function saveChatLabelsToFile() {
+  try {
+    const dir = path.dirname(CHAT_LABELS_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const obj: Record<string, string[]> = {};
+    chatLabelAssociations.forEach((targets, key) => {
+      if (targets.size > 0) obj[key] = Array.from(targets);
+    });
+    fs.writeFileSync(CHAT_LABELS_FILE, JSON.stringify(obj, null, 2), 'utf-8');
+  } catch {}
+}
+
+function getPhoneDigitsVariants(phoneOrJid: string): string[] {
+  const raw = String(phoneOrJid || '').split('@')[0].split(':')[0];
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length < 8) return [];
+  const variants = new Set<string>([digits]);
+  const without55 = digits.startsWith('55') && digits.length >= 12 ? digits.slice(2) : digits;
+  variants.add(without55);
+  variants.add(`55${without55}`);
+  if (without55.length === 11 && without55[2] === '9') {
+    const noNine = without55.slice(0, 2) + without55.slice(3);
+    variants.add(noNine);
+    variants.add(`55${noNine}`);
+  } else if (without55.length === 10) {
+    const withNine = without55.slice(0, 2) + '9' + without55.slice(2);
+    variants.add(withNine);
+    variants.add(`55${withNine}`);
+  }
+  return Array.from(variants);
+}
+
+export function hasChatOrMessageLabel(phoneOrJid: string, labelName: string): boolean {
+  const targetNorm = normalizeLabelName(labelName);
+  if (!targetNorm) return false;
+
+  const matchingLabelIds = new Set<string>();
+  for (const l of labelsById.values()) {
+    if (!l.deleted && normalizeLabelName(l.name) === targetNorm) {
+      matchingLabelIds.add(String(l.id));
+    }
+  }
+  if (matchingLabelIds.size === 0) return false;
+
+  const inputStr = String(phoneOrJid || '').trim();
+  const phoneVariants = getPhoneDigitsVariants(inputStr);
+
+  for (const [assocKey, targets] of chatLabelAssociations.entries()) {
+    if (targets.size === 0) continue;
+    const sepIdx = assocKey.lastIndexOf('::');
+    if (sepIdx <= 0) continue;
+    const chatId = assocKey.slice(0, sepIdx);
+    const labelId = assocKey.slice(sepIdx + 2);
+    if (!matchingLabelIds.has(labelId)) continue;
+
+    if (inputStr && chatId === inputStr) return true;
+    const chatDigits = chatId.split('@')[0].split(':')[0].replace(/\D/g, '');
+    if (chatDigits && phoneVariants.includes(chatDigits)) return true;
+  }
+  return false;
 }
 
 function normalizeLabelName(name: string): string {
@@ -100,6 +178,11 @@ async function applyChatLabelByName(jid: string, labelName: string) {
     const labelId = await ensureLabelExists(labelName, defaultColor);
     if (!labelId) return;
     await sock.addChatLabel(jid, labelId);
+    const key = `${jid}::${labelId}`;
+    const set = chatLabelAssociations.get(key) || new Set<string>();
+    set.add('chat');
+    chatLabelAssociations.set(key, set);
+    saveChatLabelsToFile();
     console.log(`[WhatsApp Server] 🏷️ Etiqueta "${labelName}" (ID: ${labelId}) aplicada em ${jid}`);
   } catch (err: any) {
     console.warn(`[WhatsApp Server] Falha ao aplicar etiqueta "${labelName}" em ${jid}:`, err?.message || err);
@@ -220,6 +303,24 @@ export async function connectWhatsApp(): Promise<WhatsAppStatus> {
       });
       saveLabelsToFile();
       console.log(`[WhatsApp Server] 🏷️ Etiqueta sincronizada: "${label.name}" (ID: ${label.id}, deleted: ${Boolean(label.deleted)})`);
+    });
+
+    sock.ev.on('labels.association', ({ association, type }) => {
+      if (!association?.chatId || !association?.labelId) return;
+      const key = `${association.chatId}::${association.labelId}`;
+      const targetId = association.type === 'label_message' ? association.messageId : 'chat';
+      if (type === 'add') {
+        const set = chatLabelAssociations.get(key) || new Set<string>();
+        set.add(targetId);
+        chatLabelAssociations.set(key, set);
+      } else if (type === 'remove') {
+        const set = chatLabelAssociations.get(key);
+        if (set) {
+          set.delete(targetId);
+          if (set.size === 0) chatLabelAssociations.delete(key);
+        }
+      }
+      saveChatLabelsToFile();
     });
 
     sock.ev.on('connection.update', async (update: Partial<ConnectionState>) => {
@@ -422,13 +523,23 @@ export async function sendWhatsAppTextMessage(
 export async function deleteWhatsAppChat(
   phoneNumber: string,
   options?: { jid?: string; lastMessageId?: string; lastMessageTimestamp?: number }
-): Promise<{ success: boolean; error?: string; jidUsed?: string }> {
+): Promise<{ success: boolean; error?: string; jidUsed?: string; skippedProtectedLabel?: boolean }> {
   if (!sock || currentStatus !== 'connected') {
     return { success: false, error: 'WhatsApp não está conectado. Conecte via QR Code no painel.' };
   }
 
   if (!sock.user?.id) {
     return { success: false, error: 'Sessão do WhatsApp não está totalmente inicializada.' };
+  }
+
+  // Proteção absoluta: conversas/mensagens etiquetadas com "ACOMPANHAR" nunca podem ser excluídas
+  if (hasChatOrMessageLabel(phoneNumber, 'ACOMPANHAR') || (options?.jid && hasChatOrMessageLabel(options.jid, 'ACOMPANHAR'))) {
+    console.log(`[WhatsApp Server] 🛡️ Exclusão bloqueada: conversa de ${options?.jid || phoneNumber} possui etiqueta "ACOMPANHAR".`);
+    return {
+      success: false,
+      skippedProtectedLabel: true,
+      error: 'Conversa protegida pela etiqueta ACOMPANHAR (não excluída).'
+    };
   }
 
   let finalJid = options?.jid || '';
@@ -453,6 +564,16 @@ export async function deleteWhatsAppChat(
     if (!finalJid) {
       finalJid = formatPhoneToJid(digits) || `${digits.startsWith('55') ? digits : '55' + digits}@s.whatsapp.net`;
     }
+  }
+
+  if (hasChatOrMessageLabel(finalJid, 'ACOMPANHAR')) {
+    console.log(`[WhatsApp Server] 🛡️ Exclusão bloqueada: JID ${finalJid} possui etiqueta "ACOMPANHAR".`);
+    return {
+      success: false,
+      skippedProtectedLabel: true,
+      jidUsed: finalJid,
+      error: 'Conversa protegida pela etiqueta ACOMPANHAR (não excluída).'
+    };
   }
 
   try {
